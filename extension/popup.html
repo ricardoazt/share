@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PulseShare P2P</title>
+  <link rel="stylesheet" href="tailwind.css" />
+</head>
+<body class="w-[360px] min-h-[580px] bg-slate-950 text-slate-100 font-sans antialiased select-none flex flex-col justify-between overflow-hidden relative">
+
+  <!-- TOPO: Identidade (@meu_usuario), Botão de Engrenagem (Configurações) e Diretório P2P -->
+  <header class="px-4 pt-3 pb-2.5 bg-slate-900/90 border-b border-slate-800/80 relative z-20">
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <div class="flex items-center gap-2">
+        <span id="status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" title="Sincronizando malha P2P..."></span>
+        <span class="text-xs font-semibold tracking-wider uppercase text-slate-400">PulseShare P2P</span>
+      </div>
+
+      <div class="flex items-center gap-1.5">
+        <span id="connection-badge" class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+          Sincronizando...
+        </span>
+
+        <!-- ÍCONE DE ENGRENAGEM (Abre/Fecha Configurações) -->
+        <button
+          id="btn-settings"
+          type="button"
+          title="Configurações da Extensão"
+          class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors cursor-pointer"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- PAINEL DE CONFIGURAÇÕES (Dropdown acionado pelo ícone de engrenagem) -->
+    <div
+      id="settings-panel"
+      class="hidden mb-2.5 p-3 rounded-xl bg-slate-950 border border-slate-700 shadow-lg space-y-2.5"
+    >
+      <div class="flex items-center justify-between border-b border-slate-800 pb-1.5">
+        <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+          <span>⚙️ Configurações</span>
+        </span>
+        <button
+          id="btn-close-settings"
+          type="button"
+          class="text-[11px] text-slate-400 hover:text-white font-bold px-1 cursor-pointer"
+        >
+          ✕
+        </button>
+      </div>
+
+      <!-- Chave 1: Abrir extensão automaticamente ao receber arquivo -->
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-slate-100">
+            Abrir automaticamente ao receber
+          </span>
+          <span class="text-[10px] text-slate-400 leading-tight">
+            Abre a janela da extensão assim que um arquivo começar a chegar.
+          </span>
+        </div>
+        <button
+          id="toggle-auto-open"
+          type="button"
+          role="switch"
+          aria-checked="true"
+          class="w-10 h-5 rounded-full bg-emerald-500 p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer justify-end"
+        >
+          <span class="w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
+        </button>
+      </div>
+
+      <!-- Chave 2: Aceitar arquivos automaticamente -->
+      <div class="flex items-center justify-between gap-3 pt-1 border-t border-slate-800/80">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-slate-100">
+            Recebimento automático (Sem confirmação)
+          </span>
+          <span class="text-[10px] text-slate-400 leading-tight">
+            Aceita e baixa arquivos recebidos imediatamente.
+          </span>
+        </div>
+        <button
+          id="toggle-auto-accept"
+          type="button"
+          role="switch"
+          aria-checked="true"
+          class="w-10 h-5 rounded-full bg-sky-500 p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer justify-end"
+        >
+          <span class="w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Meu @usuario -->
+    <div class="flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-1.5 focus-within:border-indigo-500/70 transition-colors">
+      <span class="text-[11px] text-slate-400 font-medium shrink-0">Meu ID:</span>
+      <input
+        id="my-tag-input"
+        type="text"
+        spellcheck="false"
+        placeholder="@seu_usuario"
+        class="w-full bg-transparent text-xs font-mono font-semibold text-indigo-300 focus:outline-none placeholder-slate-600"
+      />
+      <button
+        id="btn-save-tag"
+        title="Anunciar meu @usuario na rede P2P"
+        class="text-[11px] px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-medium transition-colors shrink-0 cursor-pointer"
+      >
+        Anunciar
+      </button>
+    </div>
+
+    <!-- Input de @destinatario (Zero Fricção) -->
+    <div id="target-container" class="mt-1.5 flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-1.5 focus-within:border-emerald-500/70 transition-all">
+      <span class="text-[11px] text-slate-400 font-medium shrink-0">Para:</span>
+      <input
+        id="target-tag-input"
+        type="text"
+        spellcheck="false"
+        placeholder="@destinatario (ou clique abaixo)"
+        class="w-full bg-transparent text-xs font-mono font-semibold text-emerald-300 focus:outline-none placeholder-slate-600"
+      />
+    </div>
+
+    <!-- DIRETÓRIO P2P INTERNO: Lista sincronizada de todos os @usuarios da rede -->
+    <div class="mt-2">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          Diretório P2P Sincronizado
+        </span>
+        <span id="roster-count" class="text-[10px] font-mono text-indigo-300">0 na lista</span>
+      </div>
+      <div
+        id="peers-list"
+        class="flex items-center gap-1.5 overflow-x-auto py-1 min-h-[26px]"
+      >
+        <span class="text-[10px] text-slate-500 italic">Aguardando pares na malha P2P...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- AÇÕES PRINCIPAIS: Dois Grandes Quadrados (Verde = Envio, Azul = Recebimento) + Botão Túnel Cloudflare -->
+  <section class="px-4 pt-2.5 pb-1.5">
+    <!-- Inputs de Arquivo Nativos Ocultos -->
+    <input id="file-input" type="file" class="hidden" multiple />
+    <input id="tunnel-file-input" type="file" class="hidden" multiple />
+
+    <div class="grid grid-cols-2 gap-3">
+      <!-- QUADRADO VERDE (Seta para Cima - Botão de Envio P2P) -->
+      <button
+        id="btn-send"
+        type="button"
+        class="group relative aspect-square rounded-2xl bg-gradient-to-br from-emerald-500 to-green-600 active:scale-[0.98] p-3 flex flex-col items-center justify-center shadow-lg border border-emerald-400/30 transition-all duration-150 cursor-pointer"
+      >
+        <div class="w-11 h-11 rounded-xl bg-white/15 group-hover:bg-white/25 flex items-center justify-center mb-1.5 transition-transform group-hover:-translate-y-0.5">
+          <!-- Ícone Seta para Cima -->
+          <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
+          </svg>
+        </div>
+        <span class="text-sm font-bold text-white tracking-tight">Enviar P2P</span>
+        <span class="text-[10px] text-emerald-100/90 font-medium mt-0.5 text-center leading-tight">
+          Para @usuario
+        </span>
+      </button>
+
+      <!-- QUADRADO AZUL (Seta para Baixo - Botão de Recebimento P2P) -->
+      <button
+        id="btn-receive"
+        type="button"
+        class="group relative aspect-square rounded-2xl bg-gradient-to-br from-sky-500 to-blue-600 active:scale-[0.98] p-3 flex flex-col items-center justify-center shadow-lg border border-sky-400/30 transition-all duration-150 cursor-pointer"
+      >
+        <!-- Badge de Transferência Pendente -->
+        <span
+          id="receive-badge"
+          class="hidden absolute -top-1.5 -right-1.5 px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-400 text-slate-950 shadow animate-bounce"
+        >
+          1 Pendente
+        </span>
+
+        <div class="w-11 h-11 rounded-xl bg-white/15 group-hover:bg-white/25 flex items-center justify-center mb-1.5 transition-transform group-hover:translate-y-0.5">
+          <!-- Ícone Seta para Baixo -->
+          <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5L12 21m0 0l-7.5-7.5M12 21V3" />
+          </svg>
+        </div>
+        <span id="receive-title" class="text-sm font-bold text-white tracking-tight">Receber</span>
+        <span id="receive-subtitle" class="text-[10px] text-sky-100/90 font-medium mt-0.5 text-center leading-tight">
+          Escuta Automática: ON
+        </span>
+      </button>
+    </div>
+
+    <!-- BOTÃO DE TÚNEL TEMPORÁRIO CLOUDFLARE (Gerar Link Público trycloudflare.com) -->
+    <button
+      id="btn-cloudflare-tunnel"
+      type="button"
+      class="mt-2.5 w-full rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 active:scale-[0.99] px-3 py-2 flex items-center justify-between shadow-lg border border-orange-400/30 transition-all cursor-pointer"
+    >
+      <div class="flex items-center gap-2">
+        <div class="w-7 h-7 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+          <!-- Ícone de Nuvem / Link Público -->
+          <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+          </svg>
+        </div>
+        <div class="flex flex-col text-left">
+          <span class="text-xs font-bold text-white leading-tight">
+            Gerar Link Público (Cloudflare Tunnel)
+          </span>
+          <span id="tunnel-status-sub" class="text-[10px] text-orange-100/90 leading-tight">
+            Qualquer pessoa baixa pelo navegador (*.trycloudflare.com)
+          </span>
+        </div>
+      </div>
+      <span id="tunnel-badge" class="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-950/40 text-white shrink-0">
+        LINK
+      </span>
+    </button>
+  </section>
+
+  <!-- CENTRO DO LAYOUT: Ícone e Área do Gerenciador de Transferências -->
+  <main class="flex-1 flex flex-col px-4 py-1.5 min-h-0">
+    <div class="flex items-center justify-between py-1 border-b border-slate-800/80 mb-1.5">
+      <div class="flex items-center gap-2">
+        <div class="w-6 h-6 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-sky-400">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+          </svg>
+        </div>
+        <h2 class="text-xs font-semibold text-slate-200 tracking-wide">
+          Gerenciador de Transferências
+        </h2>
+      </div>
+      <button
+        id="btn-clear-completed"
+        type="button"
+        class="text-[10px] text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+        title="Limpar transferências concluídas"
+      >
+        Limpar histórico
+      </button>
+    </div>
+
+    <!-- Banner de Alerta/Erro Rápido -->
+    <div
+      id="toast-alert"
+      class="hidden mb-1.5 px-3 py-1.5 rounded-lg bg-rose-950/90 border border-rose-500/40 text-rose-200 text-[11px] flex items-center justify-between"
+    >
+      <span id="toast-message">Alerta</span>
+      <button id="toast-close" class="text-rose-400 hover:text-white ml-2 font-bold">✕</button>
+    </div>
+
+    <!-- Lista de Transferências / Barras de Progresso em Tempo Real -->
+    <div
+      id="transfers-list"
+      class="flex-1 overflow-y-auto space-y-2 pr-0.5 max-h-[165px]"
+    >
+      <!-- Estado Vazio Inicial -->
+      <div id="empty-state" class="h-28 flex flex-col items-center justify-center text-center px-4 border border-dashed border-slate-800 rounded-xl bg-slate-900/30">
+        <svg class="w-6 h-6 text-slate-600 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+        </svg>
+        <p class="text-xs font-medium text-slate-400">Nenhuma transferência ativa</p>
+        <p class="text-[10px] text-slate-500 mt-0.5">
+          Envie via <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Cloudflare</span>.
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <!-- RODAPÉ: Resumo da Malha P2P Serverless -->
+  <footer class="px-4 py-1.5 bg-slate-900/80 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400">
+    <span>Auto-Abrir: <strong id="footer-auto-open" class="text-emerald-400">ON</strong></span>
+    <span id="online-counter">0 online</span>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
