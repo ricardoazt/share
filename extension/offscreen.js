@@ -22,18 +22,12 @@ const FILE_STORE = 'staged_files';
 
 const RTC_CONFIG = {
   iceServers: [
-    { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'stun:stun.l.google.com:19302' },
-    {
-      urls: [
-        'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turn:openrelay.metered.ca:443?transport=tcp',
-        'turns:openrelay.metered.ca:443?transport=tcp'
-      ],
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
   ],
   iceCandidatePoolSize: 4
 };
@@ -111,31 +105,72 @@ async function getStagedFile(fileKey, fallbackKey) {
   if (inMemoryFiles.has(fileKey)) {
     return inMemoryFiles.get(fileKey);
   }
+  const shareId = fileKey && fileKey.includes(':') ? fileKey.split(':')[0] : null;
+  if (shareId && inMemoryFiles.has(shareId)) {
+    return inMemoryFiles.get(shareId);
+  }
   if (fallbackKey && inMemoryFiles.has(fallbackKey)) {
     return inMemoryFiles.get(fallbackKey);
   }
   try {
     const db = await openDatabase();
-    return await new Promise((resolve, reject) => {
+    return await new Promise((resolve) => {
       const tx = db.transaction(FILE_STORE, 'readonly');
-      const req = tx.objectStore(FILE_STORE).get(fileKey);
+      const store = tx.objectStore(FILE_STORE);
+      const req = store.get(fileKey);
       req.onsuccess = () => {
-        db.close();
-        if (req.result) resolve(req.result);
-        else if (fallbackKey) {
-          openDatabase().then(db2 => {
-            const tx2 = db2.transaction(FILE_STORE, 'readonly');
-            const req2 = tx2.objectStore(FILE_STORE).get(fallbackKey);
-            req2.onsuccess = () => { db2.close(); resolve(req2.result || null); };
-            req2.onerror = () => { db2.close(); resolve(null); };
-          }).catch(() => resolve(null));
+        if (req.result) {
+          db.close();
+          resolve(req.result);
+          return;
+        }
+        if (shareId) {
+          const reqShare = store.get(shareId);
+          reqShare.onsuccess = () => {
+            if (reqShare.result) {
+              db.close();
+              resolve(reqShare.result);
+              return;
+            }
+            if (fallbackKey) {
+              const reqFb = store.get(fallbackKey);
+              reqFb.onsuccess = () => {
+                db.close();
+                resolve(reqFb.result || null);
+              };
+              reqFb.onerror = () => {
+                db.close();
+                resolve(null);
+              };
+            } else {
+              db.close();
+              resolve(null);
+            }
+          };
+          reqShare.onerror = () => {
+            db.close();
+            resolve(null);
+          };
+          return;
+        }
+        if (fallbackKey) {
+          const reqFb = store.get(fallbackKey);
+          reqFb.onsuccess = () => {
+            db.close();
+            resolve(reqFb.result || null);
+          };
+          reqFb.onerror = () => {
+            db.close();
+            resolve(null);
+          };
         } else {
+          db.close();
           resolve(null);
         }
       };
       req.onerror = () => {
         db.close();
-        reject(req.error);
+        resolve(null);
       };
     });
   } catch {
@@ -401,8 +436,16 @@ async function startSenderWebRTC(
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
+      const candidateObj = e.candidate.toJSON
+        ? e.candidate.toJSON()
+        : {
+            candidate: e.candidate.candidate,
+            sdpMid: e.candidate.sdpMid,
+            sdpMLineIndex: e.candidate.sdpMLineIndex,
+            usernameFragment: e.candidate.usernameFragment
+          };
       sendSignalViaBackground(targetTag, signalTransferId, 'ICE_CANDIDATE', {
-        candidate: e.candidate
+        candidate: candidateObj
       });
     }
   };
@@ -600,8 +643,16 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
 
   pc.onicecandidate = (e) => {
     if (e.candidate) {
+      const candidateObj = e.candidate.toJSON
+        ? e.candidate.toJSON()
+        : {
+            candidate: e.candidate.candidate,
+            sdpMid: e.candidate.sdpMid,
+            sdpMLineIndex: e.candidate.sdpMLineIndex,
+            usernameFragment: e.candidate.usernameFragment
+          };
       sendSignalViaBackground(senderTag, transferId, 'ICE_CANDIDATE', {
-        candidate: e.candidate
+        candidate: candidateObj
       });
     }
   };

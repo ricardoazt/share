@@ -14,13 +14,14 @@ const MESH_TOPIC = 'pulseshare/v2/p2p_mesh_global';
 
 const RTC_CONFIG = {
   iceServers: [
-    { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] },
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' }
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
   ],
-  iceCandidatePoolSize: 6
+  iceCandidatePoolSize: 4
 };
 
 // Lê parâmetros tanto do Hash quanto da Query String

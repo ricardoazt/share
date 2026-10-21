@@ -544,9 +544,10 @@ async function handleMeshPacket(packet) {
   if (!packet || packet.senderNodeId === state.nodeId) return;
 
   // Deduplica pacotes recebidos por múltiplos brokers simultaneamente
-  if (packet.pktId) {
-    if (seenPacketIds.has(packet.pktId)) return;
-    seenPacketIds.add(packet.pktId);
+  const pktId = packet.pktId || packet.packetId;
+  if (pktId) {
+    if (seenPacketIds.has(pktId)) return;
+    seenPacketIds.add(pktId);
     if (seenPacketIds.size > 2000) {
       const first = seenPacketIds.values().next().value;
       seenPacketIds.delete(first);
