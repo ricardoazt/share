@@ -1016,6 +1016,7 @@ if (modalFilesList) {
 function handleSelectedFiles(files) {
   if (!files || files.length === 0) return;
   const filesArray = Array.from(files);
+  let addedCount = 0;
   for (const f of filesArray) {
     if (!f) continue;
     const relPath = f.relativePath || f.webkitRelativePath || f.name;
@@ -1026,7 +1027,9 @@ function handleSelectedFiles(files) {
     if (normalizedName !== f.name) {
       try {
         fileObj = new File([f], normalizedName, { type: f.type, lastModified: f.lastModified });
+        fileObj.relativePath = normalizedName;
       } catch {
+        f.relativePath = normalizedName;
         fileObj = f;
       }
     }
@@ -1038,6 +1041,7 @@ function handleSelectedFiles(files) {
       type: f.type || 'application/octet-stream',
       fileObj
     });
+    addedCount++;
     // Persiste imediatamente em memória (offscreen) e IndexedDB de forma não-bloqueante
     saveStagedFile(fileId, fileObj).catch((err) => {
       console.warn('saveStagedFile background warning:', err);
@@ -1058,6 +1062,70 @@ function handleSelectedFiles(files) {
       }))
     }).catch(() => {});
   } catch {}
+
+  if (addedCount > 0) {
+    showToast(`✓ ${addedCount} arquivo(s) adicionado(s) com sucesso!`);
+  }
+}
+
+// Leitura Recursiva de Diretórios via FileSystemDirectoryHandle (File System Access API)
+async function getFilesFromDirectoryHandle(dirHandle, path = '') {
+  const files = [];
+  try {
+    for await (const entry of dirHandle.values()) {
+      const entryPath = path ? `${path}/${entry.name}` : entry.name;
+      if (entry.kind === 'file') {
+        try {
+          const file = await entry.getFile();
+          if (file) {
+            let namedFile = file;
+            try {
+              namedFile = new File([file], entryPath, { type: file.type, lastModified: file.lastModified });
+              namedFile.relativePath = entryPath;
+            } catch {
+              file.relativePath = entryPath;
+              namedFile = file;
+            }
+            files.push(namedFile);
+          }
+        } catch (e) {
+          console.warn(`Erro ao ler arquivo ${entry.name}:`, e);
+        }
+      } else if (entry.kind === 'directory') {
+        const subFiles = await getFilesFromDirectoryHandle(entry, entryPath);
+        files.push(...subFiles);
+      }
+    }
+  } catch (err) {
+    console.error('Erro ao iterar diretório:', err);
+  }
+  return files;
+}
+
+// Diálogo nativo de seleção de pasta (Modern API + Fallback)
+async function pickFolder() {
+  if (typeof window.showDirectoryPicker === 'function') {
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      if (!dirHandle) return;
+      const files = await getFilesFromDirectoryHandle(dirHandle, dirHandle.name);
+      if (files && files.length > 0) {
+        handleSelectedFiles(files);
+        return;
+      } else {
+        showToast('Nenhum arquivo encontrado na pasta selecionada.');
+        return;
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') return; // Cancelado pelo usuário
+      console.warn('showDirectoryPicker não suportado ou negado, fallback para input:', err);
+    }
+  }
+
+  // Fallback: input file com webkitdirectory + directory + mozdirectory + multiple
+  if (modalFolderInput) {
+    modalFolderInput.click();
+  }
 }
 
 if (btnModalAddMore && modalFileInput) {
@@ -1068,11 +1136,11 @@ if (btnModalAddMore && modalFileInput) {
   });
 }
 
-if (btnModalAddFolder && modalFolderInput) {
-  btnModalAddFolder.addEventListener('click', (e) => {
+if (btnModalAddFolder) {
+  btnModalAddFolder.addEventListener('click', async (e) => {
     e.preventDefault();
     e.stopPropagation();
-    modalFolderInput.click();
+    await pickFolder();
   });
 }
 
@@ -1102,17 +1170,45 @@ if (modalFolderInput) {
       }
     } catch (err) {
       console.error('Erro ao ler pasta:', err);
+      showToast('Erro ao ler pasta selecionada.');
     } finally {
       modalFolderInput.value = '';
     }
   });
 }
 
-// Suporte a Leitura Recursiva de Diretórios via Drag & Drop
+// Suporte a Leitura Recursiva de Diretórios via Drag & Drop (FileSystemHandle + webkitGetAsEntry)
 async function getFilesFromDataTransfer(items, dataTransferFiles) {
   const result = [];
   if (!items || items.length === 0) {
     return Array.from(dataTransferFiles || []);
+  }
+
+  // Tenta FileSystemHandle primeiro (modern Chromium no Linux/ChromeOS/Windows)
+  try {
+    const handles = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].getAsFileSystemHandle) {
+        const handle = await items[i].getAsFileSystemHandle();
+        if (handle) handles.push(handle);
+      }
+    }
+    if (handles.length > 0) {
+      for (const h of handles) {
+        if (h.kind === 'file') {
+          const file = await h.getFile();
+          if (file) result.push(file);
+        } else if (h.kind === 'directory') {
+          const dirFiles = await getFilesFromDirectoryHandle(h, h.name);
+          result.push(...dirFiles);
+        }
+      }
+      if (result.length > 0) {
+        return result;
+      }
+    }
+  } catch (e) {
+    console.warn('Erro ao processar via getAsFileSystemHandle:', e);
   }
 
   const queue = [];
@@ -1146,6 +1242,7 @@ async function getFilesFromDataTransfer(items, dataTransferFiles) {
             const rel = entry.fullPath.slice(1);
             try {
               finalFile = new File([file], rel, { type: file.type, lastModified: file.lastModified });
+              finalFile.relativePath = rel;
             } catch {
               file.relativePath = rel;
               finalFile = file;
