@@ -134,13 +134,15 @@ setInterval(() => {
   }
 }, 1000);
 
+const DEFAULT_PORTAL_URL = 'https://ricardoazt.github.io/share/';
+
 // ============================================================================
-// 2. Link Público P2P Serverless (Cloudflare WebRTC STUN + TURN)
+// 2. Link Público P2P Serverless (GitHub Pages WebRTC STUN + TURN)
 // ============================================================================
 async function startServerlessP2PLinkShare(params) {
   const shareId =
     params.shareId ||
-    `cf-${Array.from(crypto.getRandomValues(new Uint8Array(3)))
+    `ps-${Array.from(crypto.getRandomValues(new Uint8Array(4)))
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('')}`;
 
@@ -165,9 +167,10 @@ async function startServerlessP2PLinkShare(params) {
   const password = params.password || '';
   const passwordSalt = params.passwordSalt || '';
   const passwordHash = params.passwordHash || '';
-  const shareUrl =
-    params.shareUrl ||
-    `${chrome.runtime.getURL('receiver.html')}?share=${shareId}&owner=${encodeURIComponent(state.myTag)}`;
+
+  const stored = await chrome.storage.local.get(['portalUrl']);
+  const basePortalUrl = (stored.portalUrl || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
+  const shareUrl = `${basePortalUrl}#share=${shareId}&owner=${encodeURIComponent(state.myTag)}${expiresAt ? `&exp=${expiresAt}` : ''}`;
 
   const shareRecord = {
     shareId,
@@ -190,7 +193,7 @@ async function startServerlessP2PLinkShare(params) {
   state.transfers[shareId] = {
     id: shareId,
     direction: 'tunnel',
-    peerTag: 'Túnel Cloudflare (trycloudflare.com)',
+    peerTag: 'Link Público WebRTC',
     packName,
     fileName: packName,
     files,
@@ -206,6 +209,7 @@ async function startServerlessP2PLinkShare(params) {
     completedPacks: 0,
     filesProgress: (files || []).map((f, i) => ({
       index: i,
+      fileId: f.fileId || `f-${i}`,
       name: f.name,
       size: f.size,
       bytesSent: 0,
@@ -225,74 +229,10 @@ async function startServerlessP2PLinkShare(params) {
     updatedAt: Date.now()
   };
 
+  await ensureOffscreenDocument();
   broadcastState();
+  return { ok: true, shareId, shareUrl };
 }
-
-/**
- * Sincroniza periodicamente os túneis do daemon local (127.0.0.1:18765)
- * com o estado da extensão para refletir encerramentos, downloads ou expirações automáticas.
- */
-async function syncTunnelsWithDaemon() {
-  try {
-    const res = await fetch('http://127.0.0.1:18765/api/status');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (!data.ok || !Array.isArray(data.activeTunnels)) return;
-
-    const activeMap = new Map(data.activeTunnels.map((t) => [t.shareId, t]));
-    let changed = false;
-
-    for (const [id, t] of Object.entries(state.transfers)) {
-      if (t.direction === 'tunnel') {
-        const live = activeMap.get(t.shareId);
-        if (live) {
-          if (live.paused && t.status !== 'PAUSED') {
-            t.status = 'PAUSED';
-            t.updatedAt = Date.now();
-            changed = true;
-          } else if (!live.paused && t.status === 'PAUSED') {
-            t.status = 'TUNNEL_READY';
-            t.updatedAt = Date.now();
-            changed = true;
-          }
-          if (live.downloads !== t.downloads) {
-            t.downloads = live.downloads;
-            t.updatedAt = Date.now();
-            changed = true;
-          }
-          if (typeof live.totalBytesSent === 'number') {
-            t.totalBytesSent = live.totalBytesSent;
-            t.transferredBytes = live.totalBytesSent;
-            if (t.totalSize > 0) {
-              t.progress = Math.min(100, Math.round((live.totalBytesSent / t.totalSize) * 100));
-            }
-            changed = true;
-          }
-          if (typeof live.completedPacks === 'number' && t.completedPacks !== live.completedPacks) {
-            t.completedPacks = live.completedPacks;
-            changed = true;
-          }
-          if (Array.isArray(live.filesProgress)) {
-            t.filesProgress = live.filesProgress;
-            changed = true;
-          }
-        } else if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED') {
-          // Túnel não consta mais como ativo no daemon (expirou ou foi cancelado)
-          t.status = t.expiresAt && Date.now() >= t.expiresAt ? 'EXPIRED' : 'CANCELLED';
-          t.updatedAt = Date.now();
-          changed = true;
-        }
-      }
-    }
-
-    if (changed) {
-      broadcastState();
-    }
-  } catch {}
-}
-
-setInterval(syncTunnelsWithDaemon, 4000);
-syncTunnelsWithDaemon();
 
 // ============================================================================
 // 3. Codificador/Decodificador Binário MQTT v3.1.1 sobre WebSocket (Multi-Broker)
@@ -672,81 +612,6 @@ function updateTransfer(transferId, patch) {
   broadcastState();
 }
 
-/**
- * Sincroniza periodicamente os túneis do daemon local (127.0.0.1:18765)
- * com o estado da extensão para refletir encerramentos, downloads ou expirações automáticas.
- */
-async function syncTunnelsWithDaemon() {
-  try {
-    const res = await fetch('http://127.0.0.1:18765/api/status');
-    if (!res.ok) return;
-    const data = await res.json();
-    if (!data.ok || !Array.isArray(data.activeTunnels)) return;
-
-    const activeMap = new Map(data.activeTunnels.map((t) => [t.shareId, t]));
-    let changed = false;
-
-    for (const [id, t] of Object.entries(state.transfers)) {
-      if (t.direction === 'tunnel') {
-        const live = activeMap.get(t.shareId);
-        if (live) {
-          if (live.paused && t.status !== 'PAUSED') {
-            t.status = 'PAUSED';
-            t.updatedAt = Date.now();
-            changed = true;
-          } else if (!live.paused && t.status === 'PAUSED') {
-            t.status = 'TUNNEL_READY';
-            t.updatedAt = Date.now();
-            changed = true;
-          }
-          if (live.downloads !== t.downloads) {
-            t.downloads = live.downloads;
-            t.updatedAt = Date.now();
-            changed = true;
-          }
-          if (live.maxDownloads !== undefined && live.maxDownloads !== t.maxDownloads) {
-            t.maxDownloads = live.maxDownloads;
-            changed = true;
-          }
-          if (live.completedPacks !== undefined && live.completedPacks !== t.completedPacks) {
-            t.completedPacks = live.completedPacks;
-            changed = true;
-          }
-          if (live.totalBytesSent !== undefined && live.totalBytesSent !== t.transferredBytes) {
-            t.transferredBytes = live.totalBytesSent;
-            t.totalBytesSent = live.totalBytesSent;
-            t.progress = t.fileSize > 0 ? Math.min(100, Math.round((t.transferredBytes / t.fileSize) * 100)) : 0;
-            t.updatedAt = Date.now();
-            changed = true;
-          }
-          if (live.filesProgress) {
-            t.filesProgress = live.filesProgress;
-            changed = true;
-          }
-        } else if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED' || t.status === 'TRANSFERRING') {
-          // Túnel não consta mais como ativo no daemon (expirou, atingiu limite de downloads ou foi cancelado)
-          if (t.maxDownloads > 0 && (t.completedPacks || 0) >= t.maxDownloads) {
-            t.status = 'COMPLETED';
-          } else if (t.expiresAt && Date.now() >= t.expiresAt) {
-            t.status = 'EXPIRED';
-          } else {
-            t.status = 'CANCELLED';
-          }
-          t.updatedAt = Date.now();
-          changed = true;
-        }
-      }
-    }
-
-    if (changed) {
-      broadcastState();
-    }
-  } catch {}
-}
-
-setInterval(syncTunnelsWithDaemon, 1500);
-syncTunnelsWithDaemon();
-
 let creatingOffscreen = null;
 
 async function ensureOffscreenDocument() {
@@ -1119,85 +984,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return true;
 
-    case 'DAEMON_PICK_FILES': {
-      const mode = msg.mode || 'tunnel';
-      const append = Boolean(msg.append);
-      const targetTag = msg.targetTag || '';
-      const pickType = msg.pickType || 'files';
-
-      fetch('http://127.0.0.1:18765/api/pick-files', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pickType })
-      })
-        .then((r) => r.json())
-        .then(async (data) => {
-          if (data && data.ok && !data.cancelled && Array.isArray(data.files) && data.files.length > 0) {
-            if (mode === 'tunnel') {
-              if (!append || !Array.isArray(state.stagedTunnelFiles)) {
-                state.stagedTunnelFiles = data.files;
-              } else {
-                const existingPaths = new Set(state.stagedTunnelFiles.map((f) => f.diskPath));
-                for (const f of data.files) {
-                  if (!f.diskPath || !existingPaths.has(f.diskPath)) {
-                    state.stagedTunnelFiles.push(f);
-                  }
-                }
-              }
-              state.tunnelModalOpen = true;
-              await chrome.storage.local.set({
-                stagedTunnelFiles: state.stagedTunnelFiles,
-                tunnelModalOpen: state.tunnelModalOpen
-              });
-              updateBadgeForStagedFiles();
-              broadcastState();
-            } else if (mode === 'p2p' && targetTag) {
-              await ensureOffscreenDocument();
-              for (const f of data.files) {
-                try {
-                  const fileRes = await fetch(
-                    `http://127.0.0.1:18765/api/read-local-file?path=${encodeURIComponent(f.diskPath)}`
-                  );
-                  if (fileRes.ok) {
-                    const blob = await fileRes.blob();
-                    const fileObj = new File([blob], f.name, { type: f.type || 'application/octet-stream' });
-                    const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-                    if (fileBridgeChannel) {
-                      fileBridgeChannel.postMessage({
-                        type: 'STAGE_FILE_ZERO_COPY',
-                        transferId,
-                        file: fileObj
-                      });
-                    }
-                    startOutgoingTransfer(transferId, targetTag, {
-                      name: f.name,
-                      size: f.size,
-                      type: f.type || 'application/octet-stream'
-                    });
-                  }
-                } catch (err) {
-                  console.error('Falha ao preparar arquivo local para P2P:', err);
-                }
-              }
-            }
-          }
-          // Reabre automaticamente o popup da extensão assim que o seletor fechar
-          await ensureExtensionPopupOpen();
-        })
-        .catch((err) => {
-          console.error('Erro em DAEMON_PICK_FILES:', err);
-        });
-
-      sendResponse({ ok: true, state });
-      return true;
-    }
-
     case 'ADD_STAGED_TUNNEL_FILES': {
       const incoming = Array.isArray(msg.files) ? msg.files : [];
       if (!Array.isArray(state.stagedTunnelFiles)) state.stagedTunnelFiles = [];
-      const existingPaths = new Set(state.stagedTunnelFiles.map((f) => f.diskPath).filter(Boolean));
+      const existingPaths = new Set(state.stagedTunnelFiles.map((f) => f.diskPath || f.fileId).filter(Boolean));
       for (const f of incoming) {
-        if (!f.diskPath || !existingPaths.has(f.diskPath)) {
+        const id = f.diskPath || f.fileId;
+        if (!id || !existingPaths.has(id)) {
           state.stagedTunnelFiles.push(f);
         }
       }
@@ -1249,6 +1042,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     case 'START_CLOUDFLARE_TUNNEL_SHARE':
+    case 'START_PUBLIC_LINK_SHARE':
       state.stagedTunnelFiles = [];
       state.tunnelModalOpen = false;
       chrome.storage.local.set({
@@ -1266,13 +1060,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         t.status = 'PAUSED';
         t.updatedAt = Date.now();
         broadcastState();
-        if (t.direction === 'tunnel') {
-          fetch('http://127.0.0.1:18765/api/tunnel/pause', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ shareId: t.shareId || msg.transferId })
-          }).catch(() => {});
-        }
         ensureOffscreenDocument().then(() => {
           chrome.runtime.sendMessage({
             target: 'offscreen',
@@ -1292,13 +1079,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         t.status = t.direction === 'tunnel' ? 'TUNNEL_READY' : 'TRANSFERRING';
         t.updatedAt = Date.now();
         broadcastState();
-        if (t.direction === 'tunnel') {
-          fetch('http://127.0.0.1:18765/api/tunnel/resume', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ shareId: t.shareId || msg.transferId })
-          }).catch(() => {});
-        }
         ensureOffscreenDocument().then(() => {
           chrome.runtime.sendMessage({
             target: 'offscreen',
@@ -1321,13 +1101,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           publicP2PShares.delete(t.shareId);
         }
         broadcastState();
-        if (t.direction === 'tunnel' || t.shareId) {
-          fetch('http://127.0.0.1:18765/api/tunnel/cancel', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ shareId: t.shareId || msg.transferId })
-          }).catch(() => {});
-        }
         ensureOffscreenDocument().then(() => {
           chrome.runtime.sendMessage({
             target: 'offscreen',
@@ -1374,13 +1147,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const t = state.transfers[transferId];
       if (t) {
         if (t.shareId) publicP2PShares.delete(t.shareId);
-        if (t.direction === 'tunnel' || t.shareId) {
-          fetch('http://127.0.0.1:18765/api/tunnel/cancel', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ shareId: t.shareId || transferId })
-          }).catch(() => {});
-        }
         if (fileBridgeChannel) {
           fileBridgeChannel.postMessage({
             type: 'DELETE_PACK_MEMORY',

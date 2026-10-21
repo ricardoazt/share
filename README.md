@@ -1,91 +1,107 @@
-# PulseShare — Compartilhamento P2P & Túnel Cloudflare Temporário (Manifest V3)
+# PulseShare — Compartilhamento P2P Serverless & Link WebRTC (Manifest V3)
 
-Extensão Chrome para compartilhamento de arquivos com duas modalidades:
-1. **P2P Direto**: Envio direto para outro usuário na malha via `@usuario` (WebRTC DataChannel 100% serverless).
-2. **Link Público Cloudflare Tunnel (`*.trycloudflare.com`)**: Gera sob demanda um portal temporário que funciona em qualquer navegador (desktop ou mobile), sem necessidade de instalar a extensão para quem baixa.
+Extensão Chrome para compartilhamento de arquivos **100% serverless, multiplataforma (Windows, macOS, Linux e ChromeOS)**, sem necessidade de servidores intermediários, daemons locais ou binários nativos.
 
 ---
 
-## Principais Funcionalidades
+## 🚀 Como Funciona a Arquitetura 100% Serverless
 
-### 1. Extensão Chrome com Dropdown Fixo
-- A extensão funciona no modo padrão `default_popup: "popup.html"`: abre um menu suspenso diretamente abaixo do ícone na barra de ferramentas do Chrome.
-- Mantém transferências e conexões ativas em segundo plano através do service worker `background.js` e do daemon local.
+1. **Envio P2P entre Extensões (`@usuario`)**:
+   - Sinalização multi-broker MQTT segura sobre WebSockets (`wss://broker.emqx.io`, `wss://broker.hivemq.com`, `wss://test.mosquitto.org`).
+   - Conexão direta de navegador para navegador via **WebRTC DataChannel** com STUN (Google, Cloudflare) e TURN (OpenRelay).
+   - Streaming em blocos de 16KB com controle de fluxo/backpressure (`bufferedAmountLowThreshold`), garantindo estabilidade para arquivos grandes (+100MB a +1GB).
 
-### 2. Túnel Cloudflare Temporário (`trycloudflare.com`) Sob Demanda
-- Ao clicar em **"Gerar Link Público (Cloudflare Tunnel)"**, o remetente adiciona arquivos (arquivo individual ou pack de arquivos).
-- **Tempo de Expiração**: Configure 10 min, 30 min, 1h, 2h, 6h, 12h, 24h ou sem limite. O túnel fica aberto exclusivamente durante esse tempo.
-- **Senha de Proteção (Opcional)**: Defina uma senha de acesso para proteger o download.
-- **Link Real Independente**: Gera uma URL genuína do tipo `https://*.trycloudflare.com`. Quem recebe acessa direto pelo navegador, sem depender de GitHub Pages nem da extensão instalada.
-
-### 3. Autodestruição do Túnel e Portal ("Se desfaz")
-- Ao clicar em **"✕ Encerrar / Cancelar"** na extensão ou quando o **tempo de expiração** é atingido:
-  - O processo `cloudflared` é finalizado imediatamente.
-  - A porta local é fechada.
-  - Os arquivos temporários são deletados do disco.
-  - O link público `trycloudflare.com` deixa de existir imediatamente (erro 502/530 no Cloudflare).
-
-### 4. Portal do Destinatário
-- O link do túnel leva a uma página web limpa e moderna:
-  - Se houver senha: tela de bloqueio exigindo a senha definida pelo remetente.
-  - Exibe o resumo do pacote: nome do pack, quantidade de arquivos, tamanho total e cronômetro regressivo de expiração.
-  - Botão **"⬇ Baixar Todos os Arquivos (.ZIP)"**: baixa todo o pacote compactado em um único `.zip`.
-  - Lista de arquivos individuais com botão **"⬇ Baixar"** para cada arquivo, permitindo escolher baixar apenas um ou outro.
-  - Indicador de pausa em tempo real: se o remetente pausar o túnel, o portal avisa o visitante.
-
-### 5. Botões de Pausa e Cancelamento
-- Na lista de transferências da extensão:
-  - **⏸ Pausar / ▶ Retomar**: Pausa ou retoma o atendimento às requisições do túnel.
-  - **✕ Encerrar / Cancelar**: Destrói o túnel e os arquivos imediatamente.
-
-### 6. Cópia Formatada com Senha e Expiração
-- Ao gerar o link ou clicar no botão **"Copiar"**, a mensagem copiada para a área de transferência já inclui todas as informações:
-  ```text
-  📦 PulseShare — Compartilhamento de Arquivos
-  🔗 Link: https://connecting-derived-sees-admissions.trycloudflare.com
-  🔑 Senha: [senha configurada ou 'Nenhuma']
-  ⏳ Expira em: ~30 min (às 21:05)
-  📁 Arquivos (2):
-    • relatorio.pdf (2.4 MB)
-    • fotos.zip (18.1 MB)
-  ```
+2. **Link Público WebRTC P2P (GitHub Pages)**:
+   - O remetente gera um link público na extensão apontando para o portal servido no GitHub Pages:
+     `https://ricardoazt.github.io/share/#share=UUID&owner=@usuario&exp=TIMESTAMP`
+   - O destinatário abre o link no navegador (computador, celular ou tablet, qualquer sistema operacional), **sem precisar instalar a extensão**.
+   - A página web (`index.html`) se conecta diretamente à extensão do remetente via WebRTC DataChannel utilizando a malha de brokers MQTT públicos do projeto.
+   - Todo o tráfego de dados viaja diretamente ponto a ponto, criptografado de ponta a ponta.
 
 ---
 
-## Arquitetura & Componentes
+## 🗜 Opções de Compactação (.ZIP)
 
-- **`bin/cloudflared`**: Binário oficial do Cloudflare Tunnel (Quick Tunnels).
-- **`daemon.js`**: Daemon complementar local em Node.js (ouvindo em `127.0.0.1:18765`). Gerencia a execução de túneis `cloudflared`, serve o portal temporário e os arquivos com suporte a streaming, HTTP range e empacotamento ZIP sem dependências externas.
-- **`pulseshare-daemon.service`**: Unidade `systemd --user` que mantém o daemon rodando silenciosamente em segundo plano no Linux.
-- **`extension/`**: Código da extensão Chrome (Manifest V3):
-  - `manifest.json`: Configurado com `default_popup` e permissões para `127.0.0.1`.
-  - `popup.html` & `popup.js`: Interface fixa com modal de expiração/senha, gerenciador de transferências e botões de controle.
-  - `background.js`: Service worker que sincroniza túneis e transferências P2P.
+Tanto o remetente quanto o destinatário têm total controle sobre as opções de compactação client-side (via biblioteca pura JavaScript `fflate` de ultra-alta velocidade):
+
+- **Ao Enviar na Extensão**:
+  - O remetente pode optar por compactar todos os arquivos selecionados em um único arquivo `.ZIP` antes de gerar o link ou enviar.
+  - Seleção de nível de compressão:
+    - **Nível 0**: Store (sem compressão - ultrarrápido).
+    - **Nível 1**: Rápida.
+    - **Nível 6**: Padrão equilibrado (Recomendado).
+    - **Nível 9**: Máxima compressão.
+  - Nome personalizado para o arquivo `.zip`.
+
+- **Ao Baixar no Portal Público (`index.html`)**:
+  - O destinatário pode escolher baixar arquivos individualmente com um clique no botão **⬇ Baixar**.
+  - Ou baixar todos os arquivos empacotados em um arquivo `.ZIP` no botão **⬇ Baixar Todos (.ZIP)**.
+  - O destinatário pode selecionar o nível de compressão desejado e o nome do arquivo compactado diretamente na página web.
 
 ---
 
-## Como Usar
+## 🛠 Instalação da Extensão no Google Chrome
 
-### 1. Iniciar ou Verificar o Daemon
-O daemon já está configurado via `systemd --user`:
-```bash
-systemctl --user status pulseshare-daemon.service
-```
-Se precisar reiniciar manualmente:
-```bash
-systemctl --user restart pulseshare-daemon.service
-```
+Compatível com **Windows, macOS, Linux e ChromeOS**:
 
-### 2. Carregar a Extensão no Chrome
-1. Abra `chrome://extensions/` no Google Chrome.
-2. Ative o **Modo do desenvolvedor** no canto superior direito.
-3. Clique em **Carregar sem compactação** (*Load unpacked*) e aponte para a pasta `extension/`.
-4. Fixe a extensão na barra de ferramentas.
+1. Clone ou baixe este repositório:
+   ```bash
+   git clone https://github.com/ricardoazt/share.git
+   ```
+2. Abra o Google Chrome e acesse:
+   `chrome://extensions/`
+3. Ative o interruptor **"Modo do desenvolvedor"** no canto superior direito.
+4. Clique em **"Carregar sem compactação"** (*Load unpacked*).
+5. Selecione a subpasta `extension/` deste repositório.
+6. Fixe o ícone do **PulseShare** na barra de ferramentas do Chrome.
 
-### 3. Enviar Arquivos
-1. Clique no ícone da extensão (abre o menu suspenso abaixo do ícone).
-2. Clique no botão laranja: **"Gerar Link Público (Cloudflare Tunnel)"**.
-3. Selecione os arquivos desejados.
-4. Defina o **tempo de expiração** (ex: 30 minutos) e opcionalmente uma **senha**.
-5. Clique em **"Confirmar & Gerar Link"**.
-6. O link `*.trycloudflare.com` é gerado em poucos segundos e a mensagem formatada é automaticamente copiada para a sua área de transferência!
+---
+
+## 🌐 Configuração do GitHub Pages no Repositório
+
+O portal de download do destinatário (`index.html`) é servido diretamente pelo GitHub Pages do repositório `ricardoazt/share`:
+
+1. No repositório no GitHub, acesse **Settings** > **Pages**.
+2. Em **Build and deployment**:
+   - **Source**: selecione **GitHub Actions** (o workflow automático `.github/workflows/deploy-pages.yml` já está configurado no projeto para atualizar o site a cada `git push`).
+   - Ou alternativamente selecione **Deploy from a branch**: branch `main` e pasta `/ (root)`.
+3. A URL pública padrão do portal é:
+   `https://ricardoazt.github.io/share/`
+4. Na extensão, você também pode personalizar essa URL a qualquer momento no menu de configurações (ícone de engrenagem).
+
+---
+
+## 📋 Como Gerar um Link Público
+
+1. Clique no ícone do **PulseShare** no navegador.
+2. Clique no botão laranja **"Gerar Link Público (GitHub Pages WebRTC)"**.
+3. Selecione arquivos pelo botão **"+ Arquivos"**, pastas inteiras por **"+ Pasta"** ou simplesmente arraste e solte arquivos e diretórios na área indicada.
+4. Opcionalmente ative a **Compactação do Pack em .ZIP** e defina o nível de compressão.
+5. Defina o **tempo de expiração** (ex: 30 minutos) e opcionalmente uma **senha de proteção**.
+6. Clique em **"Confirmar & Gerar Link"**.
+7. A extensão gera o link e copia automaticamente a mensagem formatada para a sua área de transferência:
+   ```text
+   📦 PulseShare — Compartilhamento de Arquivos P2P
+   🔗 Link: https://ricardoazt.github.io/share/#share=ps-xxxx&owner=@usuario&exp=1792550000000
+   🔑 Senha: [senha configurada ou 'Nenhuma']
+   ⏳ Expira em: ~30 min (às 21:05)
+   📁 Arquivos (2):
+     • relatorio.pdf (2.4 MB)
+     • planilha.xlsx (1.1 MB)
+
+   ⚡ Baixe direto pelo navegador (WebRTC P2P), sem servidor e sem instalar nada!
+   ```
+8. Envie para qualquer pessoa. Ela poderá baixar os arquivos individualmente ou todos juntos em um arquivo `.ZIP` direto pelo navegador!
+
+---
+
+## 🔍 Gerenciador de Transferências & Visualização Expandida
+
+- O gerenciador de transferências na extensão preenche toda a altura inferior da janela com rolagem suave para acompanhar múltiplas transferências ativas e histórico.
+- **Botão de Expandir Janela** (ícone ao lado da engrenagem): abre o gerenciador em uma aba completa do navegador com visão ampla em tela cheia para monitorar grandes volumes de arquivos.
+- Controles em tempo real nos cards de transferência:
+  - **Copiar Mensagem**: copia o resumo formatado com link, arquivos e senha.
+  - **Copiar Link**: copia apenas o link direto.
+  - **Abrir no Navegador (↗)**: abre o portal web diretamente no seu próprio navegador para pré-visualização.
+  - **Pausar / Retomar**: congela ou retoma o envio do arquivo via canal de dados WebRTC.
+  - **Encerrar / Cancelar (✕)**: fecha as conexões, cancela os downloads ativos e descarta os arquivos do cache.

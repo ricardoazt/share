@@ -1,24 +1,45 @@
 /**
- * PulseShare P2P - Frontend Controller (popup.js)
- * Tudo 100% P2P Sem Servidor:
- * - Diretório P2P sincronizado de @usuarios (Gossip)
- * - Envio/Recebimento P2P direto
- * - Geração de Link Público P2P Serverless (via Cloudflare WebRTC STUN stun.cloudflare.com:3478)
- * - Configurações na engrenagem (chave de abertura automática ao receber)
+ * PulseShare P2P - Popup Interface & Client Logic (popup.js)
+ *
+ * 100% Serverless, Multiplataforma (Windows, macOS, Linux, ChromeOS)
+ * - Eliminação total de daemons locais e binários nativos.
+ * - Suporte nativo a seleção de arquivos (<input type="file">), pastas (<input webkitdirectory>)
+ *   e Drag & Drop direto.
+ * - Armazenamento de arquivos no IndexedDB e offscreen document para persistência.
+ * - Compactação em .ZIP via fflate em JavaScript puro.
+ * - Integração direta com Portal Público WebRTC (GitHub Pages).
  */
 
+const DEFAULT_PORTAL_URL = 'https://ricardoazt.github.io/share/';
 const DB_NAME = 'PulseShareDB';
 const DB_VERSION = 1;
 const FILE_STORE = 'staged_files';
-const ONLINE_TTL_MS = 45000;
 
 const fileBridgeChannel =
   typeof BroadcastChannel !== 'undefined'
     ? new BroadcastChannel('pulseshare_file_bridge')
     : null;
 
+let dbInstance = null;
+
 function openDatabase() {
+  if (dbInstance) {
+    try {
+      dbInstance.transaction(FILE_STORE, 'readonly');
+      return Promise.resolve(dbInstance);
+    } catch {
+      dbInstance = null;
+    }
+  }
   return new Promise((resolve, reject) => {
+    let resolved = false;
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        reject(new Error('IndexedDB open timeout'));
+      }
+    }, 3000);
+
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
@@ -26,294 +47,115 @@ function openDatabase() {
         db.createObjectStore(FILE_STORE);
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function stageFileInIDB(transferId, file) {
-  const db = await openDatabase();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(FILE_STORE, 'readwrite');
-    tx.objectStore(FILE_STORE).put(file, transferId);
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(tx.error);
-    };
-  });
-}
-
-/**
- * Passa a referência nativa do File diretamente para o Offscreen Document via
- * BroadcastChannel (Zero-Copy em < 1ms, suportando vídeos de 110MB, 500MB ou múltiplos GBs
- * sem travar o IndexedDB).
- */
-async function stageFileZeroCopy(transferId, file) {
-  await new Promise((resolve) => {
-    chrome.runtime.sendMessage({ action: 'ENSURE_OFFSCREEN' }, () => resolve());
-  });
-
-  if (fileBridgeChannel) {
-    const acked = await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        fileBridgeChannel.removeEventListener('message', onMsg);
-        resolve(false);
-      }, 600);
-
-      function onMsg(e) {
-        if (e.data && e.data.type === 'STAGE_FILE_ACK' && e.data.transferId === transferId) {
-          clearTimeout(timer);
-          fileBridgeChannel.removeEventListener('message', onMsg);
-          resolve(true);
-        }
+    request.onsuccess = () => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        dbInstance = request.result;
+        dbInstance.onversionchange = () => {
+          try { dbInstance.close(); } catch {}
+          dbInstance = null;
+        };
+        resolve(dbInstance);
       }
+    };
+    request.onerror = () => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        reject(request.error);
+      }
+    };
+    request.onblocked = () => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        reject(new Error('IndexedDB blocked'));
+      }
+    };
+  });
+}
 
-      fileBridgeChannel.addEventListener('message', onMsg);
+async function saveStagedFile(fileKey, fileBlob) {
+  if (!fileBlob) return;
+  if (fileBridgeChannel) {
+    try {
       fileBridgeChannel.postMessage({
         type: 'STAGE_FILE_MEMORY',
-        transferId,
-        file
+        transferId: fileKey,
+        file: fileBlob
       });
-    });
-
-    if (acked) return;
+    } catch (e) {
+      console.warn('fileBridgeChannel postMessage warning:', e);
+    }
   }
+  try {
+    const db = await openDatabase();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(FILE_STORE, 'readwrite');
+      tx.objectStore(FILE_STORE).put(fileBlob, fileKey);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
+    });
+  } catch (err) {
+    console.warn('Erro ao salvar no IndexedDB:', err);
+  }
+}
 
-  // Fallback para IndexedDB caso BroadcastChannel não esteja disponível
-  await stageFileInIDB(transferId, file);
+async function deleteStagedFile(fileKey) {
+  if (fileBridgeChannel) {
+    try {
+      fileBridgeChannel.postMessage({
+        type: 'DELETE_FILE_MEMORY',
+        transferId: fileKey
+      });
+    } catch {}
+  }
+  try {
+    const db = await openDatabase();
+    await new Promise((resolve) => {
+      const tx = db.transaction(FILE_STORE, 'readwrite');
+      tx.objectStore(FILE_STORE).delete(fileKey);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    });
+  } catch {}
+}
+
+async function getStagedFile(fileKey) {
+  try {
+    const db = await openDatabase();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(FILE_STORE, 'readonly');
+      const req = tx.objectStore(FILE_STORE).get(fileKey);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
 }
 
 function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), 4);
+  return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
 }
 
 function formatSpeed(bytesPerSec) {
-  if (!bytesPerSec || bytesPerSec <= 0) return '';
+  if (!bytesPerSec || bytesPerSec <= 0) return '0 B/s';
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
 function normalizeTag(raw) {
-  if (!raw) return '';
-  const cleaned = raw.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
-  return cleaned ? `@${cleaned}` : '';
+  let tag = (raw || '').trim().toLowerCase();
+  if (!tag) return '';
+  if (!tag.startsWith('@')) tag = `@${tag}`;
+  return tag.replace(/[^a-z0-9_@]/g, '');
 }
-
-/**
- * Gera um mini-portal HTML autocontido que qualquer pessoa (mesmo sem a extensão,
- * no celular ou em outro PC em outra rede) pode abrir no navegador para baixar o arquivo
- * 100% P2P via Cloudflare WebRTC STUN + TURN Relay direto da sua extensão!
- */
-function buildStandaloneP2PHtmlPortal(t) {
-  const safeTitle = (t.fileName || 'arquivo').replace(/[<>"']/g, '');
-  return `<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>Baixar ${safeTitle} — Túnel P2P Cloudflare WebRTC</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system,sans-serif}
-body{background:#020617;color:#f8fafc;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-.card{width:100%;max-width:400px;background:#0f172a;border:1px solid #1e293b;border-radius:20px;padding:24px;box-shadow:0 20px 40px rgba(0,0,0,.5)}
-.badge{display:inline-block;background:rgba(249,115,22,.15);color:#fb923c;border:1px solid rgba(249,115,22,.3);font-size:11px;font-weight:700;padding:4px 10px;border-radius:999px;margin-bottom:14px}
-h1{font-size:16px;word-break:break-all;margin-bottom:6px;color:#f1f5f9}
-.meta{font-size:12px;color:#94a3b8;margin-bottom:18px;font-family:monospace}
-.bar-wrap{width:100%;height:10px;background:#1e293b;border-radius:999px;overflow:hidden;margin:8px 0}
-.bar{height:100%;width:0%;background:linear-gradient(90deg,#f97316,#fbbf24);transition:width .15s}
-.row{display:flex;justify-content:space-between;font-size:12px;color:#cbd5e1;font-family:monospace}
-.btn{width:100%;margin-top:16px;padding:12px;border:none;border-radius:12px;background:linear-gradient(135deg,#f97316,#d97706);color:#fff;font-weight:700;font-size:14px;cursor:pointer}
-</style>
-</head>
-<body>
-<div class="card">
-  <span class="badge">☁️ Túnel P2P Direto (Cloudflare WebRTC)</span>
-  <h1>${safeTitle}</h1>
-  <p class="meta">Remetente: ${t.ownerTag || ''} • ${formatBytes(t.fileSize)}</p>
-  <div class="row"><span id="st">Conectando P2P...</span><strong id="pct">0%</strong></div>
-  <div class="bar-wrap"><div class="bar" id="bar"></div></div>
-  <div class="row"><span id="by">0 B</span><span id="sp">0 B/s</span></div>
-  <button class="btn" id="btn">⬇ Baixar Arquivo Direto (P2P)</button>
-</div>
-<script>
-const BROKERS=['wss://broker.emqx.io:8084/mqtt','wss://broker.hivemq.com:8884/mqtt','wss://test.mosquitto.org:8081/mqtt'];
-const TOPIC='pulseshare/v2/p2p_mesh_global';
-const SHARE_ID=${JSON.stringify(t.shareId)};
-const OWNER=${JSON.stringify(t.ownerTag)};
-const FILE_NAME=${JSON.stringify(t.fileName)};
-const FILE_SIZE=${Number(t.fileSize || 0)};
-const FILE_TYPE=${JSON.stringify(t.fileType || 'application/octet-stream')};
-const RTC_CFG={iceServers:[
-  {urls:['stun:stun.cloudflare.com:3478','stun:stun.l.google.com:19302']},
-  {urls:'turn:openrelay.metered.ca:80',username:'openrelayproject',credential:'openrelayproject'},
-  {urls:'turn:openrelay.metered.ca:443',username:'openrelayproject',credential:'openrelayproject'},
-  {urls:'turn:openrelay.metered.ca:443?transport=tcp',username:'openrelayproject',credential:'openrelayproject'}
-]};
-const myId=crypto.randomUUID();
-const myTag='@link_'+myId.slice(0,6);
-let tid=SHARE_ID+'_'+myId.slice(0,6),sockets=[],pc=null,pendingCands=[],seen=new Set();
-function fmt(b){if(!b||b<=0)return'0 B';const u=['B','KB','MB','GB'],i=Math.min(Math.floor(Math.log(b)/Math.log(1024)),3);return(b/Math.pow(1024,i)).toFixed(i?1:0)+' '+u[i];}
-function encLen(l){const b=[];do{let e=l%128;l=Math.floor(l/128);if(l>0)e|=128;b.push(e);}while(l>0);return b;}
-function encStr(s){const u=new TextEncoder().encode(s);return[(u.length>>8)&255,u.length&255,...u];}
-function pub(obj){const pkt={...obj,packetId:crypto.randomUUID(),senderNodeId:myId,senderTag:myTag};const tb=encStr(TOPIC),pb=new TextEncoder().encode(JSON.stringify(pkt));const h=[0x30,...encLen(tb.length+pb.length),...tb];const p=new Uint8Array(h.length+pb.length);p.set(h,0);p.set(pb,h.length);sockets.forEach(s=>{if(s.readyState===1)try{s.send(p);}catch{}});}
-function sig(signalType,payload){pub({meshType:'DIRECT_SIGNAL',to:OWNER,transferId:tid,signalType,payload});}
-async function onOffer(sdp){
-  document.getElementById('st').textContent='Recebendo via WebRTC P2P...';
-  if(pc)try{pc.close();}catch{}
-  pc=new RTCPeerConnection(RTC_CFG);
-  const chunks=[];let rec=0,t0=Date.now(),lr=t0;
-  pc.onicecandidate=e=>{if(e.candidate)sig('ICE_CANDIDATE',{candidate:e.candidate.toJSON?e.candidate.toJSON():e.candidate});};
-  pc.ondatachannel=ev=>{
-    ev.channel.binaryType='arraybuffer';
-    ev.channel.onmessage=e=>{
-      if(typeof e.data==='string'){const c=JSON.parse(e.data);if(c.type==='EOF'){try{ev.channel.send(JSON.stringify({type:'RECEIVER_ACK_DONE'}));}catch{}const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(chunks,{type:FILE_TYPE}));a.download=FILE_NAME;a.click();document.getElementById('st').textContent='Concluído ✓';document.getElementById('pct').textContent='100%';document.getElementById('bar').style.width='100%';setTimeout(()=>{try{pc.close();}catch{}},500);}return;}
-      chunks.push(new Uint8Array(e.data));rec+=e.data.byteLength;const n=Date.now();
-      if(n-lr>100||rec>=FILE_SIZE){const p=FILE_SIZE?Math.min(99,Math.round(rec/FILE_SIZE*100)):99;document.getElementById('pct').textContent=p+'%';document.getElementById('bar').style.width=p+'%';document.getElementById('by').textContent=fmt(rec)+' / '+fmt(FILE_SIZE);document.getElementById('sp').textContent=fmt(Math.round(rec/Math.max(.1,(n-t0)/1000)))+'/s';lr=n;}
-    };
-  };
-  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-  while(pendingCands.length){const c=pendingCands.shift();try{await pc.addIceCandidate(new RTCIceCandidate(c));}catch{}}
-  const ans=await pc.createAnswer();await pc.setLocalDescription(ans);
-  sig('WEBRTC_ANSWER',{sdp:{type:pc.localDescription.type,sdp:pc.localDescription.sdp}});
-}
-function pull(){tid=SHARE_ID+'_'+Math.floor(1000+Math.random()*9000);pendingCands=[];document.getElementById('st').textContent='Solicitando túnel P2P a '+OWNER+'...';sig('PUBLIC_LINK_PULL',{shareId:SHARE_ID});}
-document.getElementById('btn').onclick=pull;
-let pulled=false;
-BROKERS.forEach((url,i)=>{
-  const ws=new WebSocket(url,'mqtt');ws.binaryType='arraybuffer';sockets.push(ws);
-  ws.onopen=()=>{const b=[...encStr('MQTT'),4,2,0,60,...encStr('ps_'+myId.slice(0,8)+'_'+i)];ws.send(new Uint8Array([0x10,...encLen(b.length),...b]));};
-  ws.onmessage=ev=>{
-    const u=new Uint8Array(ev.data);let p=0;
-    while(p<u.length){const fb=u[p++],pt=fb&240;let m=1,rl=0,eb;do{eb=u[p++];rl+=(eb&127)*m;m*=128;}while(eb&128);const pe=p+rl;
-      if(pt===0x20){const sb=[0,1,...encStr(TOPIC),0];ws.send(new Uint8Array([0x82,...encLen(sb.length),...sb]));if(!pulled){pulled=true;pull();}}
-      else if(pt===0x30){let c=p;const tl=(u[c]<<8)|u[c+1];c+=2+tl;if(((fb>>1)&3)>0)c+=2;try{const d=JSON.parse(new TextDecoder().decode(u.subarray(c,pe)));if(d.packetId){if(seen.has(d.packetId)){p=pe;continue;}seen.add(d.packetId);}if(d.meshType==='DIRECT_SIGNAL'&&d.to===myTag){if(d.signalType==='WEBRTC_OFFER')onOffer(d.payload.sdp);else if(d.signalType==='ICE_CANDIDATE'&&d.payload?.candidate){if(pc&&pc.remoteDescription&&pc.remoteDescription.type)pc.addIceCandidate(new RTCIceCandidate(d.payload.candidate)).catch(()=>{});else pendingCands.push(d.payload.candidate);}}}catch{}}
-      p=pe;
-    }
-  };
-});
-</script>
-</body>
-</html>`;
-}
-
-// ============================================================================
-// Elementos DOM e Estado da UI
-// ============================================================================
-const statusDot = document.getElementById('status-dot');
-const connectionBadge = document.getElementById('connection-badge');
-const btnSettings = document.getElementById('btn-settings');
-const settingsPanel = document.getElementById('settings-panel');
-const btnCloseSettings = document.getElementById('btn-close-settings');
-const toggleAutoOpen = document.getElementById('toggle-auto-open');
-const toggleAutoAccept = document.getElementById('toggle-auto-accept');
-const footerAutoOpen = document.getElementById('footer-auto-open');
-
-
-
-const myTagInput = document.getElementById('my-tag-input');
-const btnSaveTag = document.getElementById('btn-save-tag');
-const targetContainer = document.getElementById('target-container');
-const targetTagInput = document.getElementById('target-tag-input');
-const peersList = document.getElementById('peers-list');
-const rosterCount = document.getElementById('roster-count');
-const fileInput = document.getElementById('file-input');
-const tunnelFileInput = document.getElementById('tunnel-file-input');
-const btnSend = document.getElementById('btn-send');
-const btnReceive = document.getElementById('btn-receive');
-const btnCloudflareTunnel = document.getElementById('btn-cloudflare-tunnel');
-const tunnelStatusSub = document.getElementById('tunnel-status-sub');
-const tunnelBadge = document.getElementById('tunnel-badge');
-const receiveBadge = document.getElementById('receive-badge');
-const receiveTitle = document.getElementById('receive-title');
-const receiveSubtitle = document.getElementById('receive-subtitle');
-const transfersList = document.getElementById('transfers-list');
-const emptyState = document.getElementById('empty-state');
-const tabActiveTransfers = document.getElementById('tab-active-transfers');
-const tabHistoryTransfers = document.getElementById('tab-history-transfers');
-const countActive = document.getElementById('count-active');
-const countHistory = document.getElementById('count-history');
-const btnClearCompleted = document.getElementById('btn-clear-completed');
-const toastAlert = document.getElementById('toast-alert');
-const toastMessage = document.getElementById('toast-message');
-const toastClose = document.getElementById('toast-close');
-const onlineCounter = document.getElementById('online-counter');
-
-// Elementos do Modal de Configuração do Túnel e Pack
-const tunnelConfigModal = document.getElementById('tunnel-config-modal');
-const modalHeaderTitle = document.getElementById('modal-header-title');
-const modalIndicatorDot = document.getElementById('modal-indicator-dot');
-const modalViewPack = document.getElementById('modal-view-pack');
-const btnModalClose = document.getElementById('btn-modal-close');
-const btnModalCancel = document.getElementById('btn-modal-cancel');
-const btnModalConfirm = document.getElementById('btn-modal-confirm');
-const btnModalAddMore = document.getElementById('btn-modal-add-more');
-const btnModalAddFolder = document.getElementById('btn-modal-add-folder');
-const btnModalQuickBrowser = document.getElementById('btn-modal-quick-browser');
-const modalQuickBrowserPanel = document.getElementById('modal-quick-browser-panel');
-const btnQuickBrowserClose = document.getElementById('btn-quick-browser-close');
-const btnQuickBrowserUp = document.getElementById('btn-quick-browser-up');
-const btnQuickBrowserAddCurrent = document.getElementById('btn-quick-browser-add-current');
-const quickBrowserShortcuts = document.getElementById('quick-browser-shortcuts');
-const quickBrowserPath = document.getElementById('quick-browser-path');
-const quickBrowserEntries = document.getElementById('quick-browser-entries');
-const quickBrowserCount = document.getElementById('quick-browser-count');
-const modalFilesList = document.getElementById('modal-files-list');
-const modalFilesSummary = document.getElementById('modal-files-summary');
-const modalCompressToggle = document.getElementById('modal-compress-toggle');
-const modalCompressOptions = document.getElementById('modal-compress-options');
-const modalCompressFormat = document.getElementById('modal-compress-format');
-const modalCompressLevel = document.getElementById('modal-compress-level');
-const modalCompressName = document.getElementById('modal-compress-name');
-const modalCompressExtBadge = document.getElementById('modal-compress-ext-badge');
-const modalTunnelOptions = document.getElementById('modal-tunnel-options');
-const modalExpirationSelect = document.getElementById('modal-expiration-select');
-const modalDownloadLimitSelect = document.getElementById('modal-download-limit-select');
-const modalPasswordInput = document.getElementById('modal-password-input');
-const btnModalGenPassword = document.getElementById('btn-modal-gen-password');
-const btnModalClearPassword = document.getElementById('btn-modal-clear-password');
-
-let currentTransfersTab = 'active'; // 'active' | 'history'
-const expandedTransferIds = new Set();
-let stagedTunnelFiles = [];
-let currentModalMode = 'tunnel'; // 'tunnel' | 'p2p'
-
-async function checkDaemonStatus() {
-  const badge = document.getElementById('daemon-status-badge');
-  try {
-    const res = await fetch('http://127.0.0.1:18765/api/status');
-    if (res.ok) {
-      const data = await res.json();
-      if (badge) {
-        const count = Array.isArray(data.activeTunnels) ? data.activeTunnels.length : 0;
-        badge.textContent = `● Ativo (${count} ativo${count === 1 ? '' : 's'})`;
-        badge.className = 'text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
-      }
-      return;
-    }
-  } catch {}
-  if (badge) {
-    badge.textContent = '○ Offline (127.0.0.1:18765)';
-    badge.className = 'text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30';
-  }
-}
-
-let currentState = {
-  connected: false,
-  myTag: '',
-  nodeId: '',
-  autoAccept: true,
-  autoOpenOnReceive: true,
-  peerRegistry: {},
-  transfers: {}
-};
-
-let awaitingFilePicker = false;
 
 async function computeSha256(str) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
@@ -323,14 +165,9 @@ async function computeSha256(str) {
 }
 
 function formatShareMessage({ shareUrl, password, expiresAt, maxDownloads, files }) {
-  let msg = `📦 PulseShare — Compartilhamento de Arquivos\n`;
+  let msg = `📦 PulseShare — Compartilhamento de Arquivos P2P\n`;
   msg += `🔗 Link: ${shareUrl}\n`;
-  if (password) {
-    msg += `🔑 Senha: ${password}\n`;
-  }
-  if (maxDownloads && Number(maxDownloads) > 0) {
-    msg += `🎯 Limite de downloads: ${maxDownloads} download${Number(maxDownloads) === 1 ? ' completo (expira ao concluir)' : 's completos'}\n`;
-  }
+  msg += `🔑 Senha: ${password || 'Nenhuma'}\n`;
   if (expiresAt) {
     const remainingMs = expiresAt - Date.now();
     if (remainingMs > 0) {
@@ -349,211 +186,237 @@ function formatShareMessage({ shareUrl, password, expiresAt, maxDownloads, files
       msg += `  • ${f.name} (${formatBytes(f.size)})\n`;
     }
   }
-  msg += `\n⚡ Baixe direto pelo navegador, sem precisar instalar nada!`;
+  msg += `\n⚡ Baixe direto pelo navegador (WebRTC P2P), sem servidor e sem instalar nada!`;
   return msg;
 }
 
+// ============================================================================
+// Referências de Elementos do DOM
+// ============================================================================
+const statusDot = document.getElementById('status-dot');
+const connectionBadge = document.getElementById('connection-badge');
+const btnExpandWindow = document.getElementById('btn-expand-window');
+const btnSettings = document.getElementById('btn-settings');
+const settingsPanel = document.getElementById('settings-panel');
+const btnCloseSettings = document.getElementById('btn-close-settings');
+const toggleAutoOpen = document.getElementById('toggle-auto-open');
+const toggleAutoAccept = document.getElementById('toggle-auto-accept');
+const settingPortalUrl = document.getElementById('setting-portal-url');
+const btnResetPortalUrl = document.getElementById('btn-reset-portal-url');
+const daemonStatusBadge = document.getElementById('daemon-status-badge');
+
+const myTagInput = document.getElementById('my-tag-input');
+const btnSaveTag = document.getElementById('btn-save-tag');
+const targetContainer = document.getElementById('target-container');
+const targetTagInput = document.getElementById('target-tag-input');
+const rosterCount = document.getElementById('roster-count');
+const peersList = document.getElementById('peers-list');
+
+const fileInput = document.getElementById('file-input');
+const tunnelFileInput = document.getElementById('tunnel-file-input');
+const btnSend = document.getElementById('btn-send');
+const btnReceive = document.getElementById('btn-receive');
+const receiveBadge = document.getElementById('receive-badge');
+const receiveTitle = document.getElementById('receive-title');
+const receiveSubtitle = document.getElementById('receive-subtitle');
+
+const btnCloudflareTunnel = document.getElementById('btn-cloudflare-tunnel');
+const tunnelStatusSub = document.getElementById('tunnel-status-sub');
+const tunnelBadge = document.getElementById('tunnel-badge');
+
+const tabActiveTransfers = document.getElementById('tab-active-transfers');
+const tabHistoryTransfers = document.getElementById('tab-history-transfers');
+const countActive = document.getElementById('count-active');
+const countHistory = document.getElementById('count-history');
+const btnClearCompleted = document.getElementById('btn-clear-completed');
+
+const toastAlert = document.getElementById('toast-alert');
+const toastMessage = document.getElementById('toast-message');
+const toastClose = document.getElementById('toast-close');
+
+const transfersList = document.getElementById('transfers-list');
+const emptyState = document.getElementById('empty-state');
+
+const footerAutoOpen = document.getElementById('footer-auto-open');
+const onlineCounter = document.getElementById('online-counter');
+
+// Modal Elements
+const tunnelConfigModal = document.getElementById('tunnel-config-modal');
+const modalIndicatorDot = document.getElementById('modal-indicator-dot');
+const modalHeaderTitle = document.getElementById('modal-header-title');
+const btnModalClose = document.getElementById('btn-modal-close');
+const modalFileInput = document.getElementById('modal-file-input');
+const modalFolderInput = document.getElementById('modal-folder-input');
+const modalViewPack = document.getElementById('modal-view-pack');
+const modalFilesSummary = document.getElementById('modal-files-summary');
+const btnModalAddMore = document.getElementById('btn-modal-add-more');
+const btnModalAddFolder = document.getElementById('btn-modal-add-folder');
+const modalDropZone = document.getElementById('modal-drop-zone');
+const modalFilesList = document.getElementById('modal-files-list');
+
+const modalCompressToggle = document.getElementById('modal-compress-toggle');
+const modalCompressOptions = document.getElementById('modal-compress-options');
+const modalCompressFormat = document.getElementById('modal-compress-format');
+const modalCompressLevel = document.getElementById('modal-compress-level');
+const modalCompressName = document.getElementById('modal-compress-name');
+const modalCompressExtBadge = document.getElementById('modal-compress-ext-badge');
+
+const modalTunnelOptions = document.getElementById('modal-tunnel-options');
+const modalExpirationSelect = document.getElementById('modal-expiration-select');
+const modalDownloadLimitSelect = document.getElementById('modal-download-limit-select');
+const modalPasswordInput = document.getElementById('modal-password-input');
+const btnModalGenPassword = document.getElementById('btn-modal-gen-password');
+const btnModalClearPassword = document.getElementById('btn-modal-clear-password');
+
+const btnModalCancel = document.getElementById('btn-modal-cancel');
+const btnModalConfirm = document.getElementById('btn-modal-confirm');
+
+let currentState = {
+  connected: false,
+  nodeId: '',
+  myTag: '',
+  autoAccept: true,
+  autoOpenOnReceive: true,
+  peerRegistry: {},
+  transfers: {},
+  stagedTunnelFiles: [],
+  tunnelModalOpen: false
+};
+
+let stagedTunnelFiles = []; // Array de { fileId, name, size, type, fileObj }
+let currentModalMode = 'tunnel'; // 'tunnel' | 'p2p'
+let currentTransfersTab = 'active'; // 'active' | 'history'
+const expandedTransferIds = new Set();
+
 function showToast(msg) {
+  if (!toastAlert || !toastMessage) return;
   toastMessage.textContent = msg;
   toastAlert.classList.remove('hidden');
-  clearTimeout(showToast._timer);
-  showToast._timer = setTimeout(() => {
+  setTimeout(() => {
     toastAlert.classList.add('hidden');
-  }, 5000);
+  }, 4000);
 }
 
-toastClose.addEventListener('click', () => {
-  toastAlert.classList.add('hidden');
-});
+if (toastClose) {
+  toastClose.addEventListener('click', () => {
+    toastAlert.classList.add('hidden');
+  });
+}
 
 function renderConnectionStatus() {
   if (currentState.connected) {
-    statusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-sm';
-    connectionBadge.textContent = `Online (${currentState.myTag})`;
+    statusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+    statusDot.title = 'Conectado à Malha P2P (3 brokers)';
+    connectionBadge.textContent = 'Malha P2P (3 brokers)';
     connectionBadge.className =
-      'text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-950/90 text-emerald-300 border border-emerald-500/30';
+      'text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
   } else {
     statusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse';
-    connectionBadge.textContent = 'Malha Local';
+    statusDot.title = 'Conectando aos brokers MQTT públicos...';
+    connectionBadge.textContent = 'Sincronizando...';
     connectionBadge.className =
-      'text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-950/90 text-amber-300 border border-amber-500/30';
+      'text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700';
   }
 
-  if (document.activeElement !== myTagInput && currentState.myTag) {
-    myTagInput.value = currentState.myTag;
+  if (daemonStatusBadge) {
+    daemonStatusBadge.textContent = currentState.connected ? '● 3 Brokers WSS' : '○ Conectando...';
+    daemonStatusBadge.className = currentState.connected
+      ? 'text-[9px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+      : 'text-[9px] font-mono px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30';
   }
-
-  tunnelStatusSub.textContent = 'Túnel direto via Cloudflare WebRTC STUN (100% P2P Sem Servidor)';
-  tunnelBadge.textContent = 'P2P LINK';
-  tunnelBadge.className =
-    'text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-slate-950/40 text-white shrink-0';
 }
 
 function renderSettingsSwitches() {
-  const autoOpen = currentState.autoOpenOnReceive !== false;
-  toggleAutoOpen.setAttribute('aria-checked', String(autoOpen));
-  if (autoOpen) {
-    toggleAutoOpen.className =
-      'w-10 h-5 rounded-full bg-emerald-500 p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer justify-end';
-    footerAutoOpen.textContent = 'ON';
-    footerAutoOpen.className = 'text-emerald-400';
-  } else {
-    toggleAutoOpen.className =
-      'w-10 h-5 rounded-full bg-slate-700 p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer justify-start';
-    footerAutoOpen.textContent = 'OFF';
-    footerAutoOpen.className = 'text-slate-500';
+  if (toggleAutoOpen) {
+    const isAutoOpen = Boolean(currentState.autoOpenOnReceive);
+    toggleAutoOpen.setAttribute('aria-checked', String(isAutoOpen));
+    toggleAutoOpen.className = `w-10 h-5 rounded-full p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer ${
+      isAutoOpen ? 'bg-emerald-500 justify-end' : 'bg-slate-700 justify-start'
+    }`;
   }
 
-  const autoAccept = currentState.autoAccept !== false;
-  toggleAutoAccept.setAttribute('aria-checked', String(autoAccept));
-  if (autoAccept) {
-    toggleAutoAccept.className =
-      'w-10 h-5 rounded-full bg-sky-500 p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer justify-end';
-  } else {
-    toggleAutoAccept.className =
-      'w-10 h-5 rounded-full bg-slate-700 p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer justify-start';
+  if (toggleAutoAccept) {
+    const isAutoAccept = Boolean(currentState.autoAccept);
+    toggleAutoAccept.setAttribute('aria-checked', String(isAutoAccept));
+    toggleAutoAccept.className = `w-10 h-5 rounded-full p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer ${
+      isAutoAccept ? 'bg-sky-500 justify-end' : 'bg-slate-700 justify-start'
+    }`;
+  }
+
+  if (footerAutoOpen) {
+    footerAutoOpen.textContent = currentState.autoOpenOnReceive ? 'ON' : 'OFF';
+    footerAutoOpen.className = currentState.autoOpenOnReceive ? 'text-emerald-400' : 'text-slate-500';
   }
 }
 
 function renderPeerDirectory() {
+  const peers = Object.values(currentState.peerRegistry || {});
   const now = Date.now();
-  const allPeers = Object.values(currentState.peerRegistry || {})
-    .filter((p) => p && p.tag)
-    .sort((a, b) => {
-      if (a.tag === currentState.myTag) return 1;
-      if (b.tag === currentState.myTag) return -1;
-      const aOnline = now - (a.lastSeen || 0) < ONLINE_TTL_MS && a.status !== 'offline';
-      const bOnline = now - (b.lastSeen || 0) < ONLINE_TTL_MS && b.status !== 'offline';
-      if (aOnline !== bOnline) return aOnline ? -1 : 1;
-      return (b.lastSeen || 0) - (a.lastSeen || 0);
-    });
+  const onlinePeers = peers.filter(
+    (p) => p.tag && p.tag !== currentState.myTag && now - (p.lastSeen || 0) < 60000
+  );
 
-  const remotePeers = allPeers.filter((p) => p.tag !== currentState.myTag);
-  const onlinePeersCount = allPeers.filter(
-    (p) => now - (p.lastSeen || 0) < ONLINE_TTL_MS && p.status !== 'offline'
-  ).length;
-
-  rosterCount.textContent = `${allPeers.length} conhecido(s)`;
-  onlineCounter.textContent = `${onlinePeersCount} online na malha`;
+  rosterCount.textContent = `${onlinePeers.length} na lista`;
+  onlineCounter.textContent = `${onlinePeers.length} online`;
 
   peersList.innerHTML = '';
-
-  if (remotePeers.length === 0) {
-    peersList.innerHTML = `
-      <span class="text-[10px] text-slate-500 italic">
-        Você (${currentState.myTag}) está na lista. Novos @usuarios aparecerão aqui!
-      </span>
-    `;
+  if (onlinePeers.length === 0) {
+    const span = document.createElement('span');
+    span.className = 'text-[10px] text-slate-500 italic';
+    span.textContent = 'Nenhum outro @usuario ativo no momento.';
+    peersList.appendChild(span);
     return;
   }
 
-  const selectedTarget = normalizeTag(targetTagInput.value);
+  const currentSelected = normalizeTag(targetTagInput.value);
 
-  for (const peer of remotePeers) {
-    const isOnline = now - (peer.lastSeen || 0) < ONLINE_TTL_MS && peer.status !== 'offline';
-    const isSelected = peer.tag === selectedTarget;
-
+  onlinePeers.forEach((peer) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.setAttribute('data-peer-tag', peer.tag);
-    btn.title = isOnline
-      ? `${peer.tag} está ONLINE — clique para selecionar`
-      : `${peer.tag} registrado no diretório P2P`;
+    const isSelected = peer.tag === currentSelected;
 
-    btn.className = isSelected
-      ? 'flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-400/60 shrink-0 cursor-pointer transition-all'
-      : 'flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 shrink-0 cursor-pointer transition-all';
+    btn.className = `px-2 py-0.5 rounded-full text-[10px] font-mono font-medium transition-all cursor-pointer shrink-0 ${
+      isSelected
+        ? 'bg-emerald-500 text-slate-950 font-bold shadow-md'
+        : 'bg-slate-800/90 text-emerald-300 hover:bg-emerald-500/20 border border-emerald-500/30'
+    }`;
+    btn.textContent = peer.tag;
+    btn.title = `Clique para enviar arquivos para ${peer.tag}`;
 
-    const dotClass = isOnline ? 'w-1.5 h-1.5 rounded-full bg-emerald-400' : 'w-1.5 h-1.5 rounded-full bg-slate-600';
-
-    btn.innerHTML = `
-      <span class="${dotClass}"></span>
-      <span>${peer.tag}</span>
-    `;
+    btn.addEventListener('click', () => {
+      targetTagInput.value = peer.tag;
+      chrome.storage.local.set({ lastTargetTag: peer.tag });
+      renderPeerDirectory();
+    });
 
     peersList.appendChild(btn);
-  }
+  });
 }
 
 function renderReceiveButton() {
-  const transfersArr = Object.values(currentState.transfers || {});
-  const pendingIncoming = transfersArr.filter(
+  const pendingIncoming = Object.values(currentState.transfers || []).filter(
     (t) => t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT'
   );
 
   if (pendingIncoming.length > 0) {
-    const first = pendingIncoming[0];
-    receiveBadge.textContent = `${pendingIncoming.length} Pendente`;
     receiveBadge.classList.remove('hidden');
+    receiveBadge.textContent = `${pendingIncoming.length} Pendente${pendingIncoming.length > 1 ? 's' : ''}`;
     receiveTitle.textContent = 'Aceitar Arquivo';
-    receiveSubtitle.textContent = `De ${first.peerTag} (${formatBytes(first.fileSize)})`;
-    btnReceive.classList.add('ring-2', 'ring-amber-400');
+    receiveSubtitle.textContent = pendingIncoming[0].fileName || 'Clique para baixar';
   } else {
     receiveBadge.classList.add('hidden');
     receiveTitle.textContent = 'Receber';
-    if (currentState.autoAccept) {
-      receiveSubtitle.textContent = 'Escuta Automática: ON';
-      btnReceive.classList.add('ring-2', 'ring-sky-400/70');
-      btnReceive.classList.remove('opacity-80', 'ring-amber-400');
-    } else {
-      receiveSubtitle.textContent = 'Pedir Confirmação';
-      btnReceive.classList.remove('ring-2', 'ring-sky-400/70', 'ring-amber-400');
-      btnReceive.classList.add('opacity-80');
-    }
-  }
-}
-
-function statusLabel(transfer) {
-  const speedText = formatSpeed(transfer.speedBps);
-  switch (transfer.status) {
-    case 'CONNECTING':
-      return 'Negociando canal P2P...';
-    case 'PAUSED':
-      return 'Transferência pausada';
-    case 'CANCELLED':
-      return 'Cancelada';
-    case 'EXPIRED':
-      return 'Túnel expirado';
-    case 'TUNNEL_READY': {
-      let expInfo = '';
-      if (transfer.expiresAt) {
-        const remainingSec = Math.max(0, Math.floor((transfer.expiresAt - Date.now()) / 1000));
-        if (remainingSec > 0) {
-          const m = Math.floor(remainingSec / 60);
-          const s = remainingSec % 60;
-          expInfo = ` • Expira em ${m}m ${s}s`;
-        } else {
-          return 'Túnel expirado';
-        }
-      }
-      if (transfer.maxDownloads > 0) {
-        const remaining = Math.max(0, transfer.maxDownloads - (transfer.completedPacks || 0));
-        if (remaining === 0) return 'Limite de downloads atingido (Concluído)';
-        expInfo += ` • ${transfer.completedPacks || 0}/${transfer.maxDownloads} downloads`;
-      }
-      return transfer.downloads > 0
-        ? `Túnel ativo (${transfer.downloads} conexões)${expInfo}`
-        : `Túnel aberto (aguardando download)${expInfo}`;
-    }
-    case 'AWAITING_ACCEPT':
-      return transfer.direction === 'incoming'
-        ? 'Clique em Receber para aceitar'
-        : 'Aguardando destinatário...';
-    case 'TRANSFERRING':
-      return speedText ? `Transmitindo P2P • ${speedText}` : 'Transferindo dados...';
-    case 'COMPLETED':
-      return 'Concluída';
-    case 'ERROR':
-      return transfer.error || 'Falha na transferência';
-    default:
-      return transfer.status;
+    receiveSubtitle.textContent = currentState.autoAccept ? 'Escuta Automática: ON' : 'Confirmação Manual';
   }
 }
 
 function isTransferHistory(t, now = Date.now()) {
-  if (['COMPLETED', 'EXPIRED', 'CANCELLED', 'ERROR'].includes(t.status)) return true;
-  if (t.expiresAt && now >= t.expiresAt) return true;
-  if (t.maxDownloads > 0 && (t.completedPacks || 0) >= t.maxDownloads) return true;
+  if (t.status === 'COMPLETED' || t.status === 'CANCELLED' || t.status === 'ERROR') {
+    return true;
+  }
+  if (t.direction === 'tunnel' && t.expiresAt && now >= t.expiresAt) {
+    return true;
+  }
   return false;
 }
 
@@ -584,7 +447,7 @@ function renderTransfers() {
     if (pSub) {
       pSub.innerHTML =
         currentTransfersTab === 'active'
-          ? 'Envie via <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Cloudflare</span>.'
+          ? 'Envie para <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Público</span>.'
           : 'Transferências concluídas, expiradas ou canceladas aparecerão aqui.';
     }
     Array.from(transfersList.children).forEach((child) => {
@@ -594,7 +457,6 @@ function renderTransfers() {
   }
 
   emptyState.classList.add('hidden');
-
   Array.from(transfersList.children).forEach((child) => {
     if (child.id !== 'empty-state') child.remove();
   });
@@ -605,7 +467,7 @@ function renderTransfers() {
     const isPaused = t.status === 'PAUSED';
     const isCancelled = t.status === 'CANCELLED';
     const isExpired = t.status === 'EXPIRED' || (t.expiresAt && now >= t.expiresAt);
-    const isCompleted = t.status === 'COMPLETED' || (t.maxDownloads > 0 && (t.completedPacks || 0) >= t.maxDownloads);
+    const isCompleted = t.status === 'COMPLETED';
     const isDone = isCompleted || (!isExpired && !isCancelled && isTunnel && t.status === 'TUNNEL_READY');
     const isError = t.status === 'ERROR';
     const isWaitingAccept = t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT';
@@ -620,7 +482,7 @@ function renderTransfers() {
 
     const card = document.createElement('div');
     card.className =
-      'p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col gap-1.5 transition-all';
+      'p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col gap-1.5 transition-all shadow-sm';
 
     const badgeColor = isTunnel
       ? 'bg-orange-500/15 text-orange-300 border-orange-500/30'
@@ -628,7 +490,7 @@ function renderTransfers() {
       ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
       : 'bg-sky-500/15 text-sky-300 border-sky-500/30';
 
-    const badgeLabel = isTunnel ? '☁️ P2P LINK' : isSend ? '↑ ENVIO' : '↓ RECEB.';
+    const badgeLabel = isTunnel ? '☁️ LINK WEBRTC' : isSend ? '↑ ENVIO' : '↓ RECEB.';
 
     const barColor = isError || isCancelled || isExpired
       ? 'bg-rose-500'
@@ -637,9 +499,7 @@ function renderTransfers() {
       : isTunnel
       ? 'bg-gradient-to-r from-orange-500 to-amber-400'
       : isDone
-      ? isSend
-        ? 'bg-emerald-400'
-        : 'bg-sky-400'
+      ? isSend ? 'bg-emerald-400' : 'bg-sky-400'
       : isSend
       ? 'bg-gradient-to-r from-emerald-500 to-green-400'
       : 'bg-gradient-to-r from-sky-500 to-blue-400';
@@ -654,7 +514,6 @@ function renderTransfers() {
       ? 'text-emerald-300'
       : 'text-sky-300';
 
-    // Botões de Pausa e Cancelamento para Envios e Recebimentos ativos
     let controlButtonsHtml = '';
     if (!isDone && !isError && !isCancelled && !isExpired && !isWaitingAccept) {
       if (t.status === 'TRANSFERRING' || t.status === 'CONNECTING') {
@@ -729,7 +588,7 @@ function renderTransfers() {
             class="p-1 rounded-lg bg-slate-800 hover:bg-emerald-500/20 text-emerald-300 border border-slate-700 hover:border-emerald-500/40 transition-colors cursor-pointer"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 0021 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
             </svg>
           </button>
         </div>
@@ -757,7 +616,6 @@ function renderTransfers() {
       `;
     }
 
-    // Botão individual para excluir transferência
     const deleteButtonHtml = `
       <button
         type="button"
@@ -788,26 +646,26 @@ function renderTransfers() {
 
       const pwdBadge = t.hasPassword
         ? `<span class="text-[9px] font-mono text-orange-300">🔑 Senha</span>`
-        : `<span class="text-[9px] font-mono text-slate-500">🔓 Público</span>`;
+        : `<span class="text-[9px] font-mono text-slate-500">🔓 Livre</span>`;
 
-      const limitBadge = t.maxDownloads > 0
-        ? `<span class="text-[9px] font-mono text-sky-300">🎯 ${t.completedPacks || 0}/${t.maxDownloads} dl</span>`
+      const dlCounter = typeof t.downloads === 'number'
+        ? `<span class="text-[9px] font-mono text-sky-300">⬇ ${t.downloads} dl</span>`
         : '';
 
       const pauseResumeBtn = isPaused
-        ? `<button type="button" data-action="resume-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold cursor-pointer" title="Retomar túnel">▶ Retomar</button>`
-        : `<button type="button" data-action="pause-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 border border-amber-500/40 text-[9px] font-bold cursor-pointer" title="Pausar túnel">⏸ Pausar</button>`;
+        ? `<button type="button" data-action="resume-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold cursor-pointer" title="Retomar link">▶ Retomar</button>`
+        : `<button type="button" data-action="pause-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 border border-amber-500/40 text-[9px] font-bold cursor-pointer" title="Pausar link">⏸ Pausar</button>`;
 
-      const closeTunnelBtn = `<button type="button" data-action="cancel-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 border border-rose-500/40 text-[9px] font-bold cursor-pointer" title="Encerrar túnel">✕ Encerrar</button>`;
+      const closeTunnelBtn = `<button type="button" data-action="cancel-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 border border-rose-500/40 text-[9px] font-bold cursor-pointer" title="Encerrar link">✕ Encerrar</button>`;
 
       tunnelLinkBoxHtml = `
         <div class="mt-1 flex flex-col gap-1 bg-slate-950 border border-orange-500/30 rounded-lg p-1.5">
           <div class="flex items-center justify-between text-[10px]">
-            <div class="flex items-center gap-1.5 truncate max-w-[200px]">
+            <div class="flex items-center gap-1.5 truncate max-w-[220px]">
               <span class="font-mono text-orange-300 font-bold shrink-0">#${t.shareId}</span>
               ${expBadge}
               ${pwdBadge}
-              ${limitBadge}
+              ${dlCounter}
             </div>
             <div class="flex items-center gap-1 shrink-0">
               ${pauseResumeBtn}
@@ -815,7 +673,7 @@ function renderTransfers() {
             </div>
           </div>
           <div class="flex items-center justify-between gap-1 pt-1 border-t border-slate-800">
-            <span class="text-[9px] font-mono text-slate-400 truncate" title="${t.shareUrl || ''}">
+            <span class="text-[9px] font-mono text-slate-400 truncate flex-1" title="${t.shareUrl || ''}">
               ${t.shareUrl || ''}
             </span>
             <div class="flex items-center gap-1 shrink-0">
@@ -823,7 +681,7 @@ function renderTransfers() {
                 type="button"
                 data-action="copy-tunnel-formatted"
                 data-transfer-id="${t.id}"
-                title="Copiar Link formatado com senha, limite e expiração"
+                title="Copiar mensagem formatada com link, senha e arquivos"
                 class="px-2 py-0.5 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-300 border border-orange-500/40 text-[10px] font-bold transition-colors cursor-pointer"
               >
                 Copiar
@@ -832,7 +690,7 @@ function renderTransfers() {
                 type="button"
                 data-action="open-tunnel-url"
                 data-url="${t.shareUrl}"
-                title="Abrir no navegador"
+                title="Abrir link no navegador"
                 class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] transition-colors cursor-pointer"
               >
                 ↗
@@ -844,138 +702,52 @@ function renderTransfers() {
     }
 
     const displayName = t.packName || t.fileName || 'arquivo';
-    const displayFiles = Array.isArray(t.filesProgress) && t.filesProgress.length > 0
-      ? t.filesProgress
-      : Array.isArray(t.files) && t.files.length > 0
-      ? t.files.map((f, i) => ({
-          index: i,
-          name: f.name,
-          size: f.size,
-          bytesSent: isCompleted ? f.size : 0,
-          progress: isCompleted ? 100 : 0,
-          status: isCompleted ? 'DONE' : 'IDLE'
-        }))
-      : [{
-          index: 0,
-          name: displayName,
-          size: totalBytes,
-          bytesSent: transferredBytes,
-          progress: pct,
-          status: pct === 100 || isCompleted ? 'DONE' : pct > 0 ? 'DOWNLOADING' : 'IDLE'
-        }];
 
-    // Seção detalhada / expansível com progresso dos downloads do destinatário
-    let expandedDetailsHtml = '';
-    if (isExpanded) {
-      expandedDetailsHtml = `
-        <div class="mt-2 p-2.5 rounded-lg bg-slate-950/90 border border-slate-700/80 flex flex-col gap-2 transition-all">
-          <div class="flex items-center justify-between text-[11px]">
-            <span class="font-bold text-sky-300 flex items-center gap-1">
-              📊 Progresso dos Downloads
-            </span>
-            <span class="font-mono text-emerald-300 font-bold">
-              ${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)
-            </span>
-          </div>
-
-          <!-- Barra de progresso geral do pack -->
-          <div class="flex flex-col gap-1">
-            <div class="flex items-center justify-between text-[9px] text-slate-400">
-              <span>Progresso geral do pack:</span>
-              <span class="font-mono font-semibold text-slate-200">${pct}%</span>
-            </div>
-            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden p-0.5">
-              <div class="h-full rounded-full bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-400 transition-all duration-200" style="width: ${pct}%"></div>
-            </div>
-          </div>
-
-          ${t.maxDownloads > 0 ? `
-            <div class="flex items-center justify-between text-[9px] text-slate-300 font-mono bg-slate-900/90 px-2 py-1 rounded border border-slate-800">
-              <span>🎯 Limite de downloads:</span>
-              <span class="text-sky-300 font-bold">${t.completedPacks || 0} de ${t.maxDownloads} concluído(s)</span>
-            </div>
-          ` : ''}
-
-          <!-- Progresso individual de cada arquivo no pack -->
-          <div class="flex flex-col gap-1.5 pt-1 border-t border-slate-800/80">
-            <span class="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
-              Arquivos no pack (${displayFiles.length}):
-            </span>
-            ${displayFiles.map((f) => {
-              const fSize = f.size || 0;
-              const fPct = typeof f.progress === 'number' ? Math.min(100, Math.max(0, Math.round(f.progress))) : (f.status === 'DONE' ? 100 : 0);
-              const fBytes = typeof f.bytesSent === 'number' ? f.bytesSent : (f.status === 'DONE' ? fSize : Math.round((fSize * fPct) / 100));
-              const fStatusLabel = f.status === 'DOWNLOADING' ? '⬇ Baixando...' : f.status === 'DONE' ? '✓ Concluído' : 'Aguardando';
-              const fStatusColor = f.status === 'DOWNLOADING' ? 'text-amber-300' : f.status === 'DONE' ? 'text-emerald-300' : 'text-slate-500';
-              const fBarColor = f.status === 'DONE' ? 'bg-emerald-400' : f.status === 'DOWNLOADING' ? 'bg-amber-400' : 'bg-slate-700';
-
-              return `
-                <div class="flex flex-col gap-1 bg-slate-900/90 p-2 rounded-lg border border-slate-800">
-                  <div class="flex items-center justify-between text-[10px] gap-2">
-                    <span class="truncate text-slate-200 font-medium" title="${f.name}">📄 ${f.name}</span>
-                    <span class="font-mono font-bold text-xs ${fPct === 100 ? 'text-emerald-400' : fPct > 0 ? 'text-sky-300' : 'text-slate-500'} shrink-0">${fPct}%</span>
-                  </div>
-                  <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                    <div class="h-full rounded-full ${fBarColor} transition-all duration-150" style="width: ${fPct}%"></div>
-                  </div>
-                  <div class="flex items-center justify-between text-[9px] text-slate-400 font-mono">
-                    <span>${formatBytes(fBytes)} de ${formatBytes(fSize)}</span>
-                    <span class="${fStatusColor} font-semibold">${fStatusLabel}</span>
-                  </div>
-                </div>
-              `;
-            }).join('')}
-          </div>
-        </div>
-      `;
+    let speedText = '';
+    if (!isDone && !isError && !isPaused && !isCancelled && !isExpired && t.speedBps > 0) {
+      speedText = ` • ${formatSpeed(t.speedBps)}`;
     }
 
+    let statusText = '';
+    if (isExpired) statusText = 'Expirado';
+    else if (isCancelled) statusText = 'Cancelado';
+    else if (isError) statusText = t.error || 'Erro';
+    else if (isPaused) statusText = 'Pausado';
+    else if (isWaitingAccept) statusText = 'Aguardando aceite';
+    else if (isTunnel) statusText = isDone ? 'Link P2P Pronto' : 'Transmitindo...';
+    else if (isDone) statusText = 'Concluído';
+    else statusText = 'Transferindo...';
+
     card.innerHTML = `
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 min-w-0 cursor-pointer" data-action="toggle-expand-transfer" data-transfer-id="${t.id}" title="Clique para ver o progresso detalhado">
-          <span class="text-[9px] font-bold px-1.5 py-0.5 rounded border ${badgeColor} shrink-0">
+      <div class="flex items-center justify-between gap-1.5">
+        <div class="flex items-center gap-1.5 min-w-0">
+          <span class="text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${badgeColor} shrink-0">
             ${badgeLabel}
           </span>
-          <span class="text-xs font-semibold text-slate-100 truncate hover:text-sky-300 transition-colors" title="${displayName}">
+          <span class="text-xs font-bold text-slate-100 truncate" title="${displayName}">
             ${displayName}
           </span>
         </div>
-        <div class="flex items-center gap-1.5 shrink-0">
+        <div class="flex items-center gap-1 shrink-0">
           ${controlButtonsHtml}
           ${postActionsHtml}
-          <span class="text-xs font-mono font-bold ${pctColor}">${pct}%</span>
           ${deleteButtonHtml}
         </div>
       </div>
 
-      <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden p-0.5 cursor-pointer" data-action="toggle-expand-transfer" data-transfer-id="${t.id}">
-        <div
-          class="h-full rounded-full ${barColor} transition-all duration-150"
-          style="width: ${pct}%"
-        ></div>
+      <!-- Barra de Progresso -->
+      <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+        <div class="${barColor} h-1.5 transition-all duration-200" style="width: ${pct}%"></div>
       </div>
 
-      <div class="flex items-center justify-between text-[10px] text-slate-400">
-        <span class="font-mono text-slate-300">
-          ${t.peerTag} • ${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)}
+      <div class="flex items-center justify-between text-[10px] font-mono text-slate-400">
+        <span class="truncate max-w-[200px]">
+          ${statusText}${speedText}
         </span>
-        <span class="${isError || isCancelled || isExpired ? 'text-rose-400 font-medium' : isDone ? 'text-emerald-400 font-medium' : isPaused ? 'text-amber-400 font-medium' : 'text-slate-300'}">
-          ${statusLabel(t)}
+        <span class="${pctColor} font-bold">
+          ${pct}% (${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)})
         </span>
       </div>
-
-      <!-- Botão para alternar exibição do progresso detalhado -->
-      <button
-        type="button"
-        data-action="toggle-expand-transfer"
-        data-transfer-id="${t.id}"
-        class="w-full text-left text-[10px] text-sky-400 hover:text-sky-300 flex items-center justify-between pt-0.5 cursor-pointer"
-      >
-        <span class="font-medium">${isExpanded ? '▴ Ocultar progresso detalhado' : '▾ Ver progresso dos downloads do destinatário'}</span>
-        <span class="font-mono text-[9px] text-slate-500">${displayFiles.length} arquivo(s)</span>
-      </button>
-
-      ${expandedDetailsHtml}
 
       ${tunnelLinkBoxHtml}
     `;
@@ -986,12 +758,23 @@ function renderTransfers() {
 
 function syncModalWithState() {
   if (Array.isArray(currentState.stagedTunnelFiles)) {
-    stagedTunnelFiles = currentState.stagedTunnelFiles;
+    if (stagedTunnelFiles.length === 0 && currentState.stagedTunnelFiles.length > 0) {
+      for (const f of currentState.stagedTunnelFiles) {
+        stagedTunnelFiles.push({
+          fileId: f.fileId || `f-${stagedTunnelFiles.length}`,
+          name: f.name,
+          size: f.size,
+          type: f.type || 'application/octet-stream',
+          fileObj: null
+        });
+      }
+    }
   }
-  renderModalFiles();
-  if (currentState.tunnelModalOpen || stagedTunnelFiles.length > 0) {
+
+  if (currentState.tunnelModalOpen && tunnelConfigModal) {
     tunnelConfigModal.classList.remove('hidden');
   }
+  renderModalFiles();
 }
 
 function renderAll() {
@@ -1003,71 +786,111 @@ function renderAll() {
   syncModalWithState();
 }
 
-btnSettings.addEventListener('click', () => {
-  settingsPanel.classList.toggle('hidden');
-});
+// ============================================================================
+// Ações de Interface e Eventos
+// ============================================================================
 
-btnCloseSettings.addEventListener('click', () => {
-  settingsPanel.classList.add('hidden');
-});
-
-toggleAutoOpen.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'TOGGLE_AUTO_OPEN_ON_RECEIVE' }, (res) => {
-    if (res && res.state) {
-      currentState = res.state;
-      renderAll();
-    }
-  });
-});
-
-toggleAutoAccept.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'TOGGLE_AUTO_ACCEPT' }, (res) => {
-    if (res && res.state) {
-      currentState = res.state;
-      renderAll();
-    }
-  });
-});
-
-function saveMyTag() {
-  const formatted = normalizeTag(myTagInput.value);
-  if (!formatted || formatted.length < 3) {
-    showToast('Informe um @usuario válido (mínimo 2 caracteres).');
-    return;
-  }
-  myTagInput.value = formatted;
-  chrome.runtime.sendMessage({ action: 'SET_MY_TAG', tag: formatted }, (res) => {
-    if (res && res.state) {
-      currentState = res.state;
-      renderAll();
-    }
+// Expandir para Nova Aba (Visualização Completa do Gerenciador)
+if (btnExpandWindow) {
+  btnExpandWindow.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('popup.html?tab=1') });
   });
 }
 
-btnSaveTag.addEventListener('click', saveMyTag);
-myTagInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') saveMyTag();
-});
+// Configurações Dropdown
+if (btnSettings && settingsPanel) {
+  btnSettings.addEventListener('click', () => {
+    settingsPanel.classList.toggle('hidden');
+  });
+}
 
-peersList.addEventListener('click', (e) => {
-  const peerBtn = e.target.closest('button[data-peer-tag]');
-  if (!peerBtn) return;
-  const tag = peerBtn.getAttribute('data-peer-tag');
-  if (tag) {
-    targetTagInput.value = tag;
-    chrome.storage.local.set({ lastTargetTag: tag });
-    renderPeerDirectory();
+if (btnCloseSettings && settingsPanel) {
+  btnCloseSettings.addEventListener('click', () => {
+    settingsPanel.classList.add('hidden');
+  });
+}
+
+if (toggleAutoOpen) {
+  toggleAutoOpen.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'TOGGLE_AUTO_OPEN_ON_RECEIVE' }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        renderSettingsSwitches();
+      }
+    });
+  });
+}
+
+if (toggleAutoAccept) {
+  toggleAutoAccept.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'TOGGLE_AUTO_ACCEPT' }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        renderSettingsSwitches();
+      }
+    });
+  });
+}
+
+if (settingPortalUrl) {
+  chrome.storage.local.get(['portalUrl'], (res) => {
+    settingPortalUrl.value = res.portalUrl || DEFAULT_PORTAL_URL;
+  });
+
+  settingPortalUrl.addEventListener('change', () => {
+    const val = (settingPortalUrl.value || '').trim() || DEFAULT_PORTAL_URL;
+    chrome.storage.local.set({ portalUrl: val });
+    showToast('URL do Portal Público atualizada!');
+  });
+}
+
+if (btnResetPortalUrl && settingPortalUrl) {
+  btnResetPortalUrl.addEventListener('click', () => {
+    settingPortalUrl.value = DEFAULT_PORTAL_URL;
+    chrome.storage.local.set({ portalUrl: DEFAULT_PORTAL_URL });
+    showToast('URL restaurada para o padrão!');
+  });
+}
+
+function saveMyTag() {
+  const newTag = normalizeTag(myTagInput.value);
+  if (!newTag || newTag.length < 3) {
+    showToast('O ID deve ter pelo menos 3 caracteres.');
+    return;
   }
-});
+  chrome.storage.local.set({ myTag: newTag }, () => {
+    chrome.runtime.sendMessage({ action: 'UPDATE_MY_TAG', tag: newTag }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        myTagInput.value = currentState.myTag;
+        showToast(`Anunciando ${currentState.myTag} na malha P2P!`);
+        renderPeerDirectory();
+      }
+    });
+  });
+}
 
-targetTagInput.addEventListener('input', () => {
-  chrome.storage.local.set({ lastTargetTag: targetTagInput.value.trim() });
-  renderPeerDirectory();
-});
+if (btnSaveTag) {
+  btnSaveTag.addEventListener('click', saveMyTag);
+}
 
+if (myTagInput) {
+  myTagInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') saveMyTag();
+  });
+}
+
+if (targetTagInput) {
+  targetTagInput.addEventListener('input', () => {
+    chrome.storage.local.set({ lastTargetTag: targetTagInput.value.trim() });
+    renderPeerDirectory();
+  });
+}
+
+// Modal de Configuração do Pack
 function openModalForTunnel() {
   currentModalMode = 'tunnel';
-  if (modalHeaderTitle) modalHeaderTitle.textContent = 'Configurar Pack & Envio (Cloudflare Tunnel)';
+  if (modalHeaderTitle) modalHeaderTitle.textContent = 'Configurar Link Público (WebRTC)';
   if (modalIndicatorDot) modalIndicatorDot.className = 'w-2.5 h-2.5 rounded-full bg-orange-400';
   if (modalTunnelOptions) modalTunnelOptions.classList.remove('hidden');
   if (btnModalConfirm) {
@@ -1075,18 +898,9 @@ function openModalForTunnel() {
       'flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white text-xs font-bold shadow-md border border-orange-400/30 transition-all cursor-pointer';
     btnModalConfirm.textContent = 'Confirmar & Gerar Link';
   }
-  closeQuickBrowserView();
   tunnelConfigModal.classList.remove('hidden');
   chrome.runtime.sendMessage({ action: 'SET_TUNNEL_MODAL_OPEN', open: true });
-
-  if (stagedTunnelFiles.length === 0) {
-    chrome.runtime.sendMessage({
-      action: 'DAEMON_PICK_FILES',
-      mode: 'tunnel',
-      pickType: 'files',
-      append: true
-    });
-  }
+  renderModalFiles();
 }
 
 function openModalForP2P(targetTag) {
@@ -1099,79 +913,72 @@ function openModalForP2P(targetTag) {
       'flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-white text-xs font-bold shadow-md border border-emerald-400/30 transition-all cursor-pointer';
     btnModalConfirm.textContent = 'Confirmar & Enviar P2P';
   }
-  closeQuickBrowserView();
   tunnelConfigModal.classList.remove('hidden');
   chrome.runtime.sendMessage({ action: 'SET_TUNNEL_MODAL_OPEN', open: true });
-
-  if (stagedTunnelFiles.length === 0) {
-    chrome.runtime.sendMessage({
-      action: 'DAEMON_PICK_FILES',
-      mode: 'tunnel',
-      pickType: 'files',
-      append: true
-    });
-  }
+  renderModalFiles();
 }
 
-btnSend.addEventListener('click', () => {
-  const targetTag = normalizeTag(targetTagInput.value);
-  if (!targetTag || targetTag.length < 3) {
-    showToast('Digite ou clique em um @destinatario da lista P2P.');
-    targetContainer.classList.add('ring-2', 'ring-rose-500');
-    targetTagInput.focus();
-    setTimeout(() => targetContainer.classList.remove('ring-2', 'ring-rose-500'), 1500);
-    return;
-  }
+if (btnSend) {
+  btnSend.addEventListener('click', () => {
+    const targetTag = normalizeTag(targetTagInput.value);
+    if (!targetTag || targetTag.length < 3) {
+      showToast('Digite ou selecione um @destinatario na lista P2P.');
+      targetContainer.classList.add('ring-2', 'ring-rose-500');
+      targetTagInput.focus();
+      setTimeout(() => targetContainer.classList.remove('ring-2', 'ring-rose-500'), 1500);
+      return;
+    }
+    if (targetTag === currentState.myTag) {
+      showToast('Escolha um @destinatario diferente do seu próprio ID.');
+      return;
+    }
+    targetTagInput.value = targetTag;
+    chrome.storage.local.set({ lastTargetTag: targetTag });
+    openModalForP2P(targetTag);
+  });
+}
 
-  if (targetTag === currentState.myTag) {
-    showToast('Escolha um @destinatario diferente do seu próprio ID.');
-    return;
-  }
+if (btnCloudflareTunnel) {
+  btnCloudflareTunnel.addEventListener('click', () => {
+    openModalForTunnel();
+  });
+}
 
-  targetTagInput.value = targetTag;
-  chrome.storage.local.set({ lastTargetTag: targetTag });
-
-  openModalForP2P(targetTag);
-});
-
-btnCloudflareTunnel.addEventListener('click', () => {
-  openModalForTunnel();
-});
-
-// ============================================================================
-// Modal de Configuração do Pack (Arquivos, Pastas, Compactação ZIP/RAR/7Z, etc)
-// ============================================================================
 function renderModalFiles() {
+  if (!modalFilesList) return;
   modalFilesList.innerHTML = '';
   if (stagedTunnelFiles.length === 0) {
-    modalFilesSummary.textContent = 'Itens no Pack (0) • 0 B';
+    if (modalFilesSummary) modalFilesSummary.textContent = 'Itens no Pack (0) • 0 B';
     modalFilesList.innerHTML = `
-      <div class="flex flex-col items-center justify-center py-2.5 px-2 text-center gap-1">
-        <span class="text-[11px] text-slate-300 font-medium">Nenhum item adicionado ao pack.</span>
-        <span class="text-[9px] text-slate-400">Clique em <strong class="text-sky-400">📁 Pastas Rápidas</strong>, <strong class="text-orange-400">+ Arquivo</strong> ou <strong class="text-emerald-400">+ Pasta</strong>.</span>
+      <div class="flex flex-col items-center justify-center py-5 px-3 text-center gap-1.5 text-slate-400">
+        <svg class="w-7 h-7 text-slate-600 mb-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z" />
+        </svg>
+        <span class="text-xs font-semibold text-slate-300">Arraste arquivos ou pastas para cá</span>
+        <span class="text-[10px] text-slate-500">ou use os botões <strong class="text-orange-400">+ Arquivos</strong> e <strong class="text-emerald-400">+ Pasta</strong> acima</span>
       </div>
     `;
     return;
   }
 
   const totalBytes = stagedTunnelFiles.reduce((acc, f) => acc + (f.size || 0), 0);
-  modalFilesSummary.textContent = `Itens no Pack (${stagedTunnelFiles.length}) • ${formatBytes(totalBytes)}`;
+  if (modalFilesSummary) {
+    modalFilesSummary.textContent = `Itens no Pack (${stagedTunnelFiles.length}) • ${formatBytes(totalBytes)}`;
+  }
 
   stagedTunnelFiles.forEach((file, index) => {
-    const isDir = Boolean(file.isDirectory);
+    const isFolderItem = Boolean(file.name && file.name.includes('/'));
     const item = document.createElement('div');
     item.className =
-      'flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs';
+      'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs shadow-sm';
     item.innerHTML = `
-      <div class="flex items-center gap-1.5 min-w-0">
-        <span class="text-[11px] ${isDir ? 'text-amber-400' : 'text-sky-400'} font-mono">
-          ${isDir ? '📂' : '📄'}
-        </span>
-        <span class="text-[11px] ${isDir ? 'text-amber-200 font-semibold' : 'text-slate-200 font-medium'} truncate max-w-[170px]" title="${file.name}">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="text-xs ${isFolderItem ? 'text-emerald-400' : 'text-sky-400'} font-mono shrink-0">${isFolderItem ? '📁' : '📄'}</span>
+        <span class="text-[11px] text-slate-200 font-medium truncate max-w-[220px]" title="${file.name}">
           ${file.name}
         </span>
         <span class="text-[10px] text-slate-400 font-mono shrink-0">
-          (${isDir && file.fileCount ? `${file.fileCount} itens, ` : ''}${formatBytes(file.size)})
+          (${formatBytes(file.size)})
         </span>
       </div>
       <button
@@ -1187,280 +994,257 @@ function renderModalFiles() {
   });
 }
 
-modalFilesList.addEventListener('click', (e) => {
-  const btn = e.target.closest('button[data-remove-index]');
-  if (!btn) return;
-  const idx = Number(btn.getAttribute('data-remove-index'));
-  if (!Number.isNaN(idx) && idx >= 0 && idx < stagedTunnelFiles.length) {
-    chrome.runtime.sendMessage({ action: 'REMOVE_STAGED_TUNNEL_FILE', index: idx }, (res) => {
-      if (res && res.state) {
-        currentState = res.state;
-        syncModalWithState();
-      }
-    });
-  }
-});
-
-btnModalAddMore.addEventListener('click', () => {
-  chrome.runtime.sendMessage({
-    action: 'DAEMON_PICK_FILES',
-    mode: 'tunnel',
-    pickType: 'files',
-    append: true
-  });
-});
-
-if (btnModalAddFolder) {
-  btnModalAddFolder.addEventListener('click', () => {
-    chrome.runtime.sendMessage({
-      action: 'DAEMON_PICK_FILES',
-      mode: 'tunnel',
-      pickType: 'directory',
-      append: true
-    });
-  });
-}
-
-// ============================================================================
-// Mini Explorador Rápido de Arquivos e Pastas Embutido (Com rolagem interna e margens)
-// ============================================================================
-let currentQuickBrowserDir = '';
-let parentQuickBrowserDir = '';
-
-function openQuickBrowserView() {
-  if (modalViewPack) modalViewPack.classList.add('hidden');
-  if (modalQuickBrowserPanel) {
-    modalQuickBrowserPanel.classList.remove('hidden');
-    modalQuickBrowserPanel.classList.add('flex');
-  }
-  loadQuickBrowserDir(currentQuickBrowserDir);
-}
-
-function closeQuickBrowserView() {
-  if (modalQuickBrowserPanel) {
-    modalQuickBrowserPanel.classList.add('hidden');
-    modalQuickBrowserPanel.classList.remove('flex');
-  }
-  if (modalViewPack) modalViewPack.classList.remove('hidden');
-}
-
-async function addDirectoryToPack(dirPath) {
-  if (!dirPath) return;
-  try {
-    showToast('Escaneando pasta...');
-    const res = await fetch(`http://127.0.0.1:18765/api/fs/scan-dir?path=${encodeURIComponent(dirPath)}`);
-    const data = await res.json();
-    if (!data || !data.ok) {
-      showToast(data.error || 'Erro ao ler pasta.');
-      return;
-    }
-    const folderObj = {
-      fileId: `folder-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      name: data.name,
-      diskPath: data.diskPath,
-      size: data.totalSize,
-      fileCount: data.fileCount,
-      isDirectory: true,
-      files: data.files
-    };
-
-    chrome.runtime.sendMessage(
-      { action: 'ADD_STAGED_TUNNEL_FILES', files: [folderObj] },
-      (response) => {
-        if (response && response.state) {
-          currentState = response.state;
-          syncModalWithState();
-          loadQuickBrowserDir(currentQuickBrowserDir);
-          showToast(`Pasta "${data.name}" (${data.fileCount} itens, ${formatBytes(data.totalSize)}) adicionada!`);
-        }
-      }
-    );
-  } catch (err) {
-    console.error('Erro ao adicionar pasta:', err);
-    showToast('Falha ao adicionar pasta.');
-  }
-}
-
-async function loadQuickBrowserDir(dir = '') {
-  try {
-    const url = dir
-      ? `http://127.0.0.1:18765/api/fs/list?dir=${encodeURIComponent(dir)}`
-      : 'http://127.0.0.1:18765/api/fs/list';
-    const res = await fetch(url);
-    const data = await res.json();
-    if (!data || !data.ok) return;
-
-    currentQuickBrowserDir = data.currentDir || '';
-    parentQuickBrowserDir = data.parentDir || '';
-    if (quickBrowserPath) {
-      quickBrowserPath.textContent = currentQuickBrowserDir;
-      quickBrowserPath.title = currentQuickBrowserDir;
-    }
-
-    if (btnQuickBrowserAddCurrent) {
-      const folderName = currentQuickBrowserDir.split(/[/\\]/).pop() || currentQuickBrowserDir;
-      const span = btnQuickBrowserAddCurrent.querySelector('span');
-      if (span) span.textContent = `📂 + Adicionar esta pasta inteira (${folderName})`;
-    }
-
-    if (quickBrowserCount) {
-      const totalCount = (data.folders || []).length + (data.files || []).length;
-      quickBrowserCount.textContent = `(${totalCount} itens)`;
-    }
-
-    if (quickBrowserShortcuts && Array.isArray(data.shortcuts)) {
-      quickBrowserShortcuts.innerHTML = data.shortcuts
-        .map(
-          (s) => `
-          <button
-            type="button"
-            data-shortcut-dir="${s.path.replace(/"/g, '&quot;')}"
-            class="px-2 py-0.5 rounded-lg bg-slate-900 hover:bg-sky-500/20 text-[9px] text-slate-300 hover:text-sky-300 border border-slate-800 shrink-0 cursor-pointer transition-colors"
-          >
-            ${s.label}
-          </button>
-        `
-        )
-        .join('');
-    }
-
-    if (quickBrowserEntries) {
-      quickBrowserEntries.innerHTML = '';
-
-      (data.folders || []).forEach((folder) => {
-        const isAlreadyAdded = stagedTunnelFiles.some((f) => f.diskPath === folder.path);
-        const row = document.createElement('div');
-        row.className =
-          'w-full flex items-center justify-between px-2 py-1.5 rounded-lg bg-slate-900/60 hover:bg-slate-900 border border-slate-800 text-[11px] text-slate-200 transition-colors';
-        row.innerHTML = `
-          <button
-            type="button"
-            data-folder-path="${folder.path.replace(/"/g, '&quot;')}"
-            class="flex items-center gap-1.5 truncate flex-1 text-left hover:text-sky-300 cursor-pointer"
-            title="Abrir pasta ${folder.name}"
-          >
-            <span class="text-amber-400 font-mono">📂</span>
-            <span class="truncate font-medium">${folder.name}</span>
-          </button>
-          <div class="flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              data-add-folder-path="${folder.path.replace(/"/g, '&quot;')}"
-              class="text-[9px] px-2 py-0.5 rounded font-medium cursor-pointer transition-colors ${
-                isAlreadyAdded
-                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 font-bold'
-                  : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
-              }"
-              title="Adicionar pasta inteira ao pack"
-            >
-              ${isAlreadyAdded ? '✓ Na fila' : '+ Pasta'}
-            </button>
-            <button
-              type="button"
-              data-folder-path="${folder.path.replace(/"/g, '&quot;')}"
-              class="text-[9px] text-slate-400 hover:text-white px-1 py-0.5 cursor-pointer"
-            >
-              Abrir ➔
-            </button>
-          </div>
-        `;
-        quickBrowserEntries.appendChild(row);
-      });
-
-      (data.files || []).forEach((file) => {
-        const alreadyAdded = stagedTunnelFiles.some((f) => f.diskPath === file.diskPath);
-        const row = document.createElement('button');
-        row.type = 'button';
-        row.setAttribute('data-file-json', JSON.stringify(file));
-        row.className = `w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left text-[11px] cursor-pointer transition-colors ${
-          alreadyAdded
-            ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/30'
-            : 'bg-slate-900/60 hover:bg-sky-500/10 text-slate-200 border border-slate-800/80'
-        }`;
-        row.innerHTML = `
-          <span class="truncate pr-2">📄 ${file.name}</span>
-          <span class="text-[9px] font-mono shrink-0 ${alreadyAdded ? 'text-emerald-400 font-bold' : 'text-sky-400'}">
-            ${alreadyAdded ? '✓ No pack' : `+ ${formatBytes(file.size)}`}
-          </span>
-        `;
-        quickBrowserEntries.appendChild(row);
-      });
-
-      if ((data.folders || []).length === 0 && (data.files || []).length === 0) {
-        quickBrowserEntries.innerHTML =
-          '<div class="text-[11px] text-slate-500 italic text-center py-4">Pasta vazia</div>';
-      }
-    }
-  } catch (err) {
-    console.error('Erro ao carregar navegador rápido:', err);
-  }
-}
-
-if (btnModalQuickBrowser) {
-  btnModalQuickBrowser.addEventListener('click', openQuickBrowserView);
-}
-
-if (btnQuickBrowserClose) {
-  btnQuickBrowserClose.addEventListener('click', closeQuickBrowserView);
-}
-
-if (btnQuickBrowserUp) {
-  btnQuickBrowserUp.addEventListener('click', () => {
-    if (parentQuickBrowserDir) {
-      loadQuickBrowserDir(parentQuickBrowserDir);
-    }
-  });
-}
-
-if (btnQuickBrowserAddCurrent) {
-  btnQuickBrowserAddCurrent.addEventListener('click', () => {
-    if (currentQuickBrowserDir) {
-      addDirectoryToPack(currentQuickBrowserDir);
-    }
-  });
-}
-
-if (quickBrowserShortcuts) {
-  quickBrowserShortcuts.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-shortcut-dir]');
+if (modalFilesList) {
+  modalFilesList.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-remove-index]');
     if (!btn) return;
-    loadQuickBrowserDir(btn.getAttribute('data-shortcut-dir'));
-  });
-}
-
-if (quickBrowserEntries) {
-  quickBrowserEntries.addEventListener('click', (e) => {
-    const addFolderBtn = e.target.closest('button[data-add-folder-path]');
-    if (addFolderBtn) {
-      const folderPath = addFolderBtn.getAttribute('data-add-folder-path');
-      addDirectoryToPack(folderPath);
-      return;
-    }
-
-    const folderBtn = e.target.closest('button[data-folder-path]');
-    if (folderBtn) {
-      loadQuickBrowserDir(folderBtn.getAttribute('data-folder-path'));
-      return;
-    }
-
-    const fileBtn = e.target.closest('button[data-file-json]');
-    if (fileBtn) {
+    const idx = Number(btn.getAttribute('data-remove-index'));
+    if (!Number.isNaN(idx) && idx >= 0 && idx < stagedTunnelFiles.length) {
+      const removed = stagedTunnelFiles.splice(idx, 1)[0];
+      if (removed && removed.fileId) {
+        deleteStagedFile(removed.fileId);
+      }
+      renderModalFiles();
       try {
-        const fileObj = JSON.parse(fileBtn.getAttribute('data-file-json'));
-        chrome.runtime.sendMessage(
-          { action: 'ADD_STAGED_TUNNEL_FILES', files: [fileObj] },
-          (res) => {
-            if (res && res.state) {
-              currentState = res.state;
-              syncModalWithState();
-              loadQuickBrowserDir(currentQuickBrowserDir);
-            }
-          }
-        );
+        chrome.runtime.sendMessage({ action: 'REMOVE_STAGED_TUNNEL_FILE', index: idx }).catch(() => {});
       } catch {}
     }
   });
 }
+
+// Manipulação Imediata de Arquivos e Pastas Selecionados
+function handleSelectedFiles(files) {
+  if (!files || files.length === 0) return;
+  const filesArray = Array.from(files);
+  for (const f of filesArray) {
+    if (!f) continue;
+    const relPath = f.relativePath || f.webkitRelativePath || f.name;
+    const normalizedName = relPath.replace(/^\/+/, '');
+    const fileId = `f-${stagedTunnelFiles.length}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    
+    let fileObj = f;
+    if (normalizedName !== f.name) {
+      try {
+        fileObj = new File([f], normalizedName, { type: f.type, lastModified: f.lastModified });
+      } catch {
+        fileObj = f;
+      }
+    }
+
+    stagedTunnelFiles.push({
+      fileId,
+      name: normalizedName,
+      size: f.size || 0,
+      type: f.type || 'application/octet-stream',
+      fileObj
+    });
+    // Persiste imediatamente em memória (offscreen) e IndexedDB de forma não-bloqueante
+    saveStagedFile(fileId, fileObj).catch((err) => {
+      console.warn('saveStagedFile background warning:', err);
+    });
+  }
+
+  // Atualização SÍNCRONA da UI (<1ms)
+  renderModalFiles();
+
+  try {
+    chrome.runtime.sendMessage({
+      action: 'ADD_STAGED_TUNNEL_FILES',
+      files: stagedTunnelFiles.map((f) => ({
+        fileId: f.fileId,
+        name: f.name,
+        size: f.size,
+        type: f.type
+      }))
+    }).catch(() => {});
+  } catch {}
+}
+
+if (btnModalAddMore && modalFileInput) {
+  btnModalAddMore.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    modalFileInput.click();
+  });
+}
+
+if (btnModalAddFolder && modalFolderInput) {
+  btnModalAddFolder.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    modalFolderInput.click();
+  });
+}
+
+if (modalFileInput) {
+  modalFileInput.addEventListener('change', (e) => {
+    try {
+      const files = Array.from(e.target.files || []);
+      if (files.length > 0) {
+        handleSelectedFiles(files);
+      }
+    } catch (err) {
+      console.error('Erro ao ler arquivos:', err);
+    } finally {
+      modalFileInput.value = '';
+    }
+  });
+}
+
+if (modalFolderInput) {
+  modalFolderInput.addEventListener('change', (e) => {
+    try {
+      const files = Array.from(e.target.files || []);
+      if (files.length > 0) {
+        handleSelectedFiles(files);
+      } else {
+        showToast('Nenhum arquivo encontrado na pasta selecionada.');
+      }
+    } catch (err) {
+      console.error('Erro ao ler pasta:', err);
+    } finally {
+      modalFolderInput.value = '';
+    }
+  });
+}
+
+// Suporte a Leitura Recursiva de Diretórios via Drag & Drop
+async function getFilesFromDataTransfer(items, dataTransferFiles) {
+  const result = [];
+  if (!items || items.length === 0) {
+    return Array.from(dataTransferFiles || []);
+  }
+
+  const queue = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind && item.kind !== 'file') continue;
+    const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+    if (entry) {
+      queue.push(entry);
+    } else {
+      const f = item.getAsFile ? item.getAsFile() : null;
+      if (f) result.push(f);
+    }
+  }
+
+  while (queue.length > 0) {
+    const entry = queue.shift();
+    if (!entry) continue;
+
+    if (entry.isFile) {
+      try {
+        const file = await new Promise((res) => {
+          entry.file(
+            (f) => res(f),
+            () => res(null)
+          );
+        });
+        if (file) {
+          let finalFile = file;
+          if (entry.fullPath && entry.fullPath.startsWith('/')) {
+            const rel = entry.fullPath.slice(1);
+            try {
+              finalFile = new File([file], rel, { type: file.type, lastModified: file.lastModified });
+            } catch {
+              file.relativePath = rel;
+              finalFile = file;
+            }
+          }
+          result.push(finalFile);
+        }
+      } catch {}
+    } else if (entry.isDirectory) {
+      try {
+        const dirReader = entry.createReader();
+        const readEntriesBatch = () =>
+          new Promise((res) => {
+            dirReader.readEntries(
+              (entries) => res(entries || []),
+              () => res([])
+            );
+          });
+
+        let batch;
+        do {
+          batch = await readEntriesBatch();
+          if (batch && batch.length > 0) {
+            queue.push(...batch);
+          }
+        } while (batch && batch.length > 0);
+      } catch (err) {
+        console.warn('Erro ao ler entradas do diretório:', err);
+      }
+    }
+  }
+
+  if (result.length === 0 && dataTransferFiles && dataTransferFiles.length > 0) {
+    return Array.from(dataTransferFiles);
+  }
+  return result;
+}
+
+// Drag & Drop no DropZone específico do Modal
+if (modalDropZone) {
+  modalDropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    modalDropZone.classList.add('border-orange-500', 'bg-orange-500/10');
+  });
+
+  modalDropZone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    modalDropZone.classList.remove('border-orange-500', 'bg-orange-500/10');
+  });
+
+  modalDropZone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    modalDropZone.classList.remove('border-orange-500', 'bg-orange-500/10');
+    try {
+      const files = await getFilesFromDataTransfer(e.dataTransfer?.items, e.dataTransfer?.files);
+      if (files && files.length > 0) {
+        handleSelectedFiles(files);
+      }
+    } catch (err) {
+      console.error('Erro ao processar drop no modal:', err);
+    }
+  });
+}
+
+// Suporte Global de Drag & Drop em toda a janela do Popup
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (modalDropZone) {
+    modalDropZone.classList.add('border-orange-500', 'bg-orange-500/10');
+  }
+});
+
+window.addEventListener('dragleave', (e) => {
+  e.preventDefault();
+  if (!e.relatedTarget && modalDropZone) {
+    modalDropZone.classList.remove('border-orange-500', 'bg-orange-500/10');
+  }
+});
+
+window.addEventListener('drop', async (e) => {
+  e.preventDefault();
+  if (modalDropZone) {
+    modalDropZone.classList.remove('border-orange-500', 'bg-orange-500/10');
+  }
+  try {
+    const files = await getFilesFromDataTransfer(e.dataTransfer?.items, e.dataTransfer?.files);
+    if (files && files.length > 0) {
+      if (tunnelConfigModal && tunnelConfigModal.classList.contains('hidden')) {
+        openModalForTunnel();
+      }
+      handleSelectedFiles(files);
+    }
+  } catch (err) {
+    console.error('Erro no drag & drop global:', err);
+  }
+});
 
 // Opções de Compactação do Pack
 if (modalCompressToggle) {
@@ -1473,24 +1257,20 @@ if (modalCompressToggle) {
   });
 }
 
-if (modalCompressFormat) {
-  modalCompressFormat.addEventListener('change', () => {
-    const ext = '.' + modalCompressFormat.value;
-    if (modalCompressExtBadge) modalCompressExtBadge.textContent = ext;
+if (btnModalGenPassword && modalPasswordInput) {
+  btnModalGenPassword.addEventListener('click', () => {
+    const randomPass = Math.floor(100000 + Math.random() * 900000).toString();
+    modalPasswordInput.value = randomPass;
   });
 }
 
-btnModalGenPassword.addEventListener('click', () => {
-  const randomPass = Math.floor(100000 + Math.random() * 900000).toString();
-  modalPasswordInput.value = randomPass;
-});
-
-btnModalClearPassword.addEventListener('click', () => {
-  modalPasswordInput.value = '';
-});
+if (btnModalClearPassword && modalPasswordInput) {
+  btnModalClearPassword.addEventListener('click', () => {
+    modalPasswordInput.value = '';
+  });
+}
 
 function closeAndResetModal() {
-  closeQuickBrowserView();
   tunnelConfigModal.classList.add('hidden');
   stagedTunnelFiles = [];
   if (modalCompressToggle) modalCompressToggle.checked = false;
@@ -1503,213 +1283,216 @@ function closeAndResetModal() {
   });
 }
 
-btnModalClose.addEventListener('click', closeAndResetModal);
-btnModalCancel.addEventListener('click', closeAndResetModal);
+if (btnModalClose) btnModalClose.addEventListener('click', closeAndResetModal);
+if (btnModalCancel) btnModalCancel.addEventListener('click', closeAndResetModal);
 
-btnModalConfirm.addEventListener('click', async () => {
-  if (stagedTunnelFiles.length === 0) {
-    showToast('Adicione pelo menos um arquivo ou pasta ao pack.');
-    return;
-  }
-
-  const isCompressEnabled = Boolean(modalCompressToggle && modalCompressToggle.checked);
-  const compressFormat = modalCompressFormat ? modalCompressFormat.value : 'zip';
-  const compressLevel = modalCompressLevel ? Number(modalCompressLevel.value) : 5;
-  const customCompressName = modalCompressName ? modalCompressName.value.trim() : '';
-
-  btnModalConfirm.disabled = true;
-  const originalConfirmText = btnModalConfirm.textContent;
-
-  try {
-    let finalFilesMeta = [];
-    let finalPackName = '';
-    let finalTotalSize = 0;
-
-    // Se compactação estiver ativada, comprime tudo em .zip, .rar ou .7z antes de enviar!
-    if (isCompressEnabled) {
-      btnModalConfirm.textContent = `Compactando pack em .${compressFormat} (Nível ${compressLevel})...`;
-      const compRes = await fetch('http://127.0.0.1:18765/api/pack/compress', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: stagedTunnelFiles,
-          format: compressFormat,
-          level: compressLevel,
-          outputName: customCompressName
-        })
-      });
-      const compData = await compRes.json();
-      if (!compData || !compData.ok) {
-        throw new Error(compData.error || 'Falha ao compactar arquivos.');
-      }
-
-      finalFilesMeta = [
-        {
-          fileId: `f-0`,
-          name: compData.fileName,
-          size: compData.size,
-          type: compData.type || 'application/octet-stream',
-          diskPath: compData.diskPath
-        }
-      ];
-      finalPackName = compData.fileName;
-      finalTotalSize = compData.size;
-    } else {
-      // Sem compactação
-      finalFilesMeta = stagedTunnelFiles.map((f, i) => ({
-        fileId: f.fileId || `f-${i}`,
-        name: f.name,
-        size: f.size,
-        type: f.type || 'application/octet-stream',
-        diskPath: f.diskPath || null,
-        isDirectory: Boolean(f.isDirectory)
-      }));
-      finalTotalSize = stagedTunnelFiles.reduce((acc, f) => acc + (f.size || 0), 0);
-      finalPackName =
-        stagedTunnelFiles.length === 1
-          ? stagedTunnelFiles[0].name
-          : `Pack (${stagedTunnelFiles.length} itens)`;
+if (btnModalConfirm) {
+  btnModalConfirm.addEventListener('click', async () => {
+    if (stagedTunnelFiles.length === 0) {
+      showToast('Adicione pelo menos um arquivo ao pack.');
+      return;
     }
 
-    if (currentModalMode === 'tunnel') {
-      const expirationMin = Number(modalExpirationSelect ? modalExpirationSelect.value : 30);
-      const expiresAt = expirationMin > 0 ? Date.now() + expirationMin * 60 * 1000 : null;
-      const password = (modalPasswordInput ? modalPasswordInput.value : '').trim();
-      const maxDownloads = Number(modalDownloadLimitSelect ? modalDownloadLimitSelect.value : 0);
+    const isCompressEnabled = Boolean(modalCompressToggle && modalCompressToggle.checked);
+    const compressLevel = modalCompressLevel ? Number(modalCompressLevel.value) : 6;
+    const customCompressName = modalCompressName ? modalCompressName.value.trim() : '';
 
-      const shareId = `cf-${Array.from(crypto.getRandomValues(new Uint8Array(3)))
+    btnModalConfirm.disabled = true;
+    const originalConfirmText = btnModalConfirm.textContent;
+
+    try {
+      let finalFilesMeta = [];
+      let finalPackName = '';
+      let finalTotalSize = 0;
+
+      const shareId = `ps-${Array.from(crypto.getRandomValues(new Uint8Array(4)))
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('')}`;
 
-      btnModalConfirm.textContent = 'Criando sessão no daemon...';
-      const sessionRes = await fetch('http://127.0.0.1:18765/api/tunnel/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shareId,
-          packName: finalPackName,
-          expiresInMinutes: expirationMin,
-          password,
-          maxDownloads,
-          totalSize: finalTotalSize,
-          files: finalFilesMeta
-        })
-      });
-      if (!sessionRes.ok) {
-        throw new Error('Daemon local offline. Verifique se o daemon está rodando em 127.0.0.1:18765');
+      if (isCompressEnabled) {
+        btnModalConfirm.textContent = `Compactando pack em .ZIP (Nível ${compressLevel})...`;
+
+        if (typeof fflate === 'undefined' || !fflate.zipSync) {
+          throw new Error('Biblioteca de compressão fflate não carregada.');
+        }
+
+        const zipData = {};
+        for (const f of stagedTunnelFiles) {
+          let rawFile = f.fileObj;
+          if (!rawFile || !(rawFile instanceof Blob)) {
+            rawFile = await getStagedFile(f.fileId);
+          }
+          if (!rawFile) {
+            throw new Error(`Arquivo "${f.name}" não encontrado na memória/cache.`);
+          }
+          const ab = await rawFile.arrayBuffer();
+          zipData[f.name] = [new Uint8Array(ab), { level: compressLevel }];
+        }
+
+        // Usa zipSync puro sem Web Workers bloqueados por CSP na extensão
+        const zippedU8 = fflate.zipSync(zipData, { level: compressLevel });
+
+        const rawBaseName =
+          customCompressName ||
+          (stagedTunnelFiles.length === 1
+            ? stagedTunnelFiles[0].name.replace(/\.[^/.]+$/, '')
+            : 'Pack_Compartilhado');
+
+        const zipFileName = rawBaseName.replace(/\.zip$/i, '') + '.zip';
+        const zipFile = new File([zippedU8], zipFileName, { type: 'application/zip' });
+
+        // Salva arquivo ZIP no offscreen e IndexedDB
+        await saveStagedFile(`${shareId}:f-0`, zipFile);
+        await saveStagedFile(shareId, zipFile);
+
+        finalFilesMeta = [
+          {
+            fileId: 'f-0',
+            name: zipFileName,
+            size: zipFile.size,
+            type: 'application/zip'
+          }
+        ];
+        finalPackName = zipFileName;
+        finalTotalSize = zipFile.size;
+      } else {
+        // Sem compactação prévia: salva cada arquivo individualmente
+        finalFilesMeta = [];
+        for (let i = 0; i < stagedTunnelFiles.length; i++) {
+          const f = stagedTunnelFiles[i];
+          const fileId = `f-${i}`;
+          let rawFile = f.fileObj;
+          if (!rawFile || !(rawFile instanceof Blob)) {
+            rawFile = await getStagedFile(f.fileId);
+          }
+          if (!rawFile) {
+            throw new Error(`Arquivo "${f.name}" não encontrado na memória/cache.`);
+          }
+          await saveStagedFile(`${shareId}:${fileId}`, rawFile);
+          if (stagedTunnelFiles.length === 1) {
+            await saveStagedFile(shareId, rawFile);
+          }
+          finalFilesMeta.push({
+            fileId,
+            name: f.name,
+            size: f.size,
+            type: f.type || 'application/octet-stream'
+          });
+        }
+        finalTotalSize = stagedTunnelFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+        finalPackName =
+          stagedTunnelFiles.length === 1
+            ? stagedTunnelFiles[0].name
+            : `Pack (${stagedTunnelFiles.length} arquivos)`;
       }
 
-      // Upload de arquivos sem diskPath (caso haja algum em memória)
-      for (let i = 0; i < finalFilesMeta.length; i++) {
-        if (!finalFilesMeta[i].diskPath && stagedTunnelFiles[i]) {
-          btnModalConfirm.textContent = `Preparando arquivo (${i + 1}/${finalFilesMeta.length})...`;
-          const upRes = await fetch(
-            `http://127.0.0.1:18765/api/tunnel/upload-file?shareId=${encodeURIComponent(shareId)}&fileIndex=${i}`,
+      if (currentModalMode === 'tunnel') {
+        btnModalConfirm.textContent = 'Gerando link P2P...';
+        const expirationMin = Number(modalExpirationSelect ? modalExpirationSelect.value : 30);
+        const expiresAt = expirationMin > 0 ? Date.now() + expirationMin * 60 * 1000 : null;
+        const password = (modalPasswordInput ? modalPasswordInput.value : '').trim();
+        const maxDownloads = Number(modalDownloadLimitSelect ? modalDownloadLimitSelect.value : 0);
+
+        let passwordSalt = '';
+        let passwordHash = '';
+        if (password) {
+          passwordSalt = crypto.randomUUID().slice(0, 8);
+          passwordHash = await computeSha256(password + passwordSalt);
+        }
+
+        const stored = await chrome.storage.local.get(['portalUrl']);
+        const basePortalUrl = (stored.portalUrl || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
+        const shareUrl = `${basePortalUrl}#share=${shareId}&owner=${encodeURIComponent(currentState.myTag)}${
+          expiresAt ? `&exp=${expiresAt}` : ''
+        }`;
+
+        await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage(
             {
-              method: 'POST',
-              body: stagedTunnelFiles[i]
+              action: 'START_PUBLIC_LINK_SHARE',
+              shareId,
+              packName: finalPackName,
+              files: finalFilesMeta,
+              totalSize: finalTotalSize,
+              shareUrl,
+              hasPassword: Boolean(password),
+              password,
+              passwordSalt,
+              passwordHash,
+              maxDownloads,
+              expiresAt
+            },
+            async (res) => {
+              if (chrome.runtime.lastError) {
+                reject(new Error(chrome.runtime.lastError.message));
+                return;
+              }
+              if (res && res.error) {
+                reject(new Error(res.error));
+                return;
+              }
+              if (res && res.state) {
+                currentState = res.state;
+                renderAll();
+              }
+
+              const formattedMessage = formatShareMessage({
+                shareUrl,
+                password,
+                expiresAt,
+                maxDownloads,
+                files: finalFilesMeta
+              });
+
+              try {
+                await navigator.clipboard.writeText(formattedMessage);
+                showToast('✓ Link P2P gerado e copiado para a área de transferência!');
+              } catch {
+                showToast('✓ Link gerado! Copie na lista abaixo.');
+              }
+              resolve();
             }
           );
-          if (!upRes.ok) {
-            throw new Error(`Falha no upload do arquivo ${finalFilesMeta[i].name}`);
-          }
+        });
+      } else if (currentModalMode === 'p2p') {
+        const targetTag = normalizeTag(targetTagInput.value);
+        if (!targetTag) {
+          throw new Error('Destinatário P2P não especificado.');
         }
-      }
 
-      btnModalConfirm.textContent = 'Gerando link *.trycloudflare.com...';
-      const startRes = await fetch('http://127.0.0.1:18765/api/tunnel/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shareId })
-      });
-      const startData = await startRes.json();
-      if (!startData.ok || !startData.tunnelUrl) {
-        throw new Error(startData.error || 'Falha ao obter URL do túnel Cloudflare.');
-      }
+        btnModalConfirm.textContent = 'Iniciando transferência P2P...';
+        for (let i = 0; i < finalFilesMeta.length; i++) {
+          const item = finalFilesMeta[i];
+          const rawFile = isCompressEnabled ? stagedTunnelFiles[0].fileObj : stagedTunnelFiles[i].fileObj;
+          const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+          await saveStagedFile(transferId, rawFile);
 
-      const shareUrl = startData.tunnelUrl;
-      chrome.runtime.sendMessage(
-        {
-          action: 'START_CLOUDFLARE_TUNNEL_SHARE',
-          shareId,
-          packName: finalPackName,
-          files: finalFilesMeta,
-          totalSize: finalTotalSize,
-          shareUrl,
-          hasPassword: Boolean(password),
-          password,
-          maxDownloads,
-          expiresAt
-        },
-        async (res) => {
-          if (res && res.error) {
-            showToast(res.error);
-            return;
-          }
-          if (res && res.state) {
-            currentState = res.state;
-            renderAll();
-          }
-
-          const formattedMessage = formatShareMessage({
-            shareUrl,
-            password,
-            expiresAt,
-            maxDownloads,
-            files: finalFilesMeta
+          chrome.runtime.sendMessage({
+            action: 'START_SEND_FILE',
+            transferId,
+            targetTag,
+            fileMeta: {
+              name: item.name,
+              size: item.size,
+              type: item.type || 'application/octet-stream'
+            }
           });
-
-          try {
-            await navigator.clipboard.writeText(formattedMessage);
-            showToast('✓ Link Cloudflare gerado e copiado para a área de transferência!');
-          } catch {
-            showToast('Túnel aberto! Copie o link na lista abaixo.');
-          }
         }
-      );
-    } else if (currentModalMode === 'p2p') {
-      const targetTag = normalizeTag(targetTagInput.value);
-      if (!targetTag) {
-        throw new Error('Destinatário P2P não especificado.');
+        showToast(`Transferência enviada para ${targetTag}!`);
       }
 
-      btnModalConfirm.textContent = 'Iniciando transferência P2P...';
-      for (const item of finalFilesMeta) {
-        if (item.diskPath) {
-          const fileRes = await fetch(
-            `http://127.0.0.1:18765/api/read-local-file?path=${encodeURIComponent(item.diskPath)}`
-          );
-          if (fileRes.ok) {
-            const blob = await fileRes.blob();
-            const fileObj = new File([blob], item.name, { type: item.type || 'application/octet-stream' });
-            const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-            chrome.runtime.sendMessage({
-              action: 'START_SEND_FILE',
-              transferId,
-              targetTag,
-              fileMeta: {
-                name: item.name,
-                size: item.size,
-                type: item.type || 'application/octet-stream'
-              }
-            });
-          }
-        }
-      }
-      showToast(`Transferência enviada para ${targetTag}!`);
+      closeAndResetModal();
+    } catch (err) {
+      console.error('Erro ao confirmar pack:', err);
+      showToast(`Erro: ${err.message}`);
+    } finally {
+      btnModalConfirm.disabled = false;
+      btnModalConfirm.textContent = originalConfirmText;
     }
+  });
+}
 
-    closeAndResetModal();
-    checkDaemonStatus();
-  } catch (err) {
-    console.error('Erro ao confirmar pack:', err);
-    showToast(`Erro: ${err.message}`);
-  } finally {
-    btnModalConfirm.disabled = false;
-    btnModalConfirm.textContent = originalConfirmText;
-  }
-});
-
+// Abas do Gerenciador de Transferências
 if (tabActiveTransfers) {
   tabActiveTransfers.addEventListener('click', () => {
     currentTransfersTab = 'active';
@@ -1732,187 +1515,140 @@ if (tabHistoryTransfers) {
   });
 }
 
-btnReceive.addEventListener('click', () => {
-  const pendingIncoming = Object.values(currentState.transfers || []).find(
-    (t) => t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT'
-  );
+if (btnReceive) {
+  btnReceive.addEventListener('click', () => {
+    const pendingIncoming = Object.values(currentState.transfers || []).find(
+      (t) => t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT'
+    );
 
-  if (pendingIncoming) {
-    chrome.runtime.sendMessage({
-      action: 'RESPOND_INCOMING',
-      transferId: pendingIncoming.id,
-      accept: true
-    });
-    return;
-  }
-
-  chrome.runtime.sendMessage({ action: 'TOGGLE_AUTO_ACCEPT' }, (res) => {
-    if (res && res.state) {
-      currentState = res.state;
-      renderAll();
-    }
-  });
-});
-
-transfersList.addEventListener('click', async (e) => {
-  const btn = e.target.closest('button[data-action]');
-  const expandTarget = e.target.closest('[data-action="toggle-expand-transfer"]');
-
-  if (expandTarget && (!btn || btn.getAttribute('data-action') === 'toggle-expand-transfer')) {
-    const tid = expandTarget.getAttribute('data-transfer-id');
-    if (tid) {
-      if (expandedTransferIds.has(tid)) {
-        expandedTransferIds.delete(tid);
-      } else {
-        expandedTransferIds.add(tid);
-      }
-      renderTransfers();
+    if (pendingIncoming) {
+      chrome.runtime.sendMessage({
+        action: 'RESPOND_INCOMING',
+        transferId: pendingIncoming.id,
+        accept: true
+      });
       return;
     }
-  }
 
-  if (!btn) return;
-
-  const action = btn.getAttribute('data-action');
-  const downloadId = Number(btn.getAttribute('data-download-id'));
-  const transferId = btn.getAttribute('data-transfer-id');
-  const url = btn.getAttribute('data-url');
-
-  if (action === 'delete-single-transfer' && transferId) {
-    chrome.runtime.sendMessage({ action: 'DELETE_TRANSFER', transferId }, (res) => {
+    chrome.runtime.sendMessage({ action: 'TOGGLE_AUTO_ACCEPT' }, (res) => {
       if (res && res.state) {
         currentState = res.state;
         renderAll();
       }
     });
-    return;
-  }
+  });
+}
 
-  if (action === 'pause-transfer' && transferId) {
-    fetch('http://127.0.0.1:18765/api/tunnel/pause', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shareId: transferId })
-    }).catch(() => {});
-    chrome.runtime.sendMessage({ action: 'PAUSE_TRANSFER', transferId }, (res) => {
-      if (res && res.state) {
-        currentState = res.state;
-        renderAll();
-      }
-    });
-  } else if (action === 'resume-transfer' && transferId) {
-    fetch('http://127.0.0.1:18765/api/tunnel/resume', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shareId: transferId })
-    }).catch(() => {});
-    chrome.runtime.sendMessage({ action: 'RESUME_TRANSFER', transferId }, (res) => {
-      if (res && res.state) {
-        currentState = res.state;
-        renderAll();
-      }
-    });
-  } else if (action === 'cancel-transfer' && transferId) {
-    fetch('http://127.0.0.1:18765/api/tunnel/cancel', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shareId: transferId })
-    }).catch(() => {});
-    chrome.runtime.sendMessage({ action: 'CANCEL_TRANSFER', transferId }, (res) => {
-      if (res && res.state) {
-        currentState = res.state;
-        renderAll();
-      }
-    });
-  } else if (action === 'show-folder' && !Number.isNaN(downloadId)) {
-    chrome.downloads.show(downloadId);
-  } else if (action === 'open-file' && !Number.isNaN(downloadId)) {
-    chrome.downloads.open(downloadId);
-  } else if (action === 'accept-transfer' && transferId) {
-    chrome.runtime.sendMessage({ action: 'RESPOND_INCOMING', transferId, accept: true });
-  } else if (action === 'reject-transfer' && transferId) {
-    chrome.runtime.sendMessage({ action: 'RESPOND_INCOMING', transferId, accept: false });
-  } else if (action === 'copy-tunnel-formatted' && transferId) {
-    const t = currentState.transfers[transferId];
-    if (!t) return;
-    const formatted = formatShareMessage({
-      shareUrl: t.shareUrl,
-      password: t.password,
-      expiresAt: t.expiresAt,
-      maxDownloads: t.maxDownloads,
-      files: t.files || [{ name: t.fileName, size: t.fileSize }]
-    });
-    try {
-      await navigator.clipboard.writeText(formatted);
-      btn.textContent = 'Copiado ✓';
-      setTimeout(() => {
-        btn.textContent = 'Copiar';
-      }, 1800);
-      showToast('Link, senha e expiração copiados!');
-    } catch {
-      showToast('Não foi possível copiar automaticamente.');
+// Ações nos Cards da Lista de Transferências
+if (transfersList) {
+  transfersList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+
+    const action = btn.getAttribute('data-action');
+    const downloadId = Number(btn.getAttribute('data-download-id'));
+    const transferId = btn.getAttribute('data-transfer-id');
+    const url = btn.getAttribute('data-url');
+
+    if (action === 'delete-single-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'DELETE_TRANSFER', transferId }, (res) => {
+        if (res && res.state) {
+          currentState = res.state;
+          renderAll();
+        }
+      });
+      return;
     }
-  } else if (action === 'copy-tunnel-url' && url) {
-    try {
-      await navigator.clipboard.writeText(url);
-      btn.textContent = 'Copiado ✓';
-      setTimeout(() => {
-        btn.textContent = 'Copiar';
-      }, 1800);
-    } catch {
-      showToast('Não foi possível copiar automaticamente.');
-    }
-  } else if (action === 'download-p2p-portal' && transferId) {
-    const t = currentState.transfers[transferId];
-    if (!t) return;
-    const htmlContent = buildStandaloneP2PHtmlPortal(t);
-    const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = `Baixar_${t.fileName}.html`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-  } else if (action === 'open-tunnel-url' && url) {
-    chrome.tabs.create({ url });
-  }
-});
 
-btnClearCompleted.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'CLEAR_HISTORY' }, (res) => {
-    if (res && res.state) {
-      currentState = res.state;
-      renderAll();
+    if (action === 'pause-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'PAUSE_TRANSFER', transferId }, (res) => {
+        if (res && res.state) {
+          currentState = res.state;
+          renderAll();
+        }
+      });
+    } else if (action === 'resume-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'RESUME_TRANSFER', transferId }, (res) => {
+        if (res && res.state) {
+          currentState = res.state;
+          renderAll();
+        }
+      });
+    } else if (action === 'cancel-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'CANCEL_TRANSFER', transferId }, (res) => {
+        if (res && res.state) {
+          currentState = res.state;
+          renderAll();
+        }
+      });
+    } else if (action === 'show-folder' && !Number.isNaN(downloadId)) {
+      chrome.downloads.show(downloadId);
+    } else if (action === 'open-file' && !Number.isNaN(downloadId)) {
+      chrome.downloads.open(downloadId);
+    } else if (action === 'accept-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'RESPOND_INCOMING', transferId, accept: true });
+    } else if (action === 'reject-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'RESPOND_INCOMING', transferId, accept: false });
+    } else if (action === 'copy-tunnel-formatted' && transferId) {
+      const t = currentState.transfers[transferId];
+      if (!t) return;
+      const formatted = formatShareMessage({
+        shareUrl: t.shareUrl,
+        password: t.password,
+        expiresAt: t.expiresAt,
+        maxDownloads: t.maxDownloads,
+        files: t.files || [{ name: t.fileName, size: t.fileSize }]
+      });
+      try {
+        await navigator.clipboard.writeText(formatted);
+        btn.textContent = 'Copiado ✓';
+        setTimeout(() => {
+          btn.textContent = 'Copiar';
+        }, 1800);
+        showToast('Link, senha e resumo copiados!');
+      } catch {
+        showToast('Não foi possível copiar automaticamente.');
+      }
+    } else if (action === 'open-tunnel-url' && url) {
+      chrome.tabs.create({ url });
     }
   });
-});
+}
 
+if (btnClearCompleted) {
+  btnClearCompleted.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'CLEAR_HISTORY' }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        renderAll();
+      }
+    });
+  });
+}
+
+// Escuta atualizações de estado do background
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'STATE_UPDATED') {
+  if (msg.action === 'STATE_UPDATED' && msg.state) {
     currentState = msg.state;
     renderAll();
-  } else if (msg.type === 'TOAST_ERROR') {
-    showToast(msg.message);
   }
 });
 
-// Atualiza contadores regressivos e barras a cada segundo
-setInterval(() => {
-  renderTransfers();
-}, 1000);
-
-document.addEventListener('DOMContentLoaded', async () => {
-  const params = new URLSearchParams(window.location.search);
-  const stored = await chrome.storage.local.get(['lastTargetTag']);
-
-  if (params.get('target')) {
-    targetTagInput.value = params.get('target');
-  } else if (stored.lastTargetTag) {
-    targetTagInput.value = stored.lastTargetTag;
+// Inicialização
+document.addEventListener('DOMContentLoaded', () => {
+  if (window.location.search.includes('tab=1') || window.location.search.includes('window=1')) {
+    document.body.classList.add('expanded-view');
   }
 
-  checkDaemonStatus();
-  setInterval(checkDaemonStatus, 5000);
+  chrome.storage.local.get(['myTag', 'lastTargetTag'], (res) => {
+    if (res.myTag) {
+      currentState.myTag = res.myTag;
+      if (myTagInput) myTagInput.value = res.myTag;
+    }
+    if (res.lastTargetTag && targetTagInput) {
+      targetTagInput.value = res.lastTargetTag;
+    }
+  });
 
   chrome.runtime.sendMessage({ action: 'GET_STATE' }, (res) => {
     if (res && res.state) {

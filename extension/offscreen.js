@@ -46,23 +46,30 @@ const peerSessions = new Map();
 
 // Canal direto de alta velocidade com popup.js para receber referências de File instantaneamente
 const fileBridgeChannel = new BroadcastChannel('pulseshare_file_bridge');
-fileBridgeChannel.onmessage = (event) => {
+fileBridgeChannel.onmessage = async (event) => {
   const data = event.data;
   if (!data) return;
   if (data.type === 'STAGE_FILE_MEMORY' && data.transferId && data.file) {
     inMemoryFiles.set(data.transferId, data.file);
+    try {
+      const db = await openDatabase();
+      const tx = db.transaction(FILE_STORE, 'readwrite');
+      tx.objectStore(FILE_STORE).put(data.file, data.transferId);
+    } catch {}
     fileBridgeChannel.postMessage({
       type: 'STAGE_FILE_ACK',
       transferId: data.transferId
     });
   } else if (data.type === 'DELETE_FILE_MEMORY' && data.transferId) {
     inMemoryFiles.delete(data.transferId);
+    deleteStagedFile(data.transferId).catch(() => {});
   } else if (data.type === 'DELETE_PACK_MEMORY' && data.shareId) {
     for (const key of inMemoryFiles.keys()) {
       if (key === data.shareId || key.startsWith(`${data.shareId}:`)) {
         inMemoryFiles.delete(key);
       }
     }
+    deletePackFromDb(data.shareId).catch(() => {});
   }
 };
 
@@ -143,6 +150,33 @@ async function deleteStagedFile(fileKey) {
     await new Promise((resolve) => {
       const tx = db.transaction(FILE_STORE, 'readwrite');
       tx.objectStore(FILE_STORE).delete(fileKey);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+    });
+  } catch {}
+}
+
+async function deletePackFromDb(shareId) {
+  try {
+    const db = await openDatabase();
+    await new Promise((resolve) => {
+      const tx = db.transaction(FILE_STORE, 'readwrite');
+      const store = tx.objectStore(FILE_STORE);
+      const req = store.getAllKeys();
+      req.onsuccess = () => {
+        const keys = req.result || [];
+        for (const k of keys) {
+          if (typeof k === 'string' && (k === shareId || k.startsWith(`${shareId}:`))) {
+            store.delete(k);
+          }
+        }
+      };
       tx.oncomplete = () => {
         db.close();
         resolve();

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "PulseShare - Rede P2P Serverless & Link Cloudflare WebRTC",
-  "version": "2.3.0",
-  "description": "Transferência 100% P2P sem servidor para arquivos grandes (+100MB) via WebRTC DataChannel, diretório Gossip de @usuarios e Link P2P.",
+  "name": "PulseShare - Rede P2P Serverless & Link WebRTC",
+  "version": "3.0.0",
+  "description": "Transferência 100% P2P sem servidor para arquivos grandes (+100MB / +1GB) via WebRTC DataChannel, malha MQTT e Link Público direto.",
   "permissions": [
     "storage",
     "downloads",
@@ -11,8 +11,6 @@
     "offscreen"
   ],
   "host_permissions": [
-    "http://127.0.0.1/*",
-    "http://localhost/*",
     "wss://broker.emqx.io/*",
     "wss://broker.hivemq.com/*",
     "wss://test.mosquitto.org/*"
@@ -26,7 +24,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["receiver.html", "receiver.js", "tailwind.css"],
+      "resources": ["receiver.html", "receiver.js", "tailwind.css", "fflate.min.js"],
       "matches": ["<all_urls>"]
     }
   ],

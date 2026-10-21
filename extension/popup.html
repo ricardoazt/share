@@ -6,20 +6,32 @@
   <title>PulseShare P2P</title>
   <link rel="stylesheet" href="tailwind.css" />
 </head>
-<body class="w-[380px] h-[580px] max-h-[580px] bg-slate-950 text-slate-100 font-sans antialiased select-none flex flex-col justify-between overflow-hidden relative">
+<body class="w-[440px] h-[600px] min-h-[600px] max-h-[600px] bg-slate-950 text-slate-100 font-sans antialiased select-none flex flex-col justify-between overflow-hidden relative">
 
-  <!-- TOPO: Identidade (@meu_usuario), Botão de Engrenagem (Configurações) e Diretório P2P -->
-  <header class="px-3.5 pt-2.5 pb-2 bg-slate-900/90 border-b border-slate-800/80 relative z-20 shrink-0">
-    <div class="flex items-center justify-between gap-2 mb-2">
+  <!-- TOPO: Identidade (@meu_usuario), Botões de Ação e Diretório P2P -->
+  <header class="px-4 pt-2.5 pb-2 bg-slate-900/90 border-b border-slate-800/80 relative z-20 shrink-0">
+    <div class="flex items-center justify-between gap-2 mb-1.5">
       <div class="flex items-center gap-2">
         <span id="status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" title="Sincronizando malha P2P..."></span>
-        <span class="text-xs font-semibold tracking-wider uppercase text-slate-400">PulseShare P2P</span>
+        <span class="text-xs font-bold tracking-wider uppercase text-slate-300">PulseShare P2P</span>
       </div>
 
       <div class="flex items-center gap-1.5">
-        <span id="connection-badge" class="text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+        <span id="connection-badge" class="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
           Sincronizando...
         </span>
+
+        <!-- ÍCONE DE EXPANDIR (Abre em Nova Aba para Visualização Ampla do Gerenciador) -->
+        <button
+          id="btn-expand-window"
+          type="button"
+          title="Abrir em Nova Aba (Visualização Expandida)"
+          class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors cursor-pointer"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+          </svg>
+        </button>
 
         <!-- ÍCONE DE ENGRENAGEM (Abre/Fecha Configurações) -->
         <button
@@ -28,7 +40,7 @@
           title="Configurações da Extensão"
           class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-colors cursor-pointer"
         >
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
             <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
           </svg>
@@ -39,9 +51,9 @@
     <!-- PAINEL DE CONFIGURAÇÕES (Dropdown acionado pelo ícone de engrenagem) -->
     <div
       id="settings-panel"
-      class="hidden mb-2.5 p-3 rounded-xl bg-slate-950 border border-slate-700 shadow-lg space-y-2.5"
+      class="hidden mb-2 p-2.5 rounded-xl bg-slate-950 border border-slate-700 shadow-xl space-y-2"
     >
-      <div class="flex items-center justify-between border-b border-slate-800 pb-1.5">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-1">
         <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
           <span>⚙️ Configurações</span>
         </span>
@@ -96,23 +108,42 @@
         </button>
       </div>
 
-      <!-- Config 3: Status do Túnel Cloudflare Automático (Daemon Local) -->
+      <!-- Config 3: URL do Portal Público (GitHub Pages) -->
       <div class="flex flex-col gap-1 pt-1.5 border-t border-slate-800/80">
         <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold text-slate-100">Túnel Cloudflare Automático</span>
-          <span id="daemon-status-badge" class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-            ● Ativo
-          </span>
+          <span class="text-xs font-semibold text-slate-100">URL do Portal Público (GitHub Pages)</span>
+          <button
+            id="btn-reset-portal-url"
+            type="button"
+            class="text-[9px] text-orange-400 hover:text-orange-300 font-medium cursor-pointer"
+          >
+            Padrão
+          </button>
         </div>
-        <span class="text-[10px] text-slate-400 leading-tight">
-          Criação temporária de links <span class="text-orange-400 font-mono">*.trycloudflare.com</span> sob demanda.
+        <input
+          id="setting-portal-url"
+          type="url"
+          spellcheck="false"
+          placeholder="https://ricardoazt.github.io/share/"
+          class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 font-mono focus:outline-none focus:border-orange-500/70"
+        />
+        <span class="text-[9px] text-slate-400 leading-tight">
+          Página web que os visitantes abrem para baixar via WebRTC P2P.
+        </span>
+      </div>
+
+      <!-- Config 4: Status da Malha P2P Serverless -->
+      <div class="flex items-center justify-between pt-1 border-t border-slate-800/80">
+        <span class="text-xs font-semibold text-slate-100">Sinalização Global P2P</span>
+        <span id="daemon-status-badge" class="text-[9px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+          ● 3 Brokers WSS
         </span>
       </div>
     </div>
 
     <!-- Meu @usuario -->
-    <div class="flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-1.5 focus-within:border-indigo-500/70 transition-colors">
-      <span class="text-[11px] text-slate-400 font-medium shrink-0">Meu ID:</span>
+    <div class="flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-1 focus-within:border-indigo-500/70 transition-colors">
+      <span class="text-[10px] text-slate-400 font-medium shrink-0">Meu ID:</span>
       <input
         id="my-tag-input"
         type="text"
@@ -123,112 +154,108 @@
       <button
         id="btn-save-tag"
         title="Anunciar meu @usuario na rede P2P"
-        class="text-[11px] px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-medium transition-colors shrink-0 cursor-pointer"
+        class="text-[10px] px-2 py-0.5 rounded bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 font-medium transition-colors shrink-0 cursor-pointer"
       >
         Anunciar
       </button>
     </div>
 
-    <!-- Input de @destinatario (Zero Fricção) -->
-    <div id="target-container" class="mt-1.5 flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-1.5 focus-within:border-emerald-500/70 transition-all">
-      <span class="text-[11px] text-slate-400 font-medium shrink-0">Para:</span>
+    <!-- Input de @destinatario -->
+    <div id="target-container" class="mt-1 flex items-center gap-1.5 bg-slate-950/90 border border-slate-800 rounded-lg px-2.5 py-1 focus-within:border-emerald-500/70 transition-all">
+      <span class="text-[10px] text-slate-400 font-medium shrink-0">Para:</span>
       <input
         id="target-tag-input"
         type="text"
         spellcheck="false"
-        placeholder="@destinatario (ou clique abaixo)"
+        placeholder="@destinatario (ou escolha abaixo)"
         class="w-full bg-transparent text-xs font-mono font-semibold text-emerald-300 focus:outline-none placeholder-slate-600"
       />
     </div>
 
-    <!-- DIRETÓRIO P2P INTERNO: Lista sincronizada de todos os @usuarios da rede -->
-    <div class="mt-2">
-      <div class="flex items-center justify-between mb-1">
-        <span class="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+    <!-- DIRETÓRIO P2P: Pares Online -->
+    <div class="mt-1.5">
+      <div class="flex items-center justify-between mb-0.5">
+        <span class="text-[9px] font-semibold uppercase tracking-wider text-slate-400">
           Diretório P2P Sincronizado
         </span>
-        <span id="roster-count" class="text-[10px] font-mono text-indigo-300">0 na lista</span>
+        <span id="roster-count" class="text-[9px] font-mono text-indigo-300">0 na lista</span>
       </div>
       <div
         id="peers-list"
-        class="flex items-center gap-1.5 overflow-x-auto py-1 min-h-[26px]"
+        class="flex items-center gap-1.5 overflow-x-auto py-0.5 min-h-[24px]"
       >
         <span class="text-[10px] text-slate-500 italic">Aguardando pares na malha P2P...</span>
       </div>
     </div>
   </header>
 
-  <!-- AÇÕES PRINCIPAIS: Dois Grandes Quadrados (Verde = Envio, Azul = Recebimento) + Botão Túnel Cloudflare -->
-  <section class="px-3.5 pt-2 pb-1.5 shrink-0">
+  <!-- AÇÕES PRINCIPAIS: Enviar P2P + Receber + Gerar Link Público -->
+  <section class="px-4 pt-2 pb-1.5 shrink-0">
     <!-- Inputs de Arquivo Nativos Ocultos -->
     <input id="file-input" type="file" class="hidden" multiple />
     <input id="tunnel-file-input" type="file" class="hidden" multiple />
 
-    <div class="grid grid-cols-2 gap-2.5">
-      <!-- QUADRADO VERDE (Seta para Cima - Botão de Envio P2P) -->
+    <div class="grid grid-cols-2 gap-2">
+      <!-- BOTÃO ENVIAR P2P (Verde) -->
       <button
         id="btn-send"
         type="button"
-        class="group relative h-[88px] rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 active:scale-[0.98] p-2 flex flex-col items-center justify-center shadow-lg border border-emerald-400/30 transition-all duration-150 cursor-pointer"
+        class="group relative h-[74px] rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 active:scale-[0.98] p-2 flex flex-col items-center justify-center shadow-lg border border-emerald-400/30 transition-all duration-150 cursor-pointer"
       >
-        <div class="w-8 h-8 rounded-lg bg-white/15 group-hover:bg-white/25 flex items-center justify-center mb-1 transition-transform group-hover:-translate-y-0.5">
-          <!-- Ícone Seta para Cima -->
-          <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+        <div class="w-7 h-7 rounded-lg bg-white/15 group-hover:bg-white/25 flex items-center justify-center mb-0.5 transition-transform group-hover:-translate-y-0.5">
+          <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
           </svg>
         </div>
-        <span class="text-xs font-bold text-white tracking-tight">Enviar P2P</span>
+        <span class="text-xs font-bold text-white tracking-tight leading-tight">Enviar P2P</span>
         <span class="text-[9px] text-emerald-100/90 font-medium leading-tight">
           Para @usuario
         </span>
       </button>
 
-      <!-- QUADRADO AZUL (Seta para Baixo - Botão de Recebimento P2P) -->
+      <!-- BOTÃO RECEBER P2P (Azul) -->
       <button
         id="btn-receive"
         type="button"
-        class="group relative h-[88px] rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 active:scale-[0.98] p-2 flex flex-col items-center justify-center shadow-lg border border-sky-400/30 transition-all duration-150 cursor-pointer"
+        class="group relative h-[74px] rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 active:scale-[0.98] p-2 flex flex-col items-center justify-center shadow-lg border border-sky-400/30 transition-all duration-150 cursor-pointer"
       >
-        <!-- Badge de Transferência Pendente -->
         <span
           id="receive-badge"
-          class="hidden absolute -top-1.5 -right-1.5 px-2 py-0.5 text-[10px] font-bold rounded-full bg-amber-400 text-slate-950 shadow animate-bounce"
+          class="hidden absolute -top-1.5 -right-1.5 px-2 py-0.5 text-[9px] font-bold rounded-full bg-amber-400 text-slate-950 shadow animate-bounce"
         >
           1 Pendente
         </span>
 
-        <div class="w-8 h-8 rounded-lg bg-white/15 group-hover:bg-white/25 flex items-center justify-center mb-1 transition-transform group-hover:translate-y-0.5">
-          <!-- Ícone Seta para Baixo -->
-          <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+        <div class="w-7 h-7 rounded-lg bg-white/15 group-hover:bg-white/25 flex items-center justify-center mb-0.5 transition-transform group-hover:translate-y-0.5">
+          <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
             <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5L12 21m0 0l-7.5-7.5M12 21V3" />
           </svg>
         </div>
-        <span id="receive-title" class="text-xs font-bold text-white tracking-tight">Receber</span>
+        <span id="receive-title" class="text-xs font-bold text-white tracking-tight leading-tight">Receber</span>
         <span id="receive-subtitle" class="text-[9px] text-sky-100/90 font-medium leading-tight">
-          Escuta Automática: ON
+          Escuta: ON
         </span>
       </button>
     </div>
 
-    <!-- BOTÃO DE TÚNEL TEMPORÁRIO CLOUDFLARE (Gerar Link Público trycloudflare.com) -->
+    <!-- BOTÃO GERAR LINK PÚBLICO (WebRTC GitHub Pages) -->
     <button
       id="btn-cloudflare-tunnel"
       type="button"
-      class="mt-2 w-full rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 active:scale-[0.99] px-3 py-1.5 flex items-center justify-between shadow-lg border border-orange-400/30 transition-all cursor-pointer"
+      class="mt-1.5 w-full rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 active:scale-[0.99] px-3 py-1.5 flex items-center justify-between shadow-lg border border-orange-400/30 transition-all cursor-pointer"
     >
       <div class="flex items-center gap-2">
         <div class="w-6 h-6 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
-          <!-- Ícone de Nuvem / Link Público -->
           <svg class="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
           </svg>
         </div>
         <div class="flex flex-col text-left">
           <span class="text-xs font-bold text-white leading-tight">
-            Gerar Link Público (Cloudflare Tunnel)
+            Gerar Link Público (GitHub Pages WebRTC)
           </span>
           <span id="tunnel-status-sub" class="text-[9px] text-orange-100/90 leading-tight">
-            Qualquer pessoa baixa pelo navegador (*.trycloudflare.com)
+            Qualquer pessoa baixa pelo navegador (100% P2P Serverless)
           </span>
         </div>
       </div>
@@ -238,9 +265,9 @@
     </button>
   </section>
 
-  <!-- CENTRO DO LAYOUT: Ícone e Área do Gerenciador de Transferências -->
-  <main class="flex-1 flex flex-col px-4 py-1.5 min-h-0">
-    <div class="flex items-center justify-between py-1 border-b border-slate-800/80 mb-1.5">
+  <!-- CENTRO: GERENCIADOR DE TRANSFERÊNCIAS (EXPANDIDO PARA BAIXO) -->
+  <main class="flex-1 min-h-0 flex flex-col px-4 py-1.5">
+    <div class="flex items-center justify-between py-1 border-b border-slate-800/80 mb-1.5 shrink-0">
       <!-- Abas: Ativas e Histórico -->
       <div class="flex items-center gap-1 bg-slate-950 p-0.5 rounded-lg border border-slate-800">
         <button
@@ -268,47 +295,51 @@
       </button>
     </div>
 
-    <!-- Banner de Alerta/Erro Rápido -->
+    <!-- Banner de Alerta / Toast Rápido -->
     <div
       id="toast-alert"
-      class="hidden mb-1.5 px-3 py-1.5 rounded-lg bg-rose-950/90 border border-rose-500/40 text-rose-200 text-[11px] flex items-center justify-between"
+      class="hidden mb-1 px-3 py-1.5 rounded-lg bg-rose-950/90 border border-rose-500/40 text-rose-200 text-[11px] flex items-center justify-between shrink-0"
     >
       <span id="toast-message">Alerta</span>
-      <button id="toast-close" class="text-rose-400 hover:text-white ml-2 font-bold">✕</button>
+      <button id="toast-close" class="text-rose-400 hover:text-white ml-2 font-bold cursor-pointer">✕</button>
     </div>
 
-    <!-- Lista de Transferências / Barras de Progresso em Tempo Real -->
+    <!-- LISTA DE TRANSFERÊNCIAS (100% FLEXÍVEL - PREENCHE TODO O ESPAÇO PARA BAIXO) -->
     <div
       id="transfers-list"
-      class="flex-1 overflow-y-auto space-y-2 pr-0.5 max-h-[165px]"
+      class="flex-1 min-h-0 overflow-y-auto space-y-2 pr-0.5"
     >
       <!-- Estado Vazio Inicial -->
-      <div id="empty-state" class="h-28 flex flex-col items-center justify-center text-center px-4 border border-dashed border-slate-800 rounded-xl bg-slate-900/30">
+      <div id="empty-state" class="h-32 flex flex-col items-center justify-center text-center px-4 border border-dashed border-slate-800 rounded-xl bg-slate-900/30">
         <svg class="w-6 h-6 text-slate-600 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
           <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
         </svg>
         <p class="text-xs font-medium text-slate-400">Nenhuma transferência ativa</p>
         <p class="text-[10px] text-slate-500 mt-0.5">
-          Envie via <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Cloudflare</span>.
+          Envie para <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Público</span>.
         </p>
       </div>
     </div>
   </main>
 
-  <!-- RODAPÉ: Resumo da Malha P2P Serverless -->
-  <footer class="px-4 py-1.5 bg-slate-900/80 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400">
+  <!-- RODAPÉ: Status e Estatísticas -->
+  <footer class="px-4 py-2 bg-slate-900/80 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400 shrink-0">
     <span>Auto-Abrir: <strong id="footer-auto-open" class="text-emerald-400">ON</strong></span>
     <span id="online-counter">0 online</span>
   </footer>
 
-  <!-- MODAL: Configurar Envio e Pack (Arquivos, Pastas Rápidas, Diretórios Inteiros, Compactação ZIP/RAR/7Z, Expiração e Senha) -->
+  <!-- MODAL: Configurar Pack & Envio (Arquivos, Pastas, Compactação ZIP, Expiração e Senha) -->
   <div
     id="tunnel-config-modal"
-    class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex flex-col p-2 select-none overflow-hidden"
+    class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col p-3 select-none overflow-hidden"
   >
-    <div class="w-full h-full max-h-[564px] bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+    <!-- Inputs Nativos para o Modal -->
+    <input id="modal-file-input" type="file" multiple class="hidden" />
+    <input id="modal-folder-input" type="file" webkitdirectory class="hidden" />
+
+    <div class="w-full h-full max-h-[576px] bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
       <!-- Cabeçalho Fixo do Modal -->
-      <div class="flex items-center justify-between px-3.5 py-2.5 border-b border-slate-800 bg-slate-900/90 shrink-0">
+      <div class="flex items-center justify-between px-4 py-2.5 border-b border-slate-800 bg-slate-900/95 shrink-0">
         <div class="flex items-center gap-2">
           <span id="modal-indicator-dot" class="w-2.5 h-2.5 rounded-full bg-orange-400"></span>
           <span id="modal-header-title" class="text-xs font-bold text-white uppercase tracking-wider">
@@ -318,63 +349,57 @@
         <button
           id="btn-modal-close"
           type="button"
-          class="text-slate-400 hover:text-white text-xs font-bold px-1.5 py-0.5 rounded hover:bg-slate-800 cursor-pointer"
+          class="text-slate-400 hover:text-white text-xs font-bold px-2 py-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
           title="Fechar"
         >
           ✕
         </button>
       </div>
 
-      <!-- VIEW 1: RESUMO DO PACK E CONFIGURAÇÕES -->
-      <div id="modal-view-pack" class="flex-1 min-h-0 overflow-y-auto p-3 space-y-2.5">
-        <!-- Seção 1: Itens no Pack -->
+      <!-- CORPO DO MODAL (ROLÁVEL COM TODAS AS OPÇÕES) -->
+      <div id="modal-view-pack" class="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">
+        <!-- Seção 1: Itens no Pack e Botões de Adicionar -->
         <div class="flex flex-col gap-1.5">
           <div class="flex items-center justify-between text-[11px] text-slate-300 font-semibold">
             <span id="modal-files-summary">Itens no Pack (0) • 0 B</span>
             <div class="flex items-center gap-1.5">
               <button
-                id="btn-modal-quick-browser"
-                type="button"
-                class="text-sky-400 hover:text-sky-300 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors"
-                title="Navegar pelas pastas aqui mesmo sem fechar o popup"
-              >
-                📁 Pastas Rápidas
-              </button>
-              <button
                 id="btn-modal-add-more"
                 type="button"
-                class="text-orange-400 hover:text-orange-300 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors"
+                class="text-orange-300 hover:text-white bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/30 px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
                 title="Adicionar arquivos do computador"
               >
-                + Arquivo
+                + Arquivos
               </button>
               <button
                 id="btn-modal-add-folder"
                 type="button"
-                class="text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors"
-                title="Adicionar pasta inteira do computador"
+                class="text-emerald-300 hover:text-white bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                title="Adicionar pasta inteira com subpastas"
               >
                 + Pasta
               </button>
             </div>
           </div>
 
-          <!-- Lista de Arquivos e Pastas Adicionados -->
+          <!-- DROP ZONE / LISTA DE ARQUIVOS ADICIONADOS -->
           <div
-            id="modal-files-list"
-            class="max-h-[115px] overflow-y-auto space-y-1 bg-slate-950/70 border border-slate-800 rounded-xl p-1.5"
+            id="modal-drop-zone"
+            class="relative min-h-[100px] max-h-[150px] overflow-y-auto space-y-1 bg-slate-950/80 border-2 border-dashed border-slate-700/80 hover:border-orange-500/60 rounded-xl p-2 transition-colors"
           >
-            <!-- Itens renderizados via JS -->
+            <div id="modal-files-list" class="space-y-1">
+              <!-- Renderizado via JS -->
+            </div>
           </div>
         </div>
 
-        <!-- Seção 2: COMPACTAÇÃO DO PACK (NOVO: .zip, .rar ou .7z com nível selecionável) -->
+        <!-- Seção 2: COMPACTAÇÃO DO PACK EM .ZIP (100% JS Serverless / fflate) -->
         <div class="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-2">
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-1.5">
-              <span class="text-xs font-bold text-slate-200">🗜 Compactação do Pack</span>
+              <span class="text-xs font-bold text-slate-200">🗜 Compactação do Pack em .ZIP</span>
               <span class="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono font-bold">
-                ZIP • RAR • 7Z
+                ZIP P2P
               </span>
             </div>
             <label class="relative inline-flex items-center cursor-pointer">
@@ -383,7 +408,7 @@
             </label>
           </div>
           <p class="text-[10px] text-slate-400 leading-tight">
-            Gera um único arquivo compactado com todos os itens e pastas antes de enviar.
+            Compacta todos os itens em um único arquivo .ZIP antes de gerar o link ou enviar.
           </p>
 
           <!-- Painel com Opções de Compactação -->
@@ -392,33 +417,29 @@
               <!-- Formato -->
               <div class="flex flex-col gap-1">
                 <label for="modal-compress-format" class="text-[10px] font-semibold text-slate-300">
-                  Formato de arquivo
+                  Formato
                 </label>
                 <select
                   id="modal-compress-format"
                   class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
                 >
-                  <option value="zip" selected>.ZIP (Compatibilidade universal)</option>
-                  <option value="rar">.RAR (WinRAR)</option>
-                  <option value="7z">.7Z (Alta compressão 7-Zip)</option>
+                  <option value="zip" selected>.ZIP (Compatibilidade Universal)</option>
                 </select>
               </div>
 
               <!-- Nível de Compactação -->
               <div class="flex flex-col gap-1">
                 <label for="modal-compress-level" class="text-[10px] font-semibold text-slate-300">
-                  Nível de compactação
+                  Nível de compressão
                 </label>
                 <select
                   id="modal-compress-level"
                   class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 cursor-pointer"
                 >
-                  <option value="0">0 - Sem compactação (Armazenar)</option>
-                  <option value="1">1 - Mais rápido</option>
-                  <option value="3">3 - Rápido</option>
-                  <option value="5" selected>5 - Normal (Recomendado)</option>
-                  <option value="7">7 - Máximo</option>
-                  <option value="9">9 - Ultra (Menor tamanho)</option>
+                  <option value="0">0 - Sem compressão (Store - mais rápido)</option>
+                  <option value="1">1 - Rápida</option>
+                  <option value="6" selected>6 - Normal equilibrado (Recomendado)</option>
+                  <option value="9">9 - Máxima compressão</option>
                 </select>
               </div>
             </div>
@@ -426,7 +447,7 @@
             <!-- Nome Personalizado do Arquivo Compactado -->
             <div class="flex flex-col gap-1">
               <label for="modal-compress-name" class="text-[10px] font-semibold text-slate-300">
-                Nome do arquivo final (Opcional)
+                Nome do arquivo .ZIP (Opcional)
               </label>
               <div class="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 focus-within:border-indigo-500">
                 <input
@@ -444,16 +465,16 @@
           </div>
         </div>
 
-        <!-- Seção 3: Opções do Túnel Cloudflare (Tempo para expirar e Limite de downloads) -->
-        <div id="modal-tunnel-options" class="space-y-2.5">
+        <!-- Seção 3: Opções do Link Público (Tempo de Expiração, Limite e Senha) -->
+        <div id="modal-tunnel-options" class="space-y-2">
           <!-- Tempo para Expirar -->
           <div class="flex flex-col gap-1">
             <label for="modal-expiration-select" class="text-[11px] font-semibold text-slate-300">
-              ⏳ Tempo para expirar (Túnel ativo)
+              ⏳ Tempo para expirar o link
             </label>
             <select
               id="modal-expiration-select"
-              class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-orange-500/70 cursor-pointer"
+              class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-orange-500/70 cursor-pointer"
             >
               <option value="10">10 minutos</option>
               <option value="30" selected>30 minutos (recomendado)</option>
@@ -462,28 +483,24 @@
               <option value="360">6 horas</option>
               <option value="720">12 horas</option>
               <option value="1440">24 horas</option>
-              <option value="0">Sem limite (Até fechar manualmente)</option>
+              <option value="0">Sem limite (Até cancelar manualmente)</option>
             </select>
-            <span class="text-[9px] text-slate-500 leading-tight">
-              Após este tempo, o túnel é encerrado e o link deixa de funcionar.
-            </span>
           </div>
 
           <!-- Limite de Downloads -->
           <div class="flex flex-col gap-1">
             <label for="modal-download-limit-select" class="text-[11px] font-semibold text-slate-300">
-              🎯 Limite de downloads antes de expirar
+              🎯 Limite de downloads
             </label>
             <select
               id="modal-download-limit-select"
-              class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-orange-500/70 cursor-pointer"
+              class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-orange-500/70 cursor-pointer"
             >
-              <option value="1">1 download completo (expira ao concluir)</option>
-              <option value="2">2 downloads completos</option>
-              <option value="3">3 downloads completos</option>
-              <option value="5">5 downloads completos</option>
-              <option value="10">10 downloads completos</option>
               <option value="0" selected>Ilimitado (apenas pelo tempo)</option>
+              <option value="1">1 download (expira após 1º download)</option>
+              <option value="2">2 downloads</option>
+              <option value="5">5 downloads</option>
+              <option value="10">10 downloads</option>
             </select>
           </div>
 
@@ -506,7 +523,7 @@
                 id="modal-password-input"
                 type="text"
                 spellcheck="false"
-                placeholder="Deixe vazio para acesso público"
+                placeholder="Deixe vazio para acesso livre"
                 class="w-full bg-transparent text-xs font-mono text-slate-200 focus:outline-none placeholder-slate-600"
               />
               <button
@@ -522,76 +539,19 @@
         </div>
       </div>
 
-      <!-- VIEW 2: PASTAS RÁPIDAS (Navegador Embutido com Margem em Todos os Lados e Rolagem Interna) -->
-      <div
-        id="modal-quick-browser-panel"
-        class="hidden flex-1 min-h-0 flex-col p-2.5 gap-2 overflow-hidden bg-slate-950/70"
-      >
-        <!-- Topo do Pastas Rápidas -->
-        <div class="flex items-center justify-between shrink-0">
-          <div class="flex items-center gap-1.5">
-            <span class="text-xs font-bold text-sky-400">📁 Pastas Rápidas</span>
-            <span id="quick-browser-count" class="text-[9px] font-mono text-slate-400"></span>
-          </div>
-          <button
-            id="btn-quick-browser-close"
-            type="button"
-            class="text-[10px] text-sky-300 hover:text-white bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 px-2 py-0.5 rounded-lg font-medium cursor-pointer transition-colors"
-          >
-            ← Voltar ao Pack
-          </button>
-        </div>
-
-        <!-- Atalhos de Pastas (Início, Downloads, Documentos, Imagens, Desktop) -->
-        <div id="quick-browser-shortcuts" class="flex items-center gap-1 overflow-x-auto pb-0.5 shrink-0"></div>
-
-        <!-- Barra de Navegação: Caminho Atual + Subir + Adicionar Toda Esta Pasta -->
-        <div class="flex flex-col gap-1 shrink-0 bg-slate-900/90 p-1.5 rounded-xl border border-slate-800">
-          <div class="flex items-center gap-1.5 text-[9px] font-mono text-slate-300">
-            <button
-              id="btn-quick-browser-up"
-              type="button"
-              class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-sky-400 font-bold shrink-0 cursor-pointer"
-              title="Subir pasta"
-            >
-              ⬆ ..
-            </button>
-            <span id="quick-browser-path" class="truncate flex-1 text-slate-400" title="/home">/home</span>
-          </div>
-
-          <!-- BOTÃO ADICIONAR ESTA PASTA INTEIRA AO PACK -->
-          <button
-            id="btn-quick-browser-add-current"
-            type="button"
-            class="w-full flex items-center justify-center gap-1.5 py-1 px-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold cursor-pointer transition-colors"
-            title="Adicionar toda esta pasta e todos os seus arquivos ao pack"
-          >
-            <span>📂 + Adicionar esta pasta inteira ao pack</span>
-          </button>
-        </div>
-
-        <!-- LISTA DE ENTRADAS (PASTAS E ARQUIVOS) COM MARGEM EM TODOS OS LADOS E ROLAGEM INTERNA -->
-        <div
-          id="quick-browser-entries"
-          class="flex-1 min-h-0 overflow-y-auto space-y-1 p-2 bg-slate-950/90 rounded-xl border border-slate-800/90"
-        >
-          <!-- Pastas e arquivos renderizados aqui via JS -->
-        </div>
-      </div>
-
       <!-- Rodapé Fixo do Modal -->
-      <div class="flex items-center gap-2 p-2.5 border-t border-slate-800 bg-slate-900/90 shrink-0">
+      <div class="flex items-center gap-2.5 px-4 py-2.5 border-t border-slate-800 bg-slate-900/95 shrink-0">
         <button
           id="btn-modal-cancel"
           type="button"
-          class="flex-1 py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
+          class="flex-1 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
         >
           Cancelar
         </button>
         <button
           id="btn-modal-confirm"
           type="button"
-          class="flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white text-xs font-bold shadow-md border border-orange-400/30 transition-all cursor-pointer"
+          class="flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white text-xs font-bold shadow-md border border-orange-400/30 transition-all cursor-pointer"
         >
           Confirmar & Gerar Link
         </button>
@@ -599,6 +559,7 @@
     </div>
   </div>
 
+  <script src="fflate.min.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

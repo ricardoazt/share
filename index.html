@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PulseShare — Download de Arquivos P2P (Cloudflare WebRTC)</title>
+  <title>PulseShare — Download de Arquivos P2P (WebRTC Serverless)</title>
   <style>
     *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid #1e293b; }
     html, body {
@@ -20,7 +20,7 @@
     }
     .container {
       width: 100%;
-      max-width: 440px;
+      max-width: 460px;
       background: rgba(15, 23, 42, 0.95);
       border: 1px solid #1e293b;
       border-radius: 20px;
@@ -120,6 +120,69 @@
     .btn-all:hover { opacity: 0.95; transform: translateY(-1px); }
     .btn-all:active { transform: scale(0.98); }
     .btn-all:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+    /* Seção de Compactação ZIP */
+    .zip-section {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 14px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .zip-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .zip-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #cbd5e1;
+    }
+    .zip-toggle-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #94a3b8;
+      cursor: pointer;
+    }
+    .zip-toggle-wrap input {
+      cursor: pointer;
+      accent-color: #f97316;
+    }
+    .zip-options {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-top: 8px;
+      border-top: 1px solid #1e293b;
+    }
+    .zip-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    .zip-select, .zip-input {
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 6px 10px;
+      color: #f1f5f9;
+      font-size: 11px;
+      font-family: inherit;
+      outline: none;
+    }
+    .zip-select:focus, .zip-input:focus {
+      border-color: #f97316;
+    }
 
     .files-list {
       display: flex;
@@ -250,82 +313,79 @@
     .btn-cancel { background: rgba(244, 63, 94, 0.2); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.4); }
     .btn-cancel:hover { background: rgba(244, 63, 94, 0.35); }
 
-    /* Password Card */
     .password-card {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      padding: 16px;
-      background: #020617;
+      background: #090d16;
       border: 1px solid #1e293b;
       border-radius: 14px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
       text-align: center;
     }
     .password-input-wrap {
       display: flex;
+      width: 100%;
       gap: 8px;
     }
     .password-input {
       flex: 1;
-      padding: 10px 12px;
-      border-radius: 10px;
-      background: #090d16;
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: #020617;
       border: 1px solid #334155;
-      color: #ffffff;
+      color: #fff;
       font-size: 13px;
       outline: none;
     }
     .password-input:focus { border-color: #f97316; }
     .btn-unlock {
-      padding: 10px 16px;
-      border-radius: 10px;
+      padding: 8px 16px;
+      border-radius: 8px;
       background: #f97316;
       color: #fff;
       font-weight: 700;
-      font-size: 12px;
+      font-size: 13px;
       cursor: pointer;
     }
-
-    /* Error / Alert Card */
     .alert-card {
-      padding: 14px;
-      border-radius: 14px;
-      background: rgba(244, 63, 94, 0.15);
-      border: 1px solid rgba(244, 63, 94, 0.4);
-      color: #fecdd3;
+      background: rgba(244, 63, 94, 0.1);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      border-radius: 12px;
+      padding: 10px 14px;
+      color: #fda4af;
       font-size: 12px;
-      text-align: center;
-      line-height: 1.4;
+      display: flex;
+      align-items: center;
+      gap: 8px;
     }
-
     .footer {
       font-size: 11px;
       color: #64748b;
       text-align: center;
       line-height: 1.4;
     }
-
-    @keyframes pulse {
-      50% { opacity: 0.4; }
-    }
     .hidden { display: none !important; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
+  <script src="fflate.min.js"></script>
 </head>
 <body>
-
   <div class="container">
     <!-- Cabeçalho -->
     <div class="header">
       <div class="badge-p2p">
         <span id="status-dot" class="dot"></span>
-        <span id="status-header">Túnel P2P Cloudflare</span>
+        <span id="status-header">Conectando à Malha P2P...</span>
       </div>
       <span id="share-badge" class="share-badge">#---</span>
     </div>
 
-    <!-- Alerta / Mensagem de Erro (Expirado, Cancelado, etc.) -->
+    <!-- Alertas (Erros, Expiração, Cancelamento) -->
     <div id="alert-card" class="alert-card hidden">
-      <span id="alert-text">Mensagem</span>
+      <span>⚠️</span>
+      <span id="alert-text">Mensagem de aviso</span>
     </div>
 
     <!-- Tela de Desbloqueio com Senha (se houver) -->
@@ -355,18 +415,48 @@
           <span id="pack-summary">0 arquivos • 0 B</span>
         </div>
         <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
-          <span id="tunnel-status-text" style="font-size: 11px; color: #34d399; font-weight: 600;">🟢 Túnel P2P Ativo</span>
+          <span id="tunnel-status-text" style="font-size: 11px; color: #34d399; font-weight: 600;">🟢 P2P WebRTC Conectado</span>
           <span id="exp-badge" class="exp-badge">⏳ Expira em: --:--</span>
         </div>
       </div>
 
-      <!-- Botão para Baixar Todos -->
-      <button id="btn-download-all" type="button" class="btn-all">
-        <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-        </svg>
-        Baixar Todos os Arquivos
-      </button>
+      <!-- SEÇÃO DE COMPACTAÇÃO E DOWNLOAD EM .ZIP -->
+      <div class="zip-section">
+        <div class="zip-header">
+          <div class="zip-title">
+            <span>🗜️</span>
+            <span>Opções de Compactação (.ZIP)</span>
+          </div>
+          <label class="zip-toggle-wrap">
+            <span>Empacotar em .ZIP</span>
+            <input id="toggle-zip-mode" type="checkbox" checked />
+          </label>
+        </div>
+
+        <div id="zip-options-panel" class="zip-options">
+          <div class="zip-field">
+            <label for="zip-level">Nível de compressão:</label>
+            <select id="zip-level" class="zip-select">
+              <option value="0">0 - Sem compressão (Store - mais rápido)</option>
+              <option value="1">1 - Mais rápido</option>
+              <option value="6" selected>6 - Normal equilibrado (Recomendado)</option>
+              <option value="9">9 - Máxima compressão</option>
+            </select>
+          </div>
+          <div class="zip-field">
+            <label for="zip-filename">Nome do arquivo compactado:</label>
+            <input id="zip-filename" type="text" class="zip-input" placeholder="Pacote_Compartilhado.zip" />
+          </div>
+        </div>
+
+        <!-- Botão Principal de Download -->
+        <button id="btn-download-all" type="button" class="btn-all">
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+          </svg>
+          <span id="btn-download-all-text">⬇ Baixar Todos (.ZIP)</span>
+        </button>
+      </div>
 
       <!-- Lista de Arquivos com Opção de Baixar Individualmente -->
       <div id="files-list" class="files-list">
@@ -376,7 +466,7 @@
 
     <!-- Rodapé Explicativo -->
     <p class="footer">
-      Transferência 100% direta de navegador para navegador via <strong>Cloudflare WebRTC STUN + TURN</strong>. Nenhum arquivo fica salvo em servidores.
+      Transferência 100% direta de navegador para navegador via <strong>WebRTC DataChannel (STUN + TURN)</strong>. Servido pelo GitHub Pages. Nenhum arquivo fica salvo em servidores intermediários.
     </p>
   </div>
 
@@ -402,9 +492,16 @@
       iceCandidatePoolSize: 6
     };
 
-    const urlParams = new URLSearchParams(window.location.search || (window.location.hash ? window.location.hash.replace(/^#/, '') : ''));
-    const shareId = urlParams.get('share') || '';
-    const ownerTag = urlParams.get('owner') || '';
+    // Lê parâmetros tanto do Hash quanto da Query String
+    const hashStr = window.location.hash ? window.location.hash.replace(/^#/, '') : '';
+    const searchStr = window.location.search ? window.location.search.replace(/^\?/, '') : '';
+    const hashParams = new URLSearchParams(hashStr);
+    const searchParams = new URLSearchParams(searchStr);
+
+    const shareId = hashParams.get('share') || searchParams.get('share') || '';
+    const rawOwner = hashParams.get('owner') || searchParams.get('owner') || '';
+    const ownerTag = rawOwner ? decodeURIComponent(rawOwner) : '';
+    const expParam = hashParams.get('exp') || searchParams.get('exp') || '';
 
     const visitorNodeId = crypto.randomUUID();
     const visitorTag = `@link_${visitorNodeId.slice(0, 6)}`;
@@ -425,7 +522,13 @@
     const packSummary = document.getElementById('pack-summary');
     const tunnelStatusText = document.getElementById('tunnel-status-text');
     const expBadge = document.getElementById('exp-badge');
+
+    const toggleZipMode = document.getElementById('toggle-zip-mode');
+    const zipOptionsPanel = document.getElementById('zip-options-panel');
+    const zipLevelSelect = document.getElementById('zip-level');
+    const zipFilenameInput = document.getElementById('zip-filename');
     const btnDownloadAll = document.getElementById('btn-download-all');
+    const btnDownloadAllText = document.getElementById('btn-download-all-text');
     const filesList = document.getElementById('files-list');
 
     shareBadge.textContent = shareId ? `#${shareId}` : '#inválido';
@@ -531,7 +634,7 @@
 
     function connectBrokers() {
       if (!shareId || !ownerTag) {
-        showAlert('Link de compartilhamento incompleto. Parâmetros share ou owner ausentes.');
+        showAlert('Link de compartilhamento incompleto. Parâmetros share ou owner ausentes no link.');
         return;
       }
 
@@ -578,8 +681,7 @@
               const subBody = [0x00, 0x01, ...encodeUTF8String(MESH_TOPIC), 0x00];
               ws.send(new Uint8Array([0x82, ...encodeRemainingLength(subBody.length), ...subBody]));
               statusDot.className = 'dot green';
-              statusHeader.textContent = 'Conectado à Malha P2P';
-              // Pede metadados do pack ao remetente
+              statusHeader.textContent = 'Conectado à Malha P2P (3 brokers)';
               requestPackInfo();
             } else if (pt === 0x30) {
               // PUBLISH
@@ -619,7 +721,7 @@
     }
 
     // ============================================================================
-    // Manipulação de Pacotes de Sinalização Recebidos
+    // Manipulação de Pacotes Recebidos
     // ============================================================================
     function handleIncomingPacket(pkt) {
       if (!pkt || pkt.senderNodeId === visitorNodeId) return;
@@ -673,22 +775,22 @@
     function onPackInfoResponse(payload) {
       if (!payload.ok) {
         if (payload.error === 'EXPIRED') {
-          showAlert('⏳ Este túnel temporário expirou. O tempo limite definido pelo remetente foi atingido.');
+          showAlert('⏳ Este link temporário expirou. O tempo limite definido pelo remetente foi atingido.');
         } else if (payload.error === 'CANCELLED') {
-          showAlert('✕ O remetente encerrou ou cancelou este compartilhamento.');
+          showAlert('✕ O remetente encerrou este compartilhamento.');
         } else if (payload.error === 'PAUSED') {
-          showAlert('⏸ O remetente pausou o túnel temporariamente. Aguarde a retomada.');
+          showAlert('⏸ O remetente pausou o link temporariamente. Aguarde a retomada.');
         } else {
           showAlert(payload.message || 'Compartilhamento não encontrado ou remetente offline.');
         }
         statusDot.className = 'dot red';
-        statusHeader.textContent = 'Túnel Indisponível';
+        statusHeader.textContent = 'Link Indisponível';
         return;
       }
 
       packData = payload;
       statusDot.className = 'dot green';
-      statusHeader.textContent = '🟢 Remetente Online & Túnel Aberto';
+      statusHeader.textContent = '🟢 Remetente Online (P2P Pronto)';
       hideAlert();
 
       if (packData.hasPassword && !unlocked) {
@@ -733,7 +835,7 @@
     });
 
     // ============================================================================
-    // Renderização do Pack e Contagem Regressiva
+    // Renderização do Pack e Opções de Compactação
     // ============================================================================
     function showPackUI() {
       packContent.classList.remove('hidden');
@@ -742,7 +844,11 @@
       const totalSize = packData.totalSize || (packData.files || []).reduce((acc, f) => acc + (f.size || 0), 0);
       packSummary.textContent = `${(packData.files || []).length} arquivo(s) • ${formatBytes(totalSize)}`;
 
-      // Inicia contador de expiração
+      if (zipFilenameInput && !zipFilenameInput.value) {
+        const defaultZip = (packData.packName || 'Pacote_Compartilhado').replace(/\.zip$/i, '') + '.zip';
+        zipFilenameInput.value = defaultZip;
+      }
+
       updateExpirationCountdown();
       clearInterval(countdownTimer);
       countdownTimer = setInterval(updateExpirationCountdown, 1000);
@@ -759,13 +865,25 @@
       if (remainingSec <= 0) {
         expBadge.textContent = '⏳ Expirado';
         expBadge.style.color = '#fb7185';
-        showAlert('⏳ O tempo limite deste túnel acabou. Novos downloads não podem ser iniciados.');
+        showAlert('⏳ O tempo limite deste link acabou. Novos downloads não podem ser iniciados.');
         btnDownloadAll.disabled = true;
         return;
       }
       const min = Math.floor(remainingSec / 60);
       const sec = remainingSec % 60;
       expBadge.textContent = `⏳ Expira em: ${min}m ${sec < 10 ? '0' : ''}${sec}s`;
+    }
+
+    if (toggleZipMode) {
+      toggleZipMode.addEventListener('change', () => {
+        if (toggleZipMode.checked) {
+          zipOptionsPanel.classList.remove('hidden');
+          btnDownloadAllText.textContent = '⬇ Baixar Todos (.ZIP)';
+        } else {
+          zipOptionsPanel.classList.add('hidden');
+          btnDownloadAllText.textContent = '⬇ Baixar Todos os Arquivos';
+        }
+      });
     }
 
     function renderFilesList() {
@@ -796,7 +914,6 @@
             </button>
           </div>
 
-          <!-- Barra de Progresso e Ações (Pausar / Cancelar) -->
           <div id="prog-${file.fileId}" class="prog-section hidden">
             <div class="prog-bar-bg">
               <div id="bar-${file.fileId}" class="prog-bar-fill"></div>
@@ -824,7 +941,7 @@
     }
 
     // ============================================================================
-    // Download de Arquivo via WebRTC DataChannel (Streaming P2P)
+    // Download de Arquivos e Compactação em .ZIP (fflate)
     // ============================================================================
     filesList.addEventListener('click', (e) => {
       const dlBtn = e.target.closest('button[data-file-id]');
@@ -842,33 +959,96 @@
 
     btnDownloadAll.addEventListener('click', async () => {
       const files = packData.files || [];
-      btnDownloadAll.disabled = true;
-      btnDownloadAll.textContent = 'Baixando arquivos em fila...';
+      if (files.length === 0) return;
 
-      for (const file of files) {
-        if (!activeDownloads.has(file.fileId)) {
-          await new Promise((resolve) => {
-            startFileDownload(file.fileId, () => resolve());
+      const isZipMode = Boolean(toggleZipMode && toggleZipMode.checked);
+      const compressLevel = zipLevelSelect ? Number(zipLevelSelect.value) : 6;
+      const customZipName = zipFilenameInput ? zipFilenameInput.value.trim() : '';
+
+      btnDownloadAll.disabled = true;
+
+      if (isZipMode) {
+        btnDownloadAllText.textContent = 'Baixando arquivos para compactação...';
+        const zipEntries = {};
+
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          btnDownloadAllText.textContent = `Baixando ${i + 1}/${files.length}: ${file.name}...`;
+
+          const fileBytes = await new Promise((resolve, reject) => {
+            startFileDownload(file.fileId, (bytes) => {
+              resolve(bytes);
+            }, true);
           });
+
+          if (fileBytes) {
+            zipEntries[file.name] = [new Uint8Array(fileBytes), { level: compressLevel }];
+          }
         }
+
+        btnDownloadAllText.textContent = `Compactando em .ZIP (Nível ${compressLevel})...`;
+
+        try {
+          if (typeof fflate === 'undefined' || !fflate.zip) {
+            throw new Error('Biblioteca de compressão fflate não encontrada.');
+          }
+
+          const zippedU8 = await new Promise((resolve, reject) => {
+            fflate.zip(zipEntries, { level: compressLevel }, (err, data) => {
+              if (err) reject(err);
+              else resolve(data);
+            });
+          });
+
+          const defaultName = (packData.packName || 'Pacote_Compartilhado').replace(/\.zip$/i, '') + '.zip';
+          const finalZipName = (customZipName || defaultName).replace(/\.zip$/i, '') + '.zip';
+
+          const blob = new Blob([zippedU8], { type: 'application/zip' });
+          const blobUrl = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = blobUrl;
+          a.download = finalZipName;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+
+          btnDownloadAllText.textContent = '✓ ZIP Baixado com Sucesso!';
+        } catch (err) {
+          console.error('Erro ao gerar ZIP:', err);
+          showAlert(`Falha ao compactar ZIP: ${err.message}`);
+          btnDownloadAllText.textContent = 'Erro ao compactar ZIP';
+        }
+      } else {
+        // Modo individual: baixa cada arquivo separadamente
+        btnDownloadAllText.textContent = 'Baixando arquivos em fila...';
+        for (const file of files) {
+          if (!activeDownloads.has(file.fileId)) {
+            await new Promise((resolve) => {
+              startFileDownload(file.fileId, () => resolve());
+            });
+          }
+        }
+        btnDownloadAllText.textContent = '✓ Todos os downloads finalizados';
       }
 
-      btnDownloadAll.textContent = '✓ Todos os downloads finalizados';
       setTimeout(() => {
         btnDownloadAll.disabled = false;
-        btnDownloadAll.textContent = 'Baixar Todos os Arquivos';
+        btnDownloadAllText.textContent = isZipMode ? '⬇ Baixar Todos (.ZIP)' : '⬇ Baixar Todos os Arquivos';
       }, 3000);
     });
 
-    function startFileDownload(fileId, onCompleteCallback) {
+    function startFileDownload(fileId, onCompleteCallback, returnBufferOnly = false) {
       const file = (packData.files || []).find((f) => f.fileId === fileId);
       if (!file) return;
 
       const progSection = document.getElementById(`prog-${fileId}`);
       const btnDl = document.getElementById(`btn-dl-${fileId}`);
-      progSection.classList.remove('hidden');
-      btnDl.disabled = true;
-      btnDl.textContent = 'Baixando...';
+      if (progSection) progSection.classList.remove('hidden');
+      if (btnDl) {
+        btnDl.disabled = true;
+        btnDl.textContent = 'Baixando...';
+      }
 
       const transferId = `${shareId}_${fileId}_${Math.floor(1000 + Math.random() * 9000)}`;
 
@@ -887,12 +1067,11 @@
         paused: false,
         cancelled: false,
         pendingCandidates: [],
+        returnBufferOnly,
         onComplete: onCompleteCallback
       };
 
       activeDownloads.set(fileId, downloadRecord);
-
-      // Envia solicitação de puxar este arquivo específico via túnel
       broadcastSignal('PACK_FILE_PULL', { shareId, fileId }, ownerTag, transferId);
     }
 
@@ -994,14 +1173,18 @@
       const btnPause = document.getElementById(`btn-pause-${fileId}`);
       if (!dl.paused) {
         dl.paused = true;
-        btnPause.textContent = '▶ Retomar';
-        btnPause.className = 'ctrl-btn btn-resume';
+        if (btnPause) {
+          btnPause.textContent = '▶ Retomar';
+          btnPause.className = 'ctrl-btn btn-resume';
+        }
         updateFileUI(fileId, { status: 'Pausado' });
         try { dl.channel?.send(JSON.stringify({ type: 'REQUEST_PAUSE' })); } catch {}
       } else {
         dl.paused = false;
-        btnPause.textContent = '⏸ Pausar';
-        btnPause.className = 'ctrl-btn btn-pause';
+        if (btnPause) {
+          btnPause.textContent = '⏸ Pausar';
+          btnPause.className = 'ctrl-btn btn-pause';
+        }
         updateFileUI(fileId, { status: 'Recebendo...' });
         try { dl.channel?.send(JSON.stringify({ type: 'REQUEST_RESUME' })); } catch {}
       }
@@ -1019,21 +1202,35 @@
       activeDownloads.delete(fileId);
 
       const btnDl = document.getElementById(`btn-dl-${fileId}`);
-      btnDl.disabled = false;
-      btnDl.textContent = '⬇ Tentar Novamente';
+      if (btnDl) {
+        btnDl.disabled = false;
+        btnDl.textContent = '⬇ Tentar Novamente';
+      }
     }
 
     function finishDownload(dl) {
-      const blob = new Blob(dl.chunks, { type: dl.fileType });
-      dl.chunks.length = 0; // Libera memória
+      let combinedBuffer = null;
+      let totalLen = 0;
+      for (const ch of dl.chunks) totalLen += ch.byteLength;
+      combinedBuffer = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const ch of dl.chunks) {
+        combinedBuffer.set(ch, offset);
+        offset += ch.byteLength;
+      }
+      dl.chunks.length = 0;
 
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = dl.fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      if (!dl.returnBufferOnly) {
+        const blob = new Blob([combinedBuffer], { type: dl.fileType });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = dl.fileName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+      }
 
       updateFileUI(dl.fileId, {
         status: 'Download concluído com sucesso!',
@@ -1044,14 +1241,17 @@
       });
 
       const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
-      btnDl.textContent = '✓ Salvo';
-      btnDl.disabled = false;
+      if (btnDl) {
+        btnDl.textContent = '✓ Salvo';
+        btnDl.disabled = false;
+      }
 
       setTimeout(() => {
         try { dl.pc?.close(); } catch {}
         activeDownloads.delete(dl.fileId);
-        if (typeof dl.onComplete === 'function') dl.onComplete();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+        if (typeof dl.onComplete === 'function') {
+          dl.onComplete(combinedBuffer);
+        }
       }, 500);
     }
 
@@ -1075,7 +1275,6 @@
       }
     }
 
-    // Inicializa a conexão com os brokers ao carregar a página
     document.addEventListener('DOMContentLoaded', () => {
       connectBrokers();
     });
