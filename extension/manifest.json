@@ -11,6 +11,8 @@
     "offscreen"
   ],
   "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*",
     "wss://broker.emqx.io/*",
     "wss://broker.hivemq.com/*",
     "wss://test.mosquitto.org/*"
@@ -19,7 +21,8 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Abrir PulseShare P2P"
+    "default_popup": "popup.html",
+    "default_title": "PulseShare P2P"
   },
   "web_accessible_resources": [
     {

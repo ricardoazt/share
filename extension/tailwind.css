@@ -305,8 +305,52 @@ button, input {
 
 /* Scrollbar clean */
 #transfers-list::-webkit-scrollbar,
-#peers-list::-webkit-scrollbar { width: 4px; height: 4px; }
+#peers-list::-webkit-scrollbar,
+#modal-files-list::-webkit-scrollbar { width: 4px; height: 4px; }
 #transfers-list::-webkit-scrollbar-track,
-#peers-list::-webkit-scrollbar-track { background: transparent; }
+#peers-list::-webkit-scrollbar-track,
+#modal-files-list::-webkit-scrollbar-track { background: transparent; }
 #transfers-list::-webkit-scrollbar-thumb,
-#peers-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+#peers-list::-webkit-scrollbar-thumb,
+#modal-files-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+
+/* Modal & Overlay Utilities */
+.fixed { position: fixed; }
+.inset-0 { inset: 0px; }
+.z-30 { z-index: 30; }
+.z-40 { z-index: 40; }
+.z-50 { z-index: 50; }
+.bg-black\/70 { background-color: rgba(0, 0, 0, 0.7); }
+.bg-black\/80 { background-color: rgba(0, 0, 0, 0.8); }
+.bg-black\/90 { background-color: rgba(0, 0, 0, 0.9); }
+.bg-slate-900\/95 { background-color: rgba(15, 23, 42, 0.95); }
+.bg-slate-950\/95 { background-color: rgba(2, 6, 23, 0.95); }
+.bg-slate-800\/60 { background-color: rgba(30, 41, 59, 0.6); }
+.bg-amber-500\/10 { background-color: rgba(245, 158, 11, 0.1); }
+.bg-amber-500\/15 { background-color: rgba(245, 158, 11, 0.15); }
+.bg-amber-500\/20 { background-color: rgba(245, 158, 11, 0.2); }
+.bg-amber-500\/30 { background-color: rgba(245, 158, 11, 0.3); }
+.bg-rose-500\/10 { background-color: rgba(244, 63, 94, 0.1); }
+.bg-rose-500\/15 { background-color: rgba(244, 63, 94, 0.15); }
+.bg-rose-500\/20 { background-color: rgba(244, 63, 94, 0.2); }
+.bg-rose-500\/30 { background-color: rgba(244, 63, 94, 0.3); }
+
+.border-amber-500\/30 { border-color: rgba(245, 158, 11, 0.3); }
+.border-amber-500\/40 { border-color: rgba(245, 158, 11, 0.4); }
+.border-rose-500\/30 { border-color: rgba(244, 63, 94, 0.3); }
+.border-rose-500\/40 { border-color: rgba(244, 63, 94, 0.4); }
+
+.hover\:bg-amber-500\/30:hover { background-color: rgba(245, 158, 11, 0.3); }
+.hover\:bg-amber-500\/40:hover { background-color: rgba(245, 158, 11, 0.4); }
+.hover\:bg-rose-500\/30:hover { background-color: rgba(244, 63, 94, 0.3); }
+.hover\:bg-rose-500\/40:hover { background-color: rgba(244, 63, 94, 0.4); }
+
+.text-amber-200 { color: #fde68a; }
+.text-amber-400 { color: #fbbf24; }
+.text-emerald-200 { color: #a7f3d0; }
+.text-rose-100 { color: #ffe4e6; }
+
+.backdrop-blur-sm { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.max-h-\[130px\] { max-height: 130px; }
+.max-h-\[150px\] { max-height: 150px; }
+.max-h-\[220px\] { max-height: 220px; }

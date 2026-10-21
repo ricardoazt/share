@@ -57,6 +57,12 @@ fileBridgeChannel.onmessage = (event) => {
     });
   } else if (data.type === 'DELETE_FILE_MEMORY' && data.transferId) {
     inMemoryFiles.delete(data.transferId);
+  } else if (data.type === 'DELETE_PACK_MEMORY' && data.shareId) {
+    for (const key of inMemoryFiles.keys()) {
+      if (key === data.shareId || key.startsWith(`${data.shareId}:`)) {
+        inMemoryFiles.delete(key);
+      }
+    }
   }
 };
 
@@ -94,9 +100,12 @@ function openDatabase() {
   });
 }
 
-async function getStagedFile(fileKey) {
+async function getStagedFile(fileKey, fallbackKey) {
   if (inMemoryFiles.has(fileKey)) {
     return inMemoryFiles.get(fileKey);
+  }
+  if (fallbackKey && inMemoryFiles.has(fallbackKey)) {
+    return inMemoryFiles.get(fallbackKey);
   }
   try {
     const db = await openDatabase();
@@ -105,7 +114,17 @@ async function getStagedFile(fileKey) {
       const req = tx.objectStore(FILE_STORE).get(fileKey);
       req.onsuccess = () => {
         db.close();
-        resolve(req.result || null);
+        if (req.result) resolve(req.result);
+        else if (fallbackKey) {
+          openDatabase().then(db2 => {
+            const tx2 = db2.transaction(FILE_STORE, 'readonly');
+            const req2 = tx2.objectStore(FILE_STORE).get(fallbackKey);
+            req2.onsuccess = () => { db2.close(); resolve(req2.result || null); };
+            req2.onerror = () => { db2.close(); resolve(null); };
+          }).catch(() => resolve(null));
+        } else {
+          resolve(null);
+        }
       };
       req.onerror = () => {
         db.close();
@@ -219,14 +238,50 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.action === 'OFFSCREEN_SIGNAL') {
     handleSignal(msg);
+  } else if (msg.action === 'OFFSCREEN_CONTROL') {
+    handleControl(msg);
   }
 });
+
+function handleControl({ subAction, transferId }) {
+  for (const [id, session] of peerSessions.entries()) {
+    if (id === transferId || session.uiTransferId === transferId) {
+      if (subAction === 'PAUSE') {
+        session.paused = true;
+        try {
+          if (session.channel && session.channel.readyState === 'open') {
+            session.channel.send(JSON.stringify({ type: 'TRANSFER_PAUSED', transferId }));
+          }
+        } catch {}
+      } else if (subAction === 'RESUME') {
+        session.paused = false;
+        try {
+          if (session.channel && session.channel.readyState === 'open') {
+            session.channel.send(JSON.stringify({ type: 'TRANSFER_RESUMED', transferId }));
+          }
+        } catch {}
+      } else if (subAction === 'CANCEL') {
+        session.cancelled = true;
+        try {
+          if (session.channel && session.channel.readyState === 'open') {
+            session.channel.send(JSON.stringify({ type: 'TRANSFER_CANCELLED', transferId }));
+          }
+        } catch {}
+        try {
+          if (session.pc) session.pc.close();
+        } catch {}
+        peerSessions.delete(id);
+      }
+    }
+  }
+}
 
 async function handleSignal({
   from,
   transferId,
   uiTransferId,
   fileKey,
+  fallbackKey,
   keepStaged,
   signalType,
   payload,
@@ -238,9 +293,11 @@ async function handleSignal({
       transferId,
       uiTransferId || transferId,
       fileKey || transferId,
+      fallbackKey || null,
       Boolean(keepStaged),
       from,
-      roster
+      roster,
+      payload?.fileMeta
     );
   } else if (signalType === 'WEBRTC_OFFER') {
     await startReceiverWebRTC(transferId, from, payload.sdp, roster, transferMeta);
@@ -281,9 +338,11 @@ async function startSenderWebRTC(
   signalTransferId,
   uiTransferId,
   fileKey,
+  fallbackKey,
   keepStaged,
   targetTag,
-  localRoster
+  localRoster,
+  targetFileMeta
 ) {
   reportProgress(uiTransferId, { status: 'CONNECTING' });
 
@@ -300,7 +359,9 @@ async function startSenderWebRTC(
     channel,
     uiTransferId,
     pendingCandidates,
-    remoteDescSet: false
+    remoteDescSet: false,
+    paused: false,
+    cancelled: false
   };
   peerSessions.set(signalTransferId, session);
 
@@ -331,6 +392,17 @@ async function startSenderWebRTC(
           // Confirmação final de que o destinatário recebeu 100% dos bytes
           pc.close();
           peerSessions.delete(signalTransferId);
+        } else if (ctrl.type === 'REQUEST_PAUSE' || ctrl.type === 'TRANSFER_PAUSED') {
+          session.paused = true;
+          reportProgress(uiTransferId, { status: 'PAUSED' });
+        } else if (ctrl.type === 'REQUEST_RESUME' || ctrl.type === 'TRANSFER_RESUMED') {
+          session.paused = false;
+          reportProgress(uiTransferId, { status: 'TRANSFERRING' });
+        } else if (ctrl.type === 'REQUEST_CANCEL' || ctrl.type === 'TRANSFER_CANCELLED') {
+          session.cancelled = true;
+          reportProgress(uiTransferId, { status: 'CANCELLED' });
+          try { pc.close(); } catch {}
+          peerSessions.delete(signalTransferId);
         }
       } catch {}
     }
@@ -343,7 +415,7 @@ async function startSenderWebRTC(
       } catch {}
     }
 
-    const file = await getStagedFile(fileKey);
+    const file = await getStagedFile(fileKey, fallbackKey);
     if (!file) {
       reportProgress(uiTransferId, {
         status: 'ERROR',
@@ -351,6 +423,16 @@ async function startSenderWebRTC(
       });
       return;
     }
+
+    try {
+      channel.send(JSON.stringify({
+        type: 'FILE_START',
+        fileId: targetFileMeta?.fileId || 'f-0',
+        fileName: file.name,
+        fileSize: file.size,
+        fileType: file.type || 'application/octet-stream'
+      }));
+    } catch {}
 
     const totalBytes = file.size;
     reportProgress(uiTransferId, {
@@ -366,6 +448,14 @@ async function startSenderWebRTC(
     try {
       // Lê em blocos de 1 MB e envia em fatias SCTP de 16 KB
       while (offset < totalBytes) {
+        if (session.cancelled) {
+          throw new Error('Transferência cancelada');
+        }
+        while (session.paused) {
+          if (session.cancelled) throw new Error('Transferência cancelada');
+          await new Promise((r) => setTimeout(r, 150));
+        }
+
         if (channel.readyState !== 'open') {
           throw new Error('Canal P2P fechado durante o envio');
         }
@@ -375,6 +465,12 @@ async function startSenderWebRTC(
         let subOffset = 0;
 
         while (subOffset < macroBuffer.byteLength) {
+          if (session.cancelled) throw new Error('Transferência cancelada');
+          while (session.paused) {
+            if (session.cancelled) throw new Error('Transferência cancelada');
+            await new Promise((r) => setTimeout(r, 150));
+          }
+
           if (channel.bufferedAmount > MAX_BUFFERED_AMOUNT) {
             await waitForBufferDrain(channel);
           }
@@ -397,7 +493,7 @@ async function startSenderWebRTC(
             const speedBps = Math.round(offset / elapsedSec);
             const progress = totalBytes > 0 ? Math.round((offset / totalBytes) * 100) : 100;
             reportProgress(uiTransferId, {
-              status: 'TRANSFERRING',
+              status: session.paused ? 'PAUSED' : 'TRANSFERRING',
               progress,
               transferredBytes: offset,
               speedBps
@@ -409,7 +505,11 @@ async function startSenderWebRTC(
 
       // Aguarda esvaziar o buffer final antes de enviar o marcador EOF
       await waitForBufferDrain(channel);
-      channel.send(JSON.stringify({ type: 'EOF', totalBytes }));
+      channel.send(JSON.stringify({
+        type: 'EOF',
+        fileId: targetFileMeta?.fileId || 'f-0',
+        totalBytes
+      }));
 
       reportProgress(uiTransferId, {
         status: keepStaged ? 'TUNNEL_READY' : 'COMPLETED',
@@ -422,7 +522,11 @@ async function startSenderWebRTC(
         await deleteStagedFile(fileKey);
       }
     } catch (err) {
-      reportProgress(uiTransferId, { status: 'ERROR', error: err.message });
+      if (err.message === 'Transferência cancelada') {
+        reportProgress(uiTransferId, { status: 'CANCELLED' });
+      } else {
+        reportProgress(uiTransferId, { status: 'ERROR', error: err.message });
+      }
     }
   };
 
@@ -451,8 +555,12 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
 
   const session = {
     pc,
+    channel: null,
+    uiTransferId: transferId,
     pendingCandidates,
-    remoteDescSet: false
+    remoteDescSet: false,
+    paused: false,
+    cancelled: false
   };
   peerSessions.set(transferId, session);
 
@@ -466,6 +574,7 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
 
   pc.ondatachannel = (event) => {
     const channel = event.channel;
+    session.channel = channel;
     channel.binaryType = 'arraybuffer';
 
     channel.onopen = () => {
@@ -487,6 +596,33 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
 
         if (ctrl.type === 'P2P_ROSTER_SYNC' && Array.isArray(ctrl.roster)) {
           sendToBackground({ type: 'OFFSCREEN_ROSTER_GOSSIP', roster: ctrl.roster });
+          return;
+        }
+
+        if (ctrl.type === 'FILE_START') {
+          if (ctrl.fileName) fileName = ctrl.fileName;
+          if (ctrl.fileType) fileType = ctrl.fileType;
+          return;
+        }
+
+        if (ctrl.type === 'TRANSFER_PAUSED') {
+          session.paused = true;
+          reportProgress(transferId, { status: 'PAUSED' });
+          return;
+        }
+
+        if (ctrl.type === 'TRANSFER_RESUMED') {
+          session.paused = false;
+          reportProgress(transferId, { status: 'TRANSFERRING' });
+          return;
+        }
+
+        if (ctrl.type === 'TRANSFER_CANCELLED') {
+          session.cancelled = true;
+          reportProgress(transferId, { status: 'CANCELLED' });
+          chunks.length = 0;
+          try { pc.close(); } catch {}
+          peerSessions.delete(transferId);
           return;
         }
 

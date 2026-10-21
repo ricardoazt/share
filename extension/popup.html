@@ -95,6 +95,19 @@
           <span class="w-4 h-4 rounded-full bg-white shadow transition-transform"></span>
         </button>
       </div>
+
+      <!-- Config 3: Status do Túnel Cloudflare Automático (Daemon Local) -->
+      <div class="flex flex-col gap-1 pt-1.5 border-t border-slate-800/80">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-slate-100">Túnel Cloudflare Automático</span>
+          <span id="daemon-status-badge" class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+            ● Ativo
+          </span>
+        </div>
+        <span class="text-[10px] text-slate-400 leading-tight">
+          Criação temporária de links <span class="text-orange-400 font-mono">*.trycloudflare.com</span> sob demanda. O portal se desfaz ao cancelar ou expirar.
+        </span>
+      </div>
     </div>
 
     <!-- Meu @usuario -->
@@ -280,6 +293,175 @@
     <span>Auto-Abrir: <strong id="footer-auto-open" class="text-emerald-400">ON</strong></span>
     <span id="online-counter">0 online</span>
   </footer>
+
+  <!-- MODAL: Configurar Envio e Túnel Temporário Cloudflare (Pack de Arquivos, Expiração e Senha) -->
+  <div
+    id="tunnel-config-modal"
+    class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 select-none"
+  >
+    <div class="w-full max-w-[340px] bg-slate-900 border border-slate-700/80 rounded-2xl p-3.5 shadow-2xl flex flex-col gap-2.5">
+      <!-- Cabeçalho -->
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-orange-400"></span>
+          <span class="text-xs font-bold text-white uppercase tracking-wider">
+            Configurar Link & Túnel
+          </span>
+        </div>
+        <button
+          id="btn-modal-close"
+          type="button"
+          class="text-slate-400 hover:text-white text-xs font-bold px-1.5 py-0.5 rounded hover:bg-slate-800 cursor-pointer"
+        >
+          ✕
+        </button>
+      </div>
+
+      <!-- Lista de Arquivos Selecionados -->
+      <div class="flex flex-col gap-1">
+        <div class="flex items-center justify-between text-[11px] text-slate-400 font-semibold">
+          <span id="modal-files-summary">Arquivos (0) • 0 B</span>
+          <div class="flex items-center gap-2">
+            <button
+              id="btn-modal-quick-browser"
+              type="button"
+              class="text-sky-400 hover:text-sky-300 text-[10px] font-bold hover:underline cursor-pointer"
+              title="Navegar pelas pastas aqui mesmo sem fechar o popup"
+            >
+              📁 Pastas Rápidas
+            </button>
+            <button
+              id="btn-modal-add-more"
+              type="button"
+              class="text-orange-400 hover:text-orange-300 text-[10px] font-bold hover:underline cursor-pointer"
+              title="Abrir janela de seleção de arquivos do sistema"
+            >
+              + Adicionar arquivo
+            </button>
+          </div>
+        </div>
+        <div
+          id="modal-files-list"
+          class="max-h-[100px] overflow-y-auto space-y-1 bg-slate-950/70 border border-slate-800 rounded-xl p-1.5"
+        >
+          <!-- Arquivos renderizados via JS -->
+        </div>
+
+        <!-- Mini Explorador Rápido de Arquivos Embutido (Sem fechar o popup!) -->
+        <div
+          id="modal-quick-browser-panel"
+          class="hidden flex-col gap-1.5 bg-slate-950 border border-sky-500/30 rounded-xl p-2 mt-0.5"
+        >
+          <div class="flex items-center justify-between">
+            <span class="text-[10px] font-bold text-sky-300">⚡ Seletor Rápido (Clique para adicionar)</span>
+            <button
+              id="btn-quick-browser-close"
+              type="button"
+              class="text-[10px] text-slate-400 hover:text-white px-1 cursor-pointer"
+            >
+              Fechar ✕
+            </button>
+          </div>
+          <!-- Atalhos de pastas -->
+          <div id="quick-browser-shortcuts" class="flex items-center gap-1 overflow-x-auto pb-0.5"></div>
+          <!-- Barra de caminho atual -->
+          <div class="flex items-center gap-1 text-[9px] font-mono text-slate-400 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+            <button
+              id="btn-quick-browser-up"
+              type="button"
+              class="text-sky-400 hover:text-sky-200 font-bold pr-1 cursor-pointer"
+              title="Subir pasta"
+            >
+              ⬆ ..
+            </button>
+            <span id="quick-browser-path" class="truncate flex-1">/home</span>
+          </div>
+          <!-- Lista de pastas e arquivos -->
+          <div
+            id="quick-browser-entries"
+            class="max-h-[105px] overflow-y-auto space-y-0.5 pr-0.5"
+          ></div>
+        </div>
+      </div>
+
+      <!-- Opção de Tempo para Expirar -->
+      <div class="flex flex-col gap-1">
+        <label for="modal-expiration-select" class="text-[11px] font-semibold text-slate-300">
+          ⏳ Tempo para expirar (Túnel ativo)
+        </label>
+        <select
+          id="modal-expiration-select"
+          class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-orange-500/70 cursor-pointer"
+        >
+          <option value="10">10 minutos</option>
+          <option value="30" selected>30 minutos (recomendado)</option>
+          <option value="60">1 hora</option>
+          <option value="120">2 horas</option>
+          <option value="360">6 horas</option>
+          <option value="720">12 horas</option>
+          <option value="1440">24 horas</option>
+          <option value="0">Sem limite (Até fechar manualmente)</option>
+        </select>
+        <span class="text-[9px] text-slate-500 leading-tight">
+          Após este tempo, o túnel é encerrado e o link deixa de funcionar.
+        </span>
+      </div>
+
+      <!-- Opção de Senha de Proteção -->
+      <div class="flex flex-col gap-1">
+        <div class="flex items-center justify-between">
+          <label for="modal-password-input" class="text-[11px] font-semibold text-slate-300">
+            🔑 Senha de proteção (Opcional)
+          </label>
+          <button
+            id="btn-modal-gen-password"
+            type="button"
+            class="text-[10px] text-amber-400 hover:text-amber-300 font-medium cursor-pointer"
+          >
+            Gerar código
+          </button>
+        </div>
+        <div class="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 focus-within:border-orange-500/70">
+          <input
+            id="modal-password-input"
+            type="text"
+            spellcheck="false"
+            placeholder="Deixe vazio para acesso público"
+            class="w-full bg-transparent text-xs font-mono text-slate-200 focus:outline-none placeholder-slate-600"
+          />
+          <button
+            id="btn-modal-clear-password"
+            type="button"
+            title="Limpar senha"
+            class="text-slate-500 hover:text-slate-300 text-[10px] px-1 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+        <span class="text-[9px] text-slate-500 leading-tight">
+          Se definida, quem acessar o link precisará desta senha para baixar.
+        </span>
+      </div>
+
+      <!-- Botões de Ação do Modal -->
+      <div class="flex items-center gap-2 pt-1 border-t border-slate-800">
+        <button
+          id="btn-modal-cancel"
+          type="button"
+          class="flex-1 py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors cursor-pointer"
+        >
+          Cancelar
+        </button>
+        <button
+          id="btn-modal-confirm"
+          type="button"
+          class="flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white text-xs font-bold shadow-md border border-orange-400/30 transition-all cursor-pointer"
+        >
+          Confirmar & Gerar Link
+        </button>
+      </div>
+    </div>
+  </div>
 
   <script src="popup.js"></script>
 </body>

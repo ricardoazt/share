@@ -24,6 +24,8 @@ const state = {
   autoAccept: true,
   autoOpenOnReceive: true,
   tunnelReady: true,
+  stagedTunnelFiles: [],
+  tunnelModalOpen: false,
   peerRegistry: {},
   transfers: {}
 };
@@ -82,95 +84,188 @@ async function isExtensionPopupOpen() {
   return false;
 }
 
-async function ensureExtensionPopupOpen(queryParams = '?window=1') {
-  const alreadyOpen = await isExtensionPopupOpen();
-  if (alreadyOpen && popupWindowId !== null) {
-    try {
-      await chrome.windows.update(popupWindowId, { focused: true });
-      return;
-    } catch {
-      popupWindowId = null;
-    }
-  }
-
+function updateBadgeForStagedFiles() {
   try {
-    const url = chrome.runtime.getURL(`popup.html${queryParams}`);
-    const win = await chrome.windows.create({
-      url,
-      type: 'popup',
-      width: 376,
-      height: 620,
-      focused: true
-    });
-    if (win && typeof win.id === 'number') {
-      popupWindowId = win.id;
+    const count = Array.isArray(state.stagedTunnelFiles) ? state.stagedTunnelFiles.length : 0;
+    if (count > 0 && state.tunnelModalOpen) {
+      chrome.action.setBadgeText({ text: String(count) });
+      chrome.action.setBadgeBackgroundColor({ color: '#f97316' });
+    } else {
+      chrome.action.setBadgeText({ text: '' });
     }
   } catch {}
 }
 
-// Ao clicar no ícone da extensão no Chrome, abre a janela compacta persistente
-if (chrome.action && chrome.action.onClicked) {
-  chrome.action.onClicked.addListener(() => {
-    ensureExtensionPopupOpen('?window=1');
-  });
+async function ensureExtensionPopupOpen() {
+  for (const delay of [40, 160, 320, 600, 1000]) {
+    await new Promise((r) => setTimeout(r, delay));
+    try {
+      const alreadyOpen = await isExtensionPopupOpen();
+      if (alreadyOpen) return;
+      const win = await chrome.windows.getLastFocused({ populate: false });
+      if (win && typeof win.id === 'number') {
+        await chrome.windows.update(win.id, { focused: true });
+      }
+      if (chrome.action && chrome.action.openPopup) {
+        await chrome.action.openPopup();
+        return;
+      }
+    } catch {}
+  }
 }
 
-if (chrome.windows && chrome.windows.onRemoved) {
-  chrome.windows.onRemoved.addListener((winId) => {
-    if (winId === popupWindowId) {
-      popupWindowId = null;
+// Monitor periódico de expiração de túneis temporários Cloudflare
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+  for (const [id, t] of Object.entries(state.transfers)) {
+    if (t.direction === 'tunnel' && t.status === 'TUNNEL_READY' && t.expiresAt && now >= t.expiresAt) {
+      t.status = 'EXPIRED';
+      t.updatedAt = now;
+      if (t.shareId) publicP2PShares.delete(t.shareId);
+      changed = true;
+      if (fileBridgeChannel) {
+        fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId: t.shareId || id });
+      }
     }
-  });
-}
+  }
+  if (changed) {
+    broadcastState();
+  }
+}, 1000);
 
 // ============================================================================
 // 2. Link Público P2P Serverless (Cloudflare WebRTC STUN + TURN)
 // ============================================================================
-async function startServerlessP2PLinkShare(transferId, fileMeta) {
-  const randomHex = Array.from(crypto.getRandomValues(new Uint8Array(3)))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  const shareId = `cf-${randomHex}`;
+async function startServerlessP2PLinkShare(params) {
+  const shareId =
+    params.shareId ||
+    `cf-${Array.from(crypto.getRandomValues(new Uint8Array(3)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')}`;
 
-  const query = new URLSearchParams({
-    share: shareId,
-    owner: state.myTag,
-    name: fileMeta.name,
-    size: String(fileMeta.size),
-    type: fileMeta.type || 'application/octet-stream'
-  }).toString();
+  const files =
+    Array.isArray(params.files) && params.files.length > 0
+      ? params.files
+      : [
+          {
+            fileId: 'f-0',
+            name: params.fileMeta?.name || 'arquivo',
+            size: params.fileMeta?.size || 0,
+            type: params.fileMeta?.type || 'application/octet-stream'
+          }
+        ];
 
-  const shareUrl = `${chrome.runtime.getURL('receiver.html')}?${query}`;
+  const totalSize =
+    params.totalSize || files.reduce((acc, f) => acc + (f.size || 0), 0);
+  const packName =
+    params.packName || (files.length === 1 ? files[0].name : `Pack (${files.length} arquivos)`);
+  const expiresAt = params.expiresAt ? Number(params.expiresAt) : null;
+  const hasPassword = Boolean(params.hasPassword);
+  const password = params.password || '';
+  const passwordSalt = params.passwordSalt || '';
+  const passwordHash = params.passwordHash || '';
+  const shareUrl =
+    params.shareUrl ||
+    `${chrome.runtime.getURL('receiver.html')}?share=${shareId}&owner=${encodeURIComponent(state.myTag)}`;
 
-  publicP2PShares.set(shareId, {
+  const shareRecord = {
     shareId,
-    transferId,
-    fileName: fileMeta.name,
-    fileSize: fileMeta.size,
-    fileType: fileMeta.type || 'application/octet-stream'
-  });
+    transferId: shareId,
+    packName,
+    fileName: packName,
+    files,
+    totalSize,
+    fileSize: totalSize,
+    fileType: 'application/octet-stream',
+    hasPassword,
+    passwordSalt,
+    passwordHash,
+    expiresAt,
+    createdAt: Date.now()
+  };
 
-  state.transfers[transferId] = {
-    id: transferId,
+  publicP2PShares.set(shareId, shareRecord);
+
+  state.transfers[shareId] = {
+    id: shareId,
     direction: 'tunnel',
-    peerTag: 'Túnel P2P',
-    fileName: fileMeta.name,
-    fileSize: fileMeta.size,
-    fileType: fileMeta.type || 'application/octet-stream',
+    peerTag: 'Túnel P2P (Cloudflare WebRTC)',
+    packName,
+    fileName: packName,
+    files,
+    totalSize,
+    fileSize: totalSize,
+    fileType: 'application/octet-stream',
     progress: 100,
-    transferredBytes: fileMeta.size,
+    transferredBytes: totalSize,
     speedBps: 0,
     downloads: 0,
     shareId,
     shareUrl,
     ownerTag: state.myTag,
     status: 'TUNNEL_READY',
+    hasPassword,
+    password, // Armazenada localmente para remetente copiar formatado
+    passwordSalt,
+    passwordHash,
+    expiresAt,
+    createdAt: Date.now(),
     updatedAt: Date.now()
   };
 
   broadcastState();
-  await ensureExtensionPopupOpen('?window=1');
 }
+
+/**
+ * Sincroniza periodicamente os túneis do daemon local (127.0.0.1:18765)
+ * com o estado da extensão para refletir encerramentos, downloads ou expirações automáticas.
+ */
+async function syncTunnelsWithDaemon() {
+  try {
+    const res = await fetch('http://127.0.0.1:18765/api/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.ok || !Array.isArray(data.activeTunnels)) return;
+
+    const activeMap = new Map(data.activeTunnels.map((t) => [t.shareId, t]));
+    let changed = false;
+
+    for (const [id, t] of Object.entries(state.transfers)) {
+      if (t.direction === 'tunnel') {
+        const live = activeMap.get(t.shareId);
+        if (live) {
+          if (live.paused && t.status !== 'PAUSED') {
+            t.status = 'PAUSED';
+            t.updatedAt = Date.now();
+            changed = true;
+          } else if (!live.paused && t.status === 'PAUSED') {
+            t.status = 'TUNNEL_READY';
+            t.updatedAt = Date.now();
+            changed = true;
+          }
+          if (live.downloads !== t.downloads) {
+            t.downloads = live.downloads;
+            t.updatedAt = Date.now();
+            changed = true;
+          }
+        } else if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED') {
+          // Túnel não consta mais como ativo no daemon (expirou ou foi cancelado)
+          t.status = t.expiresAt && Date.now() >= t.expiresAt ? 'EXPIRED' : 'CANCELLED';
+          t.updatedAt = Date.now();
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      broadcastState();
+    }
+  } catch {}
+}
+
+setInterval(syncTunnelsWithDaemon, 4000);
+syncTunnelsWithDaemon();
 
 // ============================================================================
 // 3. Codificador/Decodificador Binário MQTT v3.1.1 sobre WebSocket (Multi-Broker)
@@ -550,6 +645,56 @@ function updateTransfer(transferId, patch) {
   broadcastState();
 }
 
+/**
+ * Sincroniza periodicamente os túneis do daemon local (127.0.0.1:18765)
+ * com o estado da extensão para refletir encerramentos, downloads ou expirações automáticas.
+ */
+async function syncTunnelsWithDaemon() {
+  try {
+    const res = await fetch('http://127.0.0.1:18765/api/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.ok || !Array.isArray(data.activeTunnels)) return;
+
+    const activeMap = new Map(data.activeTunnels.map((t) => [t.shareId, t]));
+    let changed = false;
+
+    for (const [id, t] of Object.entries(state.transfers)) {
+      if (t.direction === 'tunnel') {
+        const live = activeMap.get(t.shareId);
+        if (live) {
+          if (live.paused && t.status !== 'PAUSED') {
+            t.status = 'PAUSED';
+            t.updatedAt = Date.now();
+            changed = true;
+          } else if (!live.paused && t.status === 'PAUSED') {
+            t.status = 'TUNNEL_READY';
+            t.updatedAt = Date.now();
+            changed = true;
+          }
+          if (live.downloads !== t.downloads) {
+            t.downloads = live.downloads;
+            t.updatedAt = Date.now();
+            changed = true;
+          }
+        } else if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED') {
+          // Túnel não consta mais como ativo no daemon (expirou ou foi cancelado)
+          t.status = t.expiresAt && Date.now() >= t.expiresAt ? 'EXPIRED' : 'CANCELLED';
+          t.updatedAt = Date.now();
+          changed = true;
+        }
+      }
+    }
+
+    if (changed) {
+      broadcastState();
+    }
+  } catch {}
+}
+
+setInterval(syncTunnelsWithDaemon, 4000);
+syncTunnelsWithDaemon();
+
 let creatingOffscreen = null;
 
 async function ensureOffscreenDocument() {
@@ -631,8 +776,69 @@ async function handleIncomingSignal(msg) {
     mergeRemoteRoster(payload.roster);
   }
 
-  if (signalType === 'PUBLIC_LINK_PULL') {
+  if (signalType === 'PACK_INFO_REQUEST') {
     const shareId = payload?.shareId;
+    const transfer =
+      state.transfers[shareId] ||
+      Object.values(state.transfers).find((t) => t.shareId === shareId);
+
+    if (!transfer) {
+      sendSignal(from, transferId || shareId, 'PACK_INFO_RESPONSE', {
+        ok: false,
+        error: 'NOT_FOUND',
+        message: 'Túnel não encontrado ou encerrado.'
+      });
+      return;
+    }
+
+    if (
+      transfer.status === 'EXPIRED' ||
+      (transfer.expiresAt && Date.now() >= transfer.expiresAt)
+    ) {
+      sendSignal(from, transferId || shareId, 'PACK_INFO_RESPONSE', {
+        ok: false,
+        error: 'EXPIRED',
+        message: 'Este túnel temporário expirou.'
+      });
+      return;
+    }
+
+    if (transfer.status === 'PAUSED') {
+      sendSignal(from, transferId || shareId, 'PACK_INFO_RESPONSE', {
+        ok: false,
+        error: 'PAUSED',
+        message: 'O remetente pausou este túnel temporariamente.'
+      });
+      return;
+    }
+
+    if (transfer.status === 'CANCELLED') {
+      sendSignal(from, transferId || shareId, 'PACK_INFO_RESPONSE', {
+        ok: false,
+        error: 'CANCELLED',
+        message: 'O compartilhamento foi cancelado pelo remetente.'
+      });
+      return;
+    }
+
+    sendSignal(from, transferId || shareId, 'PACK_INFO_RESPONSE', {
+      ok: true,
+      shareId: transfer.shareId,
+      packName: transfer.packName,
+      totalSize: transfer.totalSize,
+      files: transfer.files,
+      hasPassword: transfer.hasPassword,
+      passwordSalt: transfer.passwordSalt,
+      passwordHash: transfer.passwordHash,
+      expiresAt: transfer.expiresAt,
+      ownerTag: state.myTag
+    });
+    return;
+  }
+
+  if (signalType === 'PACK_FILE_PULL' || signalType === 'PUBLIC_LINK_PULL') {
+    const shareId = payload?.shareId;
+    const fileId = payload?.fileId || 'f-0';
     let shareRecord = publicP2PShares.get(shareId);
 
     if (!shareRecord) {
@@ -643,23 +849,50 @@ async function handleIncomingSignal(msg) {
           transferId: found.id,
           fileName: found.fileName,
           fileSize: found.fileSize,
-          fileType: found.fileType
+          fileType: found.fileType,
+          files: found.files,
+          passwordHash: found.passwordHash,
+          expiresAt: found.expiresAt
         };
         publicP2PShares.set(shareId, shareRecord);
       }
     }
 
-    if (!shareRecord) return;
+    if (!shareRecord) {
+      sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel não encontrado' });
+      return;
+    }
 
     const parentTransfer = state.transfers[shareRecord.transferId];
     if (parentTransfer) {
+      if (
+        parentTransfer.status === 'EXPIRED' ||
+        (parentTransfer.expiresAt && Date.now() >= parentTransfer.expiresAt)
+      ) {
+        sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel expirado' });
+        return;
+      }
+      if (parentTransfer.status === 'PAUSED') {
+        sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel pausado pelo remetente' });
+        return;
+      }
+      if (parentTransfer.status === 'CANCELLED') {
+        sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel cancelado pelo remetente' });
+        return;
+      }
+
       updateTransfer(shareRecord.transferId, {
-        downloads: (parentTransfer.downloads || 0) + 1,
-        status: 'TRANSFERRING',
-        progress: 0,
-        transferredBytes: 0
+        downloads: (parentTransfer.downloads || 0) + 1
       });
     }
+
+    const targetFile =
+      (parentTransfer?.files || shareRecord.files || []).find((f) => f.fileId === fileId) || {
+        fileId,
+        name: shareRecord.fileName,
+        size: shareRecord.fileSize,
+        type: shareRecord.fileType
+      };
 
     await ensureOffscreenDocument();
     chrome.runtime.sendMessage({
@@ -668,10 +901,13 @@ async function handleIncomingSignal(msg) {
       from,
       transferId,
       uiTransferId: shareRecord.transferId,
-      fileKey: shareRecord.transferId,
+      fileKey: `${shareId}:${fileId}`,
+      fallbackKey: shareRecord.transferId,
       keepStaged: true,
       signalType: 'FILE_ACCEPT',
-      payload: {},
+      payload: {
+        fileMeta: targetFile
+      },
       roster: Object.values(state.peerRegistry)
     });
     return;
@@ -831,10 +1067,228 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: true });
       return true;
 
-    case 'START_CLOUDFLARE_TUNNEL_SHARE':
-      startServerlessP2PLinkShare(msg.transferId, msg.fileMeta);
-      sendResponse({ ok: true });
+    case 'DAEMON_PICK_FILES': {
+      const mode = msg.mode || 'tunnel';
+      const append = Boolean(msg.append);
+      const targetTag = msg.targetTag || '';
+
+      fetch('http://127.0.0.1:18765/api/pick-files', { method: 'POST' })
+        .then((r) => r.json())
+        .then(async (data) => {
+          if (data && data.ok && !data.cancelled && Array.isArray(data.files) && data.files.length > 0) {
+            if (mode === 'tunnel') {
+              if (!append || !Array.isArray(state.stagedTunnelFiles)) {
+                state.stagedTunnelFiles = data.files;
+              } else {
+                const existingPaths = new Set(state.stagedTunnelFiles.map((f) => f.diskPath));
+                for (const f of data.files) {
+                  if (!f.diskPath || !existingPaths.has(f.diskPath)) {
+                    state.stagedTunnelFiles.push(f);
+                  }
+                }
+              }
+              state.tunnelModalOpen = true;
+              await chrome.storage.local.set({
+                stagedTunnelFiles: state.stagedTunnelFiles,
+                tunnelModalOpen: state.tunnelModalOpen
+              });
+              updateBadgeForStagedFiles();
+              broadcastState();
+            } else if (mode === 'p2p' && targetTag) {
+              await ensureOffscreenDocument();
+              for (const f of data.files) {
+                try {
+                  const fileRes = await fetch(
+                    `http://127.0.0.1:18765/api/read-local-file?path=${encodeURIComponent(f.diskPath)}`
+                  );
+                  if (fileRes.ok) {
+                    const blob = await fileRes.blob();
+                    const fileObj = new File([blob], f.name, { type: f.type || 'application/octet-stream' });
+                    const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+                    if (fileBridgeChannel) {
+                      fileBridgeChannel.postMessage({
+                        type: 'STAGE_FILE_ZERO_COPY',
+                        transferId,
+                        file: fileObj
+                      });
+                    }
+                    startOutgoingTransfer(transferId, targetTag, {
+                      name: f.name,
+                      size: f.size,
+                      type: f.type || 'application/octet-stream'
+                    });
+                  }
+                } catch (err) {
+                  console.error('Falha ao preparar arquivo local para P2P:', err);
+                }
+              }
+            }
+          }
+          // Reabre automaticamente o popup da extensão assim que o seletor fechar
+          await ensureExtensionPopupOpen();
+        })
+        .catch((err) => {
+          console.error('Erro em DAEMON_PICK_FILES:', err);
+        });
+
+      sendResponse({ ok: true, state });
       return true;
+    }
+
+    case 'ADD_STAGED_TUNNEL_FILES': {
+      const incoming = Array.isArray(msg.files) ? msg.files : [];
+      if (!Array.isArray(state.stagedTunnelFiles)) state.stagedTunnelFiles = [];
+      const existingPaths = new Set(state.stagedTunnelFiles.map((f) => f.diskPath).filter(Boolean));
+      for (const f of incoming) {
+        if (!f.diskPath || !existingPaths.has(f.diskPath)) {
+          state.stagedTunnelFiles.push(f);
+        }
+      }
+      state.tunnelModalOpen = true;
+      chrome.storage.local.set({
+        stagedTunnelFiles: state.stagedTunnelFiles,
+        tunnelModalOpen: state.tunnelModalOpen
+      });
+      updateBadgeForStagedFiles();
+      broadcastState();
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'REMOVE_STAGED_TUNNEL_FILE': {
+      if (Array.isArray(state.stagedTunnelFiles) && typeof msg.index === 'number') {
+        state.stagedTunnelFiles.splice(msg.index, 1);
+      }
+      chrome.storage.local.set({
+        stagedTunnelFiles: state.stagedTunnelFiles,
+        tunnelModalOpen: state.tunnelModalOpen
+      });
+      updateBadgeForStagedFiles();
+      broadcastState();
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'CLEAR_STAGED_TUNNEL_FILES': {
+      state.stagedTunnelFiles = [];
+      state.tunnelModalOpen = false;
+      chrome.storage.local.set({
+        stagedTunnelFiles: [],
+        tunnelModalOpen: false
+      });
+      updateBadgeForStagedFiles();
+      broadcastState();
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'SET_TUNNEL_MODAL_OPEN': {
+      state.tunnelModalOpen = Boolean(msg.open);
+      chrome.storage.local.set({ tunnelModalOpen: state.tunnelModalOpen });
+      updateBadgeForStagedFiles();
+      broadcastState();
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'START_CLOUDFLARE_TUNNEL_SHARE':
+      state.stagedTunnelFiles = [];
+      state.tunnelModalOpen = false;
+      chrome.storage.local.set({
+        stagedTunnelFiles: [],
+        tunnelModalOpen: false
+      });
+      updateBadgeForStagedFiles();
+      startServerlessP2PLinkShare(msg);
+      sendResponse({ ok: true, state });
+      return true;
+
+    case 'PAUSE_TRANSFER': {
+      const t = state.transfers[msg.transferId];
+      if (t) {
+        t.status = 'PAUSED';
+        t.updatedAt = Date.now();
+        broadcastState();
+        if (t.direction === 'tunnel') {
+          fetch('http://127.0.0.1:18765/api/tunnel/pause', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shareId: t.shareId || msg.transferId })
+          }).catch(() => {});
+        }
+        ensureOffscreenDocument().then(() => {
+          chrome.runtime.sendMessage({
+            target: 'offscreen',
+            action: 'OFFSCREEN_CONTROL',
+            subAction: 'PAUSE',
+            transferId: msg.transferId
+          });
+        });
+      }
+      sendResponse({ state });
+      return true;
+    }
+
+    case 'RESUME_TRANSFER': {
+      const t = state.transfers[msg.transferId];
+      if (t) {
+        t.status = t.direction === 'tunnel' ? 'TUNNEL_READY' : 'TRANSFERRING';
+        t.updatedAt = Date.now();
+        broadcastState();
+        if (t.direction === 'tunnel') {
+          fetch('http://127.0.0.1:18765/api/tunnel/resume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shareId: t.shareId || msg.transferId })
+          }).catch(() => {});
+        }
+        ensureOffscreenDocument().then(() => {
+          chrome.runtime.sendMessage({
+            target: 'offscreen',
+            action: 'OFFSCREEN_CONTROL',
+            subAction: 'RESUME',
+            transferId: msg.transferId
+          });
+        });
+      }
+      sendResponse({ state });
+      return true;
+    }
+
+    case 'CANCEL_TRANSFER': {
+      const t = state.transfers[msg.transferId];
+      if (t) {
+        t.status = 'CANCELLED';
+        t.updatedAt = Date.now();
+        if (t.shareId) {
+          publicP2PShares.delete(t.shareId);
+        }
+        broadcastState();
+        if (t.direction === 'tunnel' || t.shareId) {
+          fetch('http://127.0.0.1:18765/api/tunnel/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shareId: t.shareId || msg.transferId })
+          }).catch(() => {});
+        }
+        ensureOffscreenDocument().then(() => {
+          chrome.runtime.sendMessage({
+            target: 'offscreen',
+            action: 'OFFSCREEN_CONTROL',
+            subAction: 'CANCEL',
+            transferId: msg.transferId
+          });
+        });
+        if (fileBridgeChannel) {
+          fileBridgeChannel.postMessage({
+            type: 'DELETE_PACK_MEMORY',
+            shareId: t.shareId || msg.transferId
+          });
+        }
+      }
+      sendResponse({ state });
+      return true;
+    }
 
     case 'RESPOND_INCOMING': {
       const transfer = state.transfers[msg.transferId];
@@ -884,9 +1338,20 @@ async function initializeServiceWorker() {
     'myTag',
     'autoAccept',
     'autoOpenOnReceive',
+    'stagedTunnelFiles',
+    'tunnelModalOpen',
     'peerRegistry',
     'transfers'
   ]);
+
+  if (Array.isArray(stored.stagedTunnelFiles)) {
+    state.stagedTunnelFiles = stored.stagedTunnelFiles;
+  }
+
+  if (typeof stored.tunnelModalOpen === 'boolean') {
+    state.tunnelModalOpen = stored.tunnelModalOpen;
+  }
+  updateBadgeForStagedFiles();
 
   if (stored.nodeId) {
     state.nodeId = stored.nodeId;
