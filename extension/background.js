@@ -26,13 +26,154 @@ const state = {
   tunnelReady: true,
   stagedTunnelFiles: [],
   tunnelModalOpen: false,
+  modalMode: 'p2p',
+  modalTargetTag: '',
   peerRegistry: {},
-  transfers: {}
+  deletedTags: {},
+  transfers: {},
+  meshRelayEnabled: true,
+  relayBandwidthLimitKbps: 2048,
+  relayedBytesTotal: 0,
+  activeRelayedRoutes: 0
 };
 
 const publicP2PShares = new Map();
 const brokerSockets = new Map(); // url -> WebSocket
 const seenPacketIds = new Set();
+const activeRelaySessions = new Map(); // transferId -> session
+const routeFallbackTimers = new Map(); // transferId -> timer
+const pendingProbes = new Map(); // probeId -> resolveFn
+
+function normalizeTag(raw) {
+  let tag = (raw || '').trim().toLowerCase();
+  if (!tag) return '';
+  if (!tag.startsWith('@')) tag = `@${tag}`;
+  return tag.replace(/[^a-z0-9_@]/g, '');
+}
+
+async function generateRegistrationHash(tag, nodeId, timestamp) {
+  try {
+    const raw = `PULSESHARE_ID:${normalizeTag(tag)}:${nodeId}:${timestamp}`;
+    const encoder = new TextEncoder();
+    const data = encoder.encode(raw);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return '0x' + hashArray.map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+  } catch {
+    return '0x' + Math.random().toString(16).slice(2, 10);
+  }
+}
+
+function probeUserAvailability(tag, timeoutMs = 750) {
+  return new Promise((resolve) => {
+    const probeId = crypto.randomUUID();
+    let isResolved = false;
+
+    const timer = setTimeout(() => {
+      pendingProbes.delete(probeId);
+      if (!isResolved) {
+        isResolved = true;
+        resolve(false);
+      }
+    }, timeoutMs);
+
+    pendingProbes.set(probeId, (exists) => {
+      clearTimeout(timer);
+      pendingProbes.delete(probeId);
+      if (!isResolved) {
+        isResolved = true;
+        resolve(Boolean(exists));
+      }
+    });
+
+    broadcastToMesh({
+      meshType: 'PROBE_USER_EXISTS',
+      probeId,
+      tag: normalizeTag(tag),
+      requesterNodeId: state.nodeId
+    });
+  });
+}
+
+async function handleRegisterUser(tagInput) {
+  const requestedTag = normalizeTag(tagInput);
+
+  if (!requestedTag || requestedTag.length < 3 || !/^@[a-z0-9_]{2,30}$/i.test(requestedTag)) {
+    return {
+      ok: false,
+      error: 'O nome de usuário deve conter de 2 a 30 caracteres alfanuméricos ou sublinhado (ex: @usuario).'
+    };
+  }
+
+  // Se já for o próprio usuário registrado no mesmo nó
+  if (
+    requestedTag.toLowerCase() === (state.myTag || '').toLowerCase() &&
+    state.peerRegistry[state.myTag]?.nodeId === state.nodeId
+  ) {
+    return { ok: true, tag: state.myTag, state, alreadyRegistered: true };
+  }
+
+  // Validação local: verifica se o usuário já existe na lista descentralizada de outro nó
+  const localConflict = Object.values(state.peerRegistry).find(
+    (p) => p.tag && normalizeTag(p.tag).toLowerCase() === requestedTag.toLowerCase() && p.nodeId !== state.nodeId
+  );
+  if (localConflict) {
+    return {
+      ok: false,
+      error: `O usuário ${requestedTag} já existe na rede descentralizada! Por favor, escolha outro nome.`
+    };
+  }
+
+  // Validação na malha: consulta ativa aos nós online da rede descentralizada
+  const meshConflict = await probeUserAvailability(requestedTag, 750);
+  if (meshConflict) {
+    return {
+      ok: false,
+      error: `O usuário ${requestedTag} já existe na rede descentralizada! Por favor, escolha outro nome.`
+    };
+  }
+
+  // Validado e livre de conflitos! Registra na rede descentralizada
+  const previousTag = state.myTag;
+  const now = Date.now();
+  const regHash = await generateRegistrationHash(requestedTag, state.nodeId, now);
+
+  state.myTag = requestedTag;
+  await chrome.storage.local.set({ myTag: state.myTag });
+
+  if (previousTag && previousTag !== requestedTag && state.peerRegistry[previousTag]?.nodeId === state.nodeId) {
+    delete state.peerRegistry[previousTag];
+  }
+
+  state.peerRegistry[requestedTag] = {
+    tag: requestedTag,
+    nodeId: state.nodeId,
+    registeredAt: now,
+    regHash,
+    joinedAt: now,
+    lastSeen: now,
+    status: 'online',
+    relayEnabled: state.meshRelayEnabled !== false,
+    relayBandwidthLimitKbps: typeof state.relayBandwidthLimitKbps === 'number' ? state.relayBandwidthLimitKbps : 2048,
+    activeRoutes: Number(state.activeRelayedRoutes || 0)
+  };
+
+  await chrome.storage.local.set({ peerRegistry: state.peerRegistry });
+
+  // Propagação descentralizada para toda a rede (MQTT + WebRTC DataChannels)
+  broadcastToMesh({
+    meshType: 'USER_REGISTERED',
+    tag: requestedTag,
+    nodeId: state.nodeId,
+    registeredAt: now,
+    regHash,
+    previousTag,
+    roster: Object.values(state.peerRegistry)
+  });
+
+  broadcastState();
+  return { ok: true, tag: requestedTag, registeredAt: now, regHash, state };
+}
 
 let pingInterval = null;
 let gossipDebounceTimer = null;
@@ -96,22 +237,61 @@ function updateBadgeForStagedFiles() {
   } catch {}
 }
 
-async function ensureExtensionPopupOpen() {
-  for (const delay of [40, 160, 320, 600, 1000]) {
-    await new Promise((r) => setTimeout(r, delay));
+async function openOrFocusAppWindow(queryString = '') {
+  if (popupWindowId !== null) {
     try {
-      const alreadyOpen = await isExtensionPopupOpen();
-      if (alreadyOpen) return;
-      const win = await chrome.windows.getLastFocused({ populate: false });
-      if (win && typeof win.id === 'number') {
-        await chrome.windows.update(win.id, { focused: true });
-      }
-      if (chrome.action && chrome.action.openPopup) {
-        await chrome.action.openPopup();
+      const win = await chrome.windows.get(popupWindowId);
+      if (win) {
+        await chrome.windows.update(popupWindowId, { focused: true });
         return;
       }
-    } catch {}
+    } catch {
+      popupWindowId = null;
+    }
   }
+
+  try {
+    const tabs = await chrome.tabs.query({});
+    const existing = tabs.find((t) => t.url && t.url.includes('popup.html'));
+    if (existing && existing.windowId) {
+      await chrome.windows.update(existing.windowId, { focused: true });
+      await chrome.tabs.update(existing.id, { active: true });
+      popupWindowId = existing.windowId;
+      return;
+    }
+  } catch {}
+
+  try {
+    const url = chrome.runtime.getURL(`popup.html${queryString ? queryString : '?window=1'}`);
+    const win = await chrome.windows.create({
+      url,
+      type: 'popup',
+      width: 500,
+      height: 720,
+      focused: true
+    });
+    popupWindowId = win.id;
+  } catch (err) {
+    console.error('Erro ao abrir janela persistente da extensão:', err);
+  }
+}
+
+if (chrome.action && chrome.action.onClicked) {
+  chrome.action.onClicked.addListener(() => {
+    openOrFocusAppWindow();
+  });
+}
+
+if (chrome.windows && chrome.windows.onRemoved) {
+  chrome.windows.onRemoved.addListener((winId) => {
+    if (winId === popupWindowId) {
+      popupWindowId = null;
+    }
+  });
+}
+
+async function ensureExtensionPopupOpen(queryString = '') {
+  await openOrFocusAppWindow(queryString);
 }
 
 // Monitor periódico de expiração de túneis temporários Cloudflare
@@ -206,7 +386,9 @@ async function startServerlessP2PLinkShare(params) {
     speedBps: 0,
     downloads: 0,
     maxDownloads: Number(params.maxDownloads || 0),
+    completedDownloads: 0,
     completedPacks: 0,
+    inProgress: false,
     filesProgress: (files || []).map((f, i) => ({
       index: i,
       fileId: f.fileId || `f-${i}`,
@@ -436,12 +618,35 @@ function connectPublicMesh() {
         }
       }
       touchSelfInRegistry();
+      refreshPeerStatuses();
       broadcastToMesh({
         meshType: 'ROSTER_GOSSIP_SYNC',
         roster: Object.values(state.peerRegistry)
       });
       broadcastState();
-    }, 18000);
+    }, 15000);
+  }
+}
+
+function refreshPeerStatuses() {
+  const now = Date.now();
+  let changed = false;
+  for (const [tag, peer] of Object.entries(state.peerRegistry)) {
+    if (tag === state.myTag) {
+      peer.status = 'online';
+      peer.lastSeen = now;
+      continue;
+    }
+    const diff = now - (peer.lastSeen || 0);
+    const newStatus = diff < 45000 ? 'online' : (diff < 180000 ? 'away' : 'offline');
+    if (peer.status !== newStatus) {
+      peer.status = newStatus;
+      changed = true;
+    }
+  }
+  if (changed) {
+    chrome.storage.local.set({ peerRegistry: state.peerRegistry });
+    broadcastState();
   }
 }
 
@@ -454,12 +659,20 @@ function touchSelfInRegistry(previousTag = null) {
   }
 
   const existing = state.peerRegistry[state.myTag];
+  const registeredAt = existing?.registeredAt || existing?.joinedAt || now;
+  const regHash = existing?.regHash || ('0x' + (existing?.nodeId || state.nodeId).replace(/[^a-f0-9]/gi, '').slice(0, 16));
+
   state.peerRegistry[state.myTag] = {
     tag: state.myTag,
     nodeId: state.nodeId,
-    joinedAt: existing?.joinedAt || now,
+    registeredAt,
+    regHash,
+    joinedAt: registeredAt,
     lastSeen: now,
-    status: 'online'
+    status: 'online',
+    relayEnabled: state.meshRelayEnabled !== false,
+    relayBandwidthLimitKbps: typeof state.relayBandwidthLimitKbps === 'number' ? state.relayBandwidthLimitKbps : 2048,
+    activeRoutes: Number(state.activeRelayedRoutes || 0)
   };
 
   chrome.storage.local.set({ peerRegistry: state.peerRegistry });
@@ -474,13 +687,27 @@ function mergeRemoteRoster(incomingRoster, removedTag = null, originNodeId = nul
   }
 
   if (!Array.isArray(incomingRoster)) return changed;
+  const now = Date.now();
 
   for (const item of incomingRoster) {
     if (!item || typeof item.tag !== 'string' || !item.tag.startsWith('@') || item.tag.startsWith('@link_')) {
       continue;
     }
 
-    if (item.nodeId) {
+    const diff = now - (item.lastSeen || 0);
+
+    // Se o usuário foi excluído localmente, previne re-adição a menos que volte a ficar online com nova atividade
+    if (state.deletedTags && state.deletedTags[item.tag]) {
+      const deletedAt = state.deletedTags[item.tag];
+      const isOnline = diff < 45000;
+      if (!isOnline || (item.lastSeen || 0) <= deletedAt + 5000) {
+        continue;
+      }
+      delete state.deletedTags[item.tag];
+      chrome.storage.local.set({ deletedTags: state.deletedTags });
+    }
+
+    if (item.nodeId && item.nodeId !== state.nodeId) {
       for (const [tagKey, entry] of Object.entries(state.peerRegistry)) {
         if (entry.nodeId === item.nodeId && tagKey !== item.tag && (item.lastSeen || 0) > (entry.lastSeen || 0)) {
           delete state.peerRegistry[tagKey];
@@ -489,22 +716,50 @@ function mergeRemoteRoster(incomingRoster, removedTag = null, originNodeId = nul
       }
     }
 
+    if (item.tag === state.myTag && item.nodeId && item.nodeId !== state.nodeId) {
+      const myEntry = state.peerRegistry[state.myTag];
+      const myRegAt = myEntry?.registeredAt || myEntry?.joinedAt || 0;
+      const remoteRegAt = item.registeredAt || item.joinedAt || 0;
+      if (remoteRegAt < myRegAt && remoteRegAt > 0) {
+        chrome.runtime.sendMessage({
+          type: 'USER_REGISTRATION_CONFLICT',
+          tag: state.myTag,
+          error: `O usuário ${state.myTag} já existe na rede descentralizada e pertence a outro nó!`
+        }).catch(() => {});
+      }
+      continue;
+    }
+
     const local = state.peerRegistry[item.tag];
+    const computedStatus = diff < 45000 ? 'online' : (diff < 180000 ? 'away' : 'offline');
+    const registeredAt = item.registeredAt || item.joinedAt || now;
+    const regHash = item.regHash || '';
+
     if (!local) {
       state.peerRegistry[item.tag] = {
         tag: item.tag,
         nodeId: item.nodeId || '',
-        joinedAt: item.joinedAt || Date.now(),
-        lastSeen: item.lastSeen || Date.now(),
-        status: item.status || 'online'
+        registeredAt,
+        regHash,
+        joinedAt: registeredAt,
+        lastSeen: item.lastSeen || now,
+        status: computedStatus,
+        relayEnabled: typeof item.relayEnabled === 'boolean' ? item.relayEnabled : true,
+        relayBandwidthLimitKbps: typeof item.relayBandwidthLimitKbps === 'number' ? item.relayBandwidthLimitKbps : 2048,
+        activeRoutes: Number(item.activeRoutes || 0)
       };
       changed = true;
     } else if ((item.lastSeen || 0) > (local.lastSeen || 0)) {
       state.peerRegistry[item.tag] = {
         ...local,
         nodeId: item.nodeId || local.nodeId,
+        registeredAt: local.registeredAt || registeredAt,
+        regHash: local.regHash || regHash,
         lastSeen: item.lastSeen,
-        status: item.status || 'online'
+        status: computedStatus,
+        relayEnabled: typeof item.relayEnabled === 'boolean' ? item.relayEnabled : local.relayEnabled,
+        relayBandwidthLimitKbps: typeof item.relayBandwidthLimitKbps === 'number' ? item.relayBandwidthLimitKbps : (typeof local.relayBandwidthLimitKbps === 'number' ? local.relayBandwidthLimitKbps : 2048),
+        activeRoutes: Number(item.activeRoutes ?? local.activeRoutes ?? 0)
       };
       changed = true;
     }
@@ -540,6 +795,156 @@ function scheduleGossipRosterBroadcast() {
   }, 150);
 }
 
+function findBestRelayNode(senderTag, targetTag, triedRelays = new Set()) {
+  const now = Date.now();
+  const candidates = Object.values(state.peerRegistry).filter((p) => {
+    return (
+      p.tag &&
+      p.tag !== senderTag &&
+      p.tag !== targetTag &&
+      !triedRelays.has(p.tag) &&
+      p.relayEnabled !== false &&
+      (p.status === 'online' || now - (p.lastSeen || 0) < 45000)
+    );
+  });
+
+  if (candidates.length === 0) return null;
+
+  candidates.sort((a, b) => {
+    const routesA = a.activeRoutes || 0;
+    const routesB = b.activeRoutes || 0;
+    if (routesA !== routesB) return routesA - routesB;
+
+    const bwA = typeof a.relayBandwidthLimitKbps === 'number' ? a.relayBandwidthLimitKbps : 2048;
+    const bwB = typeof b.relayBandwidthLimitKbps === 'number' ? b.relayBandwidthLimitKbps : 2048;
+    const effBwA = bwA === 0 ? Infinity : bwA;
+    const effBwB = bwB === 0 ? Infinity : bwB;
+    if (effBwA !== effBwB) return effBwB - effBwA;
+
+    return (b.lastSeen || 0) - (a.lastSeen || 0);
+  });
+
+  return candidates[0];
+}
+
+function setupDirectRouteFallback(transferId, targetTag, fileMeta) {
+  if (routeFallbackTimers.has(transferId)) {
+    clearTimeout(routeFallbackTimers.get(transferId));
+  }
+  const timer = setTimeout(() => {
+    routeFallbackTimers.delete(transferId);
+    const t = state.transfers[transferId];
+    if (t && (t.status === 'CONNECTING' || t.status === 'AWAITING_ACCEPT') && t.routeType === 'DIRECT') {
+      tryFailoverToMeshRelay(transferId, targetTag, fileMeta);
+    }
+  }, 7000);
+  routeFallbackTimers.set(transferId, timer);
+}
+
+async function tryFailoverToMeshRelay(transferId, targetTag, fileMeta, triedRelaysSet = null) {
+  const t = state.transfers[transferId];
+  if (!t || t.status === 'COMPLETED' || t.status === 'CANCELLED') return;
+
+  const tried = triedRelaysSet || new Set(t.triedRelays || []);
+  const bestRelay = findBestRelayNode(state.myTag, targetTag, tried);
+
+  if (!bestRelay) {
+    updateTransfer(transferId, {
+      routeDescription: 'Conexão direta indisponível e sem nós de rota online'
+    });
+    return;
+  }
+
+  tried.add(bestRelay.tag);
+  t.triedRelays = Array.from(tried);
+
+  updateTransfer(transferId, {
+    routeType: 'MESH_RELAY',
+    relayTag: bestRelay.tag,
+    routeDescription: `Roteando via malha mesh (Nó ${bestRelay.tag})...`,
+    status: 'CONNECTING'
+  });
+
+  sendSignal(bestRelay.tag, transferId, 'MESH_RELAY_REQUEST', {
+    targetTag,
+    senderTag: state.myTag,
+    fileMeta: {
+      name: fileMeta.name,
+      size: fileMeta.size,
+      type: fileMeta.type
+    },
+    triedRelays: Array.from(tried)
+  });
+
+  if (routeFallbackTimers.has(transferId)) {
+    clearTimeout(routeFallbackTimers.get(transferId));
+  }
+  const relayTimeout = setTimeout(() => {
+    routeFallbackTimers.delete(transferId);
+    const curr = state.transfers[transferId];
+    if (curr && curr.status === 'CONNECTING' && curr.routeType === 'MESH_RELAY' && curr.relayTag === bestRelay.tag) {
+      tryFailoverToMeshRelay(transferId, targetTag, fileMeta, tried);
+    }
+  }, 6000);
+  routeFallbackTimers.set(transferId, relayTimeout);
+}
+
+function processRelayQueue(session) {
+  if (!session || session.processing || session.queue.length === 0) return;
+  session.processing = true;
+
+  const chunkItem = session.queue.shift();
+  const rawBytes = Math.round((chunkItem.chunkBase64?.length || 0) * 0.75);
+  session.bytesForwarded = (session.bytesForwarded || 0) + rawBytes;
+  state.relayedBytesTotal = (state.relayedBytesTotal || 0) + rawBytes;
+  chrome.storage.local.set({ relayedBytesTotal: state.relayedBytesTotal });
+
+  const relayCard = state.transfers[`relay_${session.transferId}`];
+  if (relayCard) {
+    relayCard.transferredBytes = session.bytesForwarded;
+    relayCard.progress = chunkItem.totalBytes > 0 ? Math.min(100, Math.round((session.bytesForwarded / chunkItem.totalBytes) * 100)) : 50;
+    relayCard.updatedAt = Date.now();
+  }
+
+  sendSignal(session.targetTag, session.transferId, 'MESH_RELAY_CHUNK', {
+    from: session.senderTag,
+    transferId: session.transferId,
+    relayTag: state.myTag,
+    chunkSeq: chunkItem.chunkSeq,
+    totalChunks: chunkItem.totalChunks,
+    chunkBase64: chunkItem.chunkBase64,
+    isEof: chunkItem.isEof,
+    totalBytes: chunkItem.totalBytes,
+    fileMeta: session.fileMeta
+  });
+
+  if (chunkItem.isEof) {
+    setTimeout(() => {
+      activeRelaySessions.delete(session.transferId);
+      state.activeRelayedRoutes = activeRelaySessions.size;
+      if (relayCard) {
+        relayCard.status = 'COMPLETED';
+        relayCard.progress = 100;
+      }
+      broadcastState();
+    }, 1000);
+    session.processing = false;
+    return;
+  }
+
+  let delayMs = 15;
+  if (session.bwLimit > 0) {
+    delayMs = Math.max(15, Math.round((rawBytes / (session.bwLimit * 1024)) * 1000));
+  } else {
+    delayMs = 0;
+  }
+
+  setTimeout(() => {
+    session.processing = false;
+    processRelayQueue(session);
+  }, delayMs);
+}
+
 async function handleMeshPacket(packet) {
   if (!packet || packet.senderNodeId === state.nodeId) return;
 
@@ -563,6 +968,119 @@ async function handleMeshPacket(packet) {
 
     case 'ROSTER_GOSSIP_SYNC': {
       mergeRemoteRoster(packet.roster);
+      break;
+    }
+
+    case 'PROBE_USER_EXISTS': {
+      if (packet.tag && packet.requesterNodeId !== state.nodeId) {
+        const checkTag = normalizeTag(packet.tag);
+        const myNorm = normalizeTag(state.myTag);
+
+        let exists = false;
+        let ownerNodeId = '';
+
+        if (myNorm && myNorm === checkTag) {
+          exists = true;
+          ownerNodeId = state.nodeId;
+        } else {
+          const found = Object.values(state.peerRegistry).find(
+            (p) => p.tag && normalizeTag(p.tag) === checkTag && p.nodeId !== packet.requesterNodeId
+          );
+          if (found) {
+            exists = true;
+            ownerNodeId = found.nodeId;
+          }
+        }
+
+        if (exists) {
+          broadcastToMesh({
+            meshType: 'PROBE_USER_EXISTS_REPLY',
+            probeId: packet.probeId,
+            tag: packet.tag,
+            ownerNodeId,
+            exists: true
+          });
+        }
+      }
+      break;
+    }
+
+    case 'PROBE_USER_EXISTS_REPLY': {
+      if (packet.probeId && pendingProbes.has(packet.probeId)) {
+        const resolveFn = pendingProbes.get(packet.probeId);
+        if (resolveFn) resolveFn(Boolean(packet.exists));
+      }
+      break;
+    }
+
+    case 'USER_REGISTERED': {
+      if (!packet.tag || typeof packet.tag !== 'string') break;
+      const incomingTag = normalizeTag(packet.tag);
+      const incomingNodeId = packet.nodeId;
+      const incomingRegAt = packet.registeredAt || Date.now();
+      const incomingRegHash = packet.regHash || '';
+
+      // Conflito com meu próprio tag em outro nó
+      if (incomingTag === normalizeTag(state.myTag) && incomingNodeId && incomingNodeId !== state.nodeId) {
+        const myEntry = state.peerRegistry[state.myTag];
+        const myRegAt = myEntry?.registeredAt || myEntry?.joinedAt || 0;
+
+        if (incomingRegAt < myRegAt && incomingRegAt > 0) {
+          chrome.runtime.sendMessage({
+            type: 'USER_REGISTRATION_CONFLICT',
+            tag: incomingTag,
+            error: `O usuário ${incomingTag} já existe na rede descentralizada (pertence a outro nó).`
+          }).catch(() => {});
+        } else {
+          broadcastToMesh({
+            meshType: 'USER_CONFLICT_ALERT',
+            tag: state.myTag,
+            ownerNodeId: state.nodeId,
+            registeredAt: myRegAt,
+            regHash: myEntry?.regHash || ''
+          });
+        }
+      }
+
+      // Adiciona o usuário na lista descentralizada de todos os nós
+      if (incomingNodeId && incomingNodeId !== state.nodeId) {
+        state.peerRegistry[incomingTag] = {
+          tag: incomingTag,
+          nodeId: incomingNodeId,
+          registeredAt: incomingRegAt,
+          regHash: incomingRegHash,
+          joinedAt: incomingRegAt,
+          lastSeen: Date.now(),
+          status: 'online',
+          relayEnabled: packet.relayEnabled !== false,
+          relayBandwidthLimitKbps: typeof packet.relayBandwidthLimitKbps === 'number' ? packet.relayBandwidthLimitKbps : 2048,
+          activeRoutes: 0
+        };
+
+        if (packet.previousTag && packet.previousTag !== incomingTag && state.peerRegistry[packet.previousTag]?.nodeId === incomingNodeId) {
+          delete state.peerRegistry[packet.previousTag];
+        }
+
+        chrome.storage.local.set({ peerRegistry: state.peerRegistry });
+        broadcastState();
+      }
+
+      if (Array.isArray(packet.roster)) {
+        mergeRemoteRoster(packet.roster);
+      }
+      break;
+    }
+
+    case 'USER_CONFLICT_ALERT': {
+      if (!packet.tag) break;
+      const alertTag = normalizeTag(packet.tag);
+      if (alertTag === normalizeTag(state.myTag) && packet.ownerNodeId !== state.nodeId) {
+        chrome.runtime.sendMessage({
+          type: 'USER_REGISTRATION_CONFLICT',
+          tag: alertTag,
+          error: `O usuário ${alertTag} já existe na rede descentralizada e pertence a outro nó!`
+        }).catch(() => {});
+      }
       break;
     }
 
@@ -597,17 +1115,37 @@ async function handleMeshPacket(packet) {
 function broadcastState() {
   chrome.storage.local.set({
     transfers: state.transfers,
-    peerRegistry: state.peerRegistry
+    peerRegistry: state.peerRegistry,
+    deletedTags: state.deletedTags || {}
   });
-  chrome.runtime.sendMessage({ type: 'STATE_UPDATED', state }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'STATE_UPDATED', action: 'STATE_UPDATED', state }).catch(() => {});
 }
 
 function updateTransfer(transferId, patch) {
   const existing = state.transfers[transferId];
   if (!existing) return;
+
+  const mergedPatch = { ...patch };
+
+  if (existing.direction === 'tunnel') {
+    if (patch.inProgress === true || patch.status === 'TRANSFERRING' || patch.status === 'CONNECTING') {
+      mergedPatch.inProgress = true;
+    }
+    // Quando a transferência de um link for concluída (100% ou retorno para TUNNEL_READY)
+    if (patch.progress === 100 || (existing.inProgress && (patch.status === 'TUNNEL_READY' || patch.status === 'COMPLETED'))) {
+      if (existing.inProgress) {
+        mergedPatch.completedDownloads = (existing.completedDownloads || 0) + 1;
+        mergedPatch.inProgress = false;
+      }
+    }
+    if (patch.status === 'CANCELLED' || patch.status === 'ERROR' || patch.status === 'EXPIRED') {
+      mergedPatch.inProgress = false;
+    }
+  }
+
   state.transfers[transferId] = {
     ...existing,
-    ...patch,
+    ...mergedPatch,
     updatedAt: Date.now()
   };
   broadcastState();
@@ -673,6 +1211,8 @@ async function startOutgoingTransfer(transferId, targetTag, fileMeta) {
     transferredBytes: 0,
     speedBps: 0,
     status: 'AWAITING_ACCEPT',
+    routeType: 'DIRECT',
+    triedRelays: [],
     updatedAt: Date.now()
   };
   broadcastState();
@@ -685,6 +1225,8 @@ async function startOutgoingTransfer(transferId, targetTag, fileMeta) {
     fileType: fileMeta.type,
     roster: Object.values(state.peerRegistry)
   });
+
+  setupDirectRouteFallback(transferId, targetTag, fileMeta);
 }
 
 async function handleIncomingSignal(msg) {
@@ -800,7 +1342,9 @@ async function handleIncomingSignal(msg) {
       }
 
       updateTransfer(shareRecord.transferId, {
-        downloads: (parentTransfer.downloads || 0) + 1
+        downloads: (parentTransfer.downloads || 0) + 1,
+        inProgress: true,
+        status: 'TRANSFERRING'
       });
     }
 
@@ -831,11 +1375,137 @@ async function handleIncomingSignal(msg) {
     return;
   }
 
+  if (signalType === 'MESH_RELAY_REQUEST') {
+    if (state.meshRelayEnabled === false) {
+      sendSignal(from, transferId, 'MESH_RELAY_REJECT', {
+        reason: 'RELAY_DISABLED',
+        targetTag: payload.targetTag,
+        fileMeta: payload.fileMeta,
+        triedRelays: payload.triedRelays
+      });
+      return;
+    }
+
+    const session = {
+      transferId,
+      senderTag: payload.senderTag,
+      targetTag: payload.targetTag,
+      fileMeta: payload.fileMeta,
+      bwLimit: typeof state.relayBandwidthLimitKbps === 'number' ? state.relayBandwidthLimitKbps : 2048,
+      queue: [],
+      processing: false,
+      bytesForwarded: 0,
+      createdAt: Date.now()
+    };
+    activeRelaySessions.set(transferId, session);
+    state.activeRelayedRoutes = activeRelaySessions.size;
+
+    state.transfers[`relay_${transferId}`] = {
+      id: `relay_${transferId}`,
+      direction: 'relay',
+      routeType: 'RELAY_NODE',
+      peerTag: `${payload.senderTag} ➔ ${payload.targetTag}`,
+      senderTag: payload.senderTag,
+      targetTag: payload.targetTag,
+      fileName: payload.fileMeta?.name || 'arquivo',
+      fileSize: payload.fileMeta?.size || 0,
+      fileType: payload.fileMeta?.type || 'application/octet-stream',
+      progress: 0,
+      transferredBytes: 0,
+      speedBps: 0,
+      status: 'TRANSFERRING',
+      updatedAt: Date.now()
+    };
+    broadcastState();
+
+    sendSignal(from, transferId, 'MESH_RELAY_ACCEPTED', {
+      targetTag: payload.targetTag,
+      relayTag: state.myTag,
+      fileMeta: payload.fileMeta
+    });
+
+    sendSignal(payload.targetTag, transferId, 'FILE_OFFER', {
+      routedVia: state.myTag,
+      senderTag: payload.senderTag,
+      fileName: payload.fileMeta?.name,
+      fileSize: payload.fileMeta?.size,
+      fileType: payload.fileMeta?.type,
+      roster: Object.values(state.peerRegistry)
+    });
+    return;
+  }
+
+  if (signalType === 'MESH_RELAY_ACCEPTED') {
+    if (routeFallbackTimers.has(transferId)) {
+      clearTimeout(routeFallbackTimers.get(transferId));
+      routeFallbackTimers.delete(transferId);
+    }
+    updateTransfer(transferId, {
+      routeType: 'MESH_RELAY',
+      relayTag: from,
+      routeDescription: `Roteando via nó mesh ${from}`,
+      status: 'TRANSFERRING'
+    });
+    await ensureOffscreenDocument();
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      action: 'START_MESH_RELAY_STREAM',
+      transferId,
+      relayTag: from,
+      targetTag: payload.targetTag,
+      fileKey: transferId,
+      fallbackKey: transferId
+    });
+    return;
+  }
+
+  if (signalType === 'MESH_RELAY_REJECT') {
+    tryFailoverToMeshRelay(
+      transferId,
+      payload.targetTag,
+      payload.fileMeta,
+      new Set(payload.triedRelays || [])
+    );
+    return;
+  }
+
+  if (signalType === 'MESH_RELAY_DATA') {
+    const session = activeRelaySessions.get(transferId);
+    if (session) {
+      session.queue.push(payload);
+      processRelayQueue(session);
+    }
+    return;
+  }
+
+  if (signalType === 'MESH_RELAY_CHUNK') {
+    await ensureOffscreenDocument();
+    chrome.runtime.sendMessage({
+      target: 'offscreen',
+      action: 'OFFSCREEN_RECEIVE_RELAY_CHUNK',
+      transferId,
+      from: payload.from,
+      relayTag: payload.relayTag,
+      chunkSeq: payload.chunkSeq,
+      totalChunks: payload.totalChunks,
+      chunkBase64: payload.chunkBase64,
+      isEof: payload.isEof,
+      totalBytes: payload.totalBytes,
+      fileMeta: payload.fileMeta
+    });
+    return;
+  }
+
   if (signalType === 'FILE_OFFER') {
+    const isRelayed = Boolean(payload.routedVia);
+    const peerDisplayTag = isRelayed ? payload.senderTag : from;
+
     state.transfers[transferId] = {
       id: transferId,
       direction: 'incoming',
-      peerTag: from,
+      peerTag: peerDisplayTag,
+      routeType: isRelayed ? 'MESH_RELAY' : 'DIRECT',
+      relayTag: payload.routedVia || null,
       fileName: payload.fileName,
       fileSize: payload.fileSize,
       fileType: payload.fileType,
@@ -847,7 +1517,6 @@ async function handleIncomingSignal(msg) {
     };
     broadcastState();
 
-    // Prepara o Offscreen Document imediatamente antes do SDP Offer chegar
     await ensureOffscreenDocument();
 
     if (state.autoOpenOnReceive !== false) {
@@ -855,11 +1524,57 @@ async function handleIncomingSignal(msg) {
     }
 
     if (state.autoAccept) {
-      sendSignal(from, transferId, 'FILE_ACCEPT', {
-        roster: Object.values(state.peerRegistry)
-      });
+      if (isRelayed) {
+        sendSignal(payload.routedVia, transferId, 'FILE_ACCEPT', {
+          isRelayed: true,
+          senderTag: payload.senderTag,
+          targetTag: state.myTag,
+          roster: Object.values(state.peerRegistry)
+        });
+      } else {
+        sendSignal(from, transferId, 'FILE_ACCEPT', {
+          roster: Object.values(state.peerRegistry)
+        });
+      }
     }
     return;
+  }
+
+  if (signalType === 'FILE_ACCEPT') {
+    if (routeFallbackTimers.has(transferId)) {
+      clearTimeout(routeFallbackTimers.get(transferId));
+      routeFallbackTimers.delete(transferId);
+    }
+
+    if (payload?.isRelayed) {
+      // Se este nó é o relé intermediário, repassa o accept para o remetente original
+      if (payload.senderTag && payload.senderTag !== state.myTag) {
+        sendSignal(payload.senderTag, transferId, 'FILE_ACCEPT', {
+          isRelayed: true,
+          relayTag: state.myTag,
+          targetTag: from,
+          roster: Object.values(state.peerRegistry)
+        });
+        return;
+      }
+      // Se este nó é o remetente original recebendo confirmação via mesh
+      updateTransfer(transferId, {
+        status: 'TRANSFERRING',
+        routeType: 'MESH_RELAY',
+        relayTag: payload.relayTag || from
+      });
+      await ensureOffscreenDocument();
+      chrome.runtime.sendMessage({
+        target: 'offscreen',
+        action: 'START_MESH_RELAY_STREAM',
+        transferId,
+        relayTag: payload.relayTag || from,
+        targetTag: from,
+        fileKey: transferId,
+        fallbackKey: transferId
+      });
+      return;
+    }
   }
 
   if (signalType === 'TRANSFER_REJECT') {
@@ -932,6 +1647,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       updateTransfer(msg.transferId, msg.patch);
     } else if (msg.type === 'OFFSCREEN_ROSTER_GOSSIP' && Array.isArray(msg.roster)) {
       mergeRemoteRoster(msg.roster);
+    } else if (msg.type === 'OFFSCREEN_DIRECT_ROUTE_FAILED') {
+      const t = state.transfers[msg.transferId];
+      if (t && t.routeType === 'DIRECT') {
+        tryFailoverToMeshRelay(msg.transferId, msg.targetTag || t.peerTag, t);
+      }
+    } else if (msg.type === 'OFFSCREEN_RELAY_CHUNK') {
+      sendSignal(msg.relayTag, msg.transferId, 'MESH_RELAY_DATA', {
+        chunkSeq: msg.chunkSeq,
+        totalChunks: msg.totalChunks,
+        chunkBase64: msg.chunkBase64,
+        isEof: msg.isEof,
+        totalBytes: msg.totalBytes
+      });
+      const rawBytes = Math.round((msg.chunkBase64?.length || 0) * 0.75);
+      const t = state.transfers[msg.transferId];
+      if (t) {
+        t.transferredBytes = (t.transferredBytes || 0) + rawBytes;
+        t.progress = msg.totalBytes > 0 ? Math.min(100, Math.round((t.transferredBytes / msg.totalBytes) * 100)) : 50;
+        t.updatedAt = Date.now();
+        broadcastState();
+      }
     } else if (msg.type === 'OFFSCREEN_DOWNLOAD_READY') {
       triggerChromeDownload(msg.transferId, msg.blobUrl, msg.fileName).then(() => {
         setTimeout(() => {
@@ -957,12 +1693,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ensureOffscreenDocument().then(() => sendResponse({ ok: true }));
       return true;
 
+    case 'REGISTER_USER':
+    case 'UPDATE_MY_TAG':
     case 'SET_MY_TAG': {
-      const previousTag = state.myTag;
-      state.myTag = msg.tag;
-      chrome.storage.local.set({ myTag: state.myTag });
-      announcePresenceToMesh(previousTag);
-      sendResponse({ state });
+      handleRegisterUser(msg.tag).then((result) => {
+        sendResponse(result);
+      });
       return true;
     }
 
@@ -1023,9 +1759,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'CLEAR_STAGED_TUNNEL_FILES': {
       state.stagedTunnelFiles = [];
       state.tunnelModalOpen = false;
+      state.modalMode = 'p2p';
+      state.modalTargetTag = '';
       chrome.storage.local.set({
         stagedTunnelFiles: [],
-        tunnelModalOpen: false
+        tunnelModalOpen: false,
+        modalMode: 'p2p',
+        modalTargetTag: ''
       });
       updateBadgeForStagedFiles();
       broadcastState();
@@ -1035,7 +1775,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'SET_TUNNEL_MODAL_OPEN': {
       state.tunnelModalOpen = Boolean(msg.open);
-      chrome.storage.local.set({ tunnelModalOpen: state.tunnelModalOpen });
+      if (msg.mode) state.modalMode = msg.mode;
+      if (typeof msg.targetTag === 'string') state.modalTargetTag = msg.targetTag;
+      chrome.storage.local.set({
+        tunnelModalOpen: state.tunnelModalOpen,
+        modalMode: state.modalMode,
+        modalTargetTag: state.modalTargetTag
+      });
       updateBadgeForStagedFiles();
       broadcastState();
       sendResponse({ ok: true, state });
@@ -1121,6 +1867,69 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
 
+    case 'TOGGLE_MESH_RELAY':
+      state.meshRelayEnabled = !state.meshRelayEnabled;
+      chrome.storage.local.set({ meshRelayEnabled: state.meshRelayEnabled });
+      touchSelfInRegistry();
+      scheduleGossipRosterBroadcast();
+      broadcastState();
+      sendResponse({ state });
+      return true;
+
+    case 'SET_RELAY_BANDWIDTH_LIMIT': {
+      const rawLimit = msg.limitKbps !== undefined ? msg.limitKbps : msg.limit;
+      state.relayBandwidthLimitKbps = typeof rawLimit === 'number' && !isNaN(rawLimit) ? rawLimit : 2048;
+      chrome.storage.local.set({ relayBandwidthLimitKbps: state.relayBandwidthLimitKbps });
+      touchSelfInRegistry();
+      scheduleGossipRosterBroadcast();
+      broadcastState();
+      sendResponse({ state });
+      return true;
+    }
+
+    case 'DELETE_PEER': {
+      const tag = msg.tag;
+      if (tag && tag !== state.myTag && state.peerRegistry[tag]) {
+        delete state.peerRegistry[tag];
+        state.deletedTags = state.deletedTags || {};
+        state.deletedTags[tag] = Date.now();
+        chrome.storage.local.set({
+          peerRegistry: state.peerRegistry,
+          deletedTags: state.deletedTags
+        });
+        broadcastState();
+        scheduleGossipRosterBroadcast();
+      }
+      sendResponse({ state });
+      return true;
+    }
+
+    case 'CLEAR_INACTIVE_PEERS': {
+      const now = Date.now();
+      let count = 0;
+      state.deletedTags = state.deletedTags || {};
+      for (const [tag, peer] of Object.entries(state.peerRegistry)) {
+        if (tag === state.myTag) continue;
+        const diff = now - (peer.lastSeen || 0);
+        const isOnline = peer.status === 'online' || diff < 45000;
+        if (!isOnline) {
+          delete state.peerRegistry[tag];
+          state.deletedTags[tag] = now;
+          count++;
+        }
+      }
+      if (count > 0) {
+        chrome.storage.local.set({
+          peerRegistry: state.peerRegistry,
+          deletedTags: state.deletedTags
+        });
+        broadcastState();
+        scheduleGossipRosterBroadcast();
+      }
+      sendResponse({ state, count });
+      return true;
+    }
+
     case 'RESPOND_INCOMING': {
       const transfer = state.transfers[msg.transferId];
       if (!transfer) {
@@ -1130,12 +1939,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (msg.accept) {
         updateTransfer(msg.transferId, { status: 'CONNECTING' });
         ensureOffscreenDocument().then(() => {
-          sendSignal(transfer.peerTag, msg.transferId, 'FILE_ACCEPT', {
-            roster: Object.values(state.peerRegistry)
-          });
+          if (transfer.routeType === 'MESH_RELAY' && transfer.relayTag) {
+            sendSignal(transfer.relayTag, msg.transferId, 'FILE_ACCEPT', {
+              isRelayed: true,
+              senderTag: transfer.peerTag,
+              targetTag: state.myTag,
+              roster: Object.values(state.peerRegistry)
+            });
+          } else {
+            sendSignal(transfer.peerTag, msg.transferId, 'FILE_ACCEPT', {
+              roster: Object.values(state.peerRegistry)
+            });
+          }
         });
       } else {
-        sendSignal(transfer.peerTag, msg.transferId, 'TRANSFER_REJECT', {});
+        if (transfer.routeType === 'MESH_RELAY' && transfer.relayTag) {
+          sendSignal(transfer.relayTag, msg.transferId, 'TRANSFER_REJECT', {
+            isRelayed: true,
+            senderTag: transfer.peerTag
+          });
+        } else {
+          sendSignal(transfer.peerTag, msg.transferId, 'TRANSFER_REJECT', {});
+        }
         delete state.transfers[msg.transferId];
         broadcastState();
       }
@@ -1196,8 +2021,14 @@ async function initializeServiceWorker() {
     'autoOpenOnReceive',
     'stagedTunnelFiles',
     'tunnelModalOpen',
+    'modalMode',
+    'modalTargetTag',
     'peerRegistry',
-    'transfers'
+    'deletedTags',
+    'transfers',
+    'meshRelayEnabled',
+    'relayBandwidthLimitKbps',
+    'relayedBytesTotal'
   ]);
 
   if (Array.isArray(stored.stagedTunnelFiles)) {
@@ -1206,6 +2037,12 @@ async function initializeServiceWorker() {
 
   if (typeof stored.tunnelModalOpen === 'boolean') {
     state.tunnelModalOpen = stored.tunnelModalOpen;
+  }
+  if (stored.modalMode) {
+    state.modalMode = stored.modalMode;
+  }
+  if (typeof stored.modalTargetTag === 'string') {
+    state.modalTargetTag = stored.modalTargetTag;
   }
   updateBadgeForStagedFiles();
 
@@ -1219,9 +2056,7 @@ async function initializeServiceWorker() {
   if (stored.myTag) {
     state.myTag = stored.myTag;
   } else {
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
-    state.myTag = `@user_${randomSuffix}`;
-    await chrome.storage.local.set({ myTag: state.myTag });
+    state.myTag = '';
   }
 
   if (typeof stored.autoAccept === 'boolean') {
@@ -1232,8 +2067,24 @@ async function initializeServiceWorker() {
     state.autoOpenOnReceive = stored.autoOpenOnReceive;
   }
 
+  if (typeof stored.meshRelayEnabled === 'boolean') {
+    state.meshRelayEnabled = stored.meshRelayEnabled;
+  }
+
+  if (typeof stored.relayBandwidthLimitKbps === 'number') {
+    state.relayBandwidthLimitKbps = stored.relayBandwidthLimitKbps;
+  }
+
+  if (typeof stored.relayedBytesTotal === 'number') {
+    state.relayedBytesTotal = stored.relayedBytesTotal;
+  }
+
   if (stored.peerRegistry && typeof stored.peerRegistry === 'object') {
     state.peerRegistry = stored.peerRegistry;
+  }
+
+  if (stored.deletedTags && typeof stored.deletedTags === 'object') {
+    state.deletedTags = stored.deletedTags;
   }
 
   if (stored.transfers && typeof stored.transfers === 'object') {

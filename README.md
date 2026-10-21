@@ -20,6 +20,50 @@ Extensão Chrome para compartilhamento de arquivos **100% serverless, multiplata
 
 ---
 
+## 🌐 Rede Mesh P2P Descentralizada (Multi-Hop, Gossip & Roteamento Dinâmico)
+
+O PulseShare implementa uma malha descentralizada (*mesh network*) completa entre todas as extensões ativas, garantindo comunicação resiliente mesmo em condições severas de rede (NAT simétrico, firewalls corporativos ou restrições de provedor):
+
+1. **Registro Descentralizado de Identidade & Validação de Unicidade (Estilo Criptomoedas)**:
+   - **Ledger Descentralizado**: Cada nó mantém o catálogo distribuído de identidades registradas na rede P2P sem depender de qualquer servidor central.
+   - **Validação Pré-Registro de Duplicidade**:
+     - Antes de aceitar um novo `@usuario`, o sistema valida contra o ledger local e emite uma sondagem em tempo real na malha (`PROBE_USER_EXISTS`).
+     - Se o usuário já existir registrado por outro nó, o registro é bloqueado imediatamente com o alerta explicativo: *"O usuário @nome já existe na rede descentralizada! Por favor, escolha outro nome."*
+   - **Registro com Prova Criptográfica & Propagação Global**:
+     - Quando validado que o usuário não existe, o nó gera um hash criptográfico (SHA-256) atestando a identidade (`0x...`) e o timestamp de registro.
+     - A transação de registro (`USER_REGISTERED`) é propagada instantaneamente para toda a malha descentralizada (multi-broker MQTT e canais WebRTC DataChannel ativos).
+   - **Lista Global de Usuários e Status em Tempo Real**:
+     - Todos os nós recebem, validam e mantêm a lista unificada e sincronizada de usuários cadastrados na rede.
+     - Aba dedicada **👥 Usuários** na extensão, exibindo todos os participantes conhecidos com seus respectivos status dinâmicos:
+       - 🟢 **Online**: Ativo nos últimos 45 segundos (heartbeat ativo na malha).
+       - 🟡 **Ausente**: Inativo entre 45 segundos e 3 minutos.
+       - ⚪ **Offline / Inativo**: Mais de 3 minutos sem transmissão.
+     - Exibição do **Hash de Registro Criptográfico**, data de registro e data/hora da última conexão (`📅 DD/MM/AAAA às HH:MM (há X min)`).
+     - Botão direto **Enviar** nos cards de usuários para envio P2P instantâneo.
+
+2. **Envio Direto para Usuário (`@usuario`)**:
+   - Envio P2P direto e simplificado: anexe arquivos ou pastas inteiras, escolha opcionalmente se deseja compactar em `.ZIP` e envie diretamente para o destinatário, **sem necessidade de gerar links públicos** e **sem precisar definir tempo de expiração**.
+   - O destinatário recebe o aviso e o arquivo é transferido ponto a ponto via WebRTC DataChannel e salvo automaticamente na pasta de Downloads.
+
+3. **Propagação de Status e Presença via Gossip Protocol**:
+   - Cada nó transmite seus anúncios de presença e propaga o catálogo consolidado de peers (*roster*) para todos os nós vizinhos.
+   - Os metadados de status e nós de rota se difundem exponencialmente por toda a rede em milissegundos sem a necessidade de banco de dados centralizado.
+
+4. **Roteamento Multi-Hop com Seleção da Melhor Rota & Failover**:
+   - O remetente tenta inicialmente a conexão direta P2P via WebRTC DataChannel.
+   - Se a conexão direta falhar ou demorar mais de 7 segundos (bloqueio de portas UDP, firewall ou NAT simétrico), o PulseShare automaticamente calcula e seleciona o **melhor nó intermediário** para atuar como rota (*relay*):
+     - Critérios de escolha: Menor número de rotas concorrentes, maior banda reservada configurada e menor latência de último sinal.
+   - Se um nó de rota intermediário falhar ou for desconectado durante a transmissão, o sistema realiza **failover dinâmico** para o próximo nó disponível na malha mesh.
+   - Os cards de transferência indicam com clareza o tipo de rota utilizada (`🟢 P2P Direto`, `🔀 Mesh via @relay` ou `🔁 Relay: @origem ➔ @destino`).
+
+5. **Banda Reservada Configurável para Nós de Rota**:
+   - No menu de **Configurações** (ícone de engrenagem), cada usuário pode:
+     - Ativar ou desativar a permissão para seu computador servir como rota/nó retransmissor da rede mesh.
+     - Escolher a **banda máxima reservada** para o tráfego da rede (opções: `256 KB/s`, `512 KB/s`, `1 MB/s`, `2 MB/s`, `5 MB/s`, `10 MB/s` ou `Ilimitada`). O controle de taxa é executado via *token-bucket pacing* em fatias de 16KB.
+     - Monitorar em tempo real o **contador de rotas ativas** e o **volume total de bytes retransmitidos** pelo seu nó para ajudar a comunidade.
+
+---
+
 ## 🗜 Opções de Compactação (.ZIP)
 
 Tanto o remetente quanto o destinatário têm total controle sobre as opções de compactação client-side (via biblioteca pura JavaScript `fflate` de ultra-alta velocidade):

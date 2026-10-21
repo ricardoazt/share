@@ -19,7 +19,6 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "popup.html",
     "default_title": "PulseShare P2P"
   },
   "web_accessible_resources": [

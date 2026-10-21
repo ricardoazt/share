@@ -297,6 +297,19 @@ async function flushPendingCandidates(session) {
   }
 }
 
+const activeRelayStreams = new Map(); // transferId -> { paused, cancelled }
+const incomingRelaySessions = new Map(); // transferId -> { chunks: [], receivedBytes, startTime, lastReport, fileName, fileType, totalBytes }
+
+function base64ToUint8Array(base64) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.target !== 'offscreen') return;
 
@@ -309,10 +322,21 @@ chrome.runtime.onMessage.addListener((msg) => {
     handleSignal(msg);
   } else if (msg.action === 'OFFSCREEN_CONTROL') {
     handleControl(msg);
+  } else if (msg.action === 'START_MESH_RELAY_STREAM') {
+    startMeshRelayStream(msg);
+  } else if (msg.action === 'OFFSCREEN_RECEIVE_RELAY_CHUNK') {
+    handleRelayChunkReceived(msg);
   }
 });
 
 function handleControl({ subAction, transferId }) {
+  const relayStream = activeRelayStreams.get(transferId);
+  if (relayStream) {
+    if (subAction === 'PAUSE') relayStream.paused = true;
+    else if (subAction === 'RESUME') relayStream.paused = false;
+    else if (subAction === 'CANCEL') relayStream.cancelled = true;
+  }
+
   for (const [id, session] of peerSessions.entries()) {
     if (id === transferId || session.uiTransferId === transferId) {
       if (subAction === 'PAUSE') {
@@ -342,6 +366,176 @@ function handleControl({ subAction, transferId }) {
         peerSessions.delete(id);
       }
     }
+  }
+}
+
+async function startMeshRelayStream({
+  transferId,
+  relayTag,
+  targetTag,
+  fileKey,
+  fallbackKey,
+  keepStaged
+}) {
+  const file = await getStagedFile(fileKey, fallbackKey);
+  if (!file) {
+    reportProgress(transferId, {
+      status: 'ERROR',
+      error: 'Arquivo não encontrado em memória para streaming mesh'
+    });
+    return;
+  }
+
+  const streamState = { paused: false, cancelled: false };
+  activeRelayStreams.set(transferId, streamState);
+
+  const totalBytes = file.size;
+  const RELAY_CHUNK_SIZE = 16 * 1024; // 16 KB chunk compatível com MQTT
+  let offset = 0;
+  let chunkSeq = 0;
+  const totalChunks = Math.ceil(totalBytes / RELAY_CHUNK_SIZE) || 1;
+  const startTime = Date.now();
+  let lastReport = startTime;
+
+  reportProgress(transferId, {
+    status: 'TRANSFERRING',
+    progress: 0,
+    transferredBytes: 0,
+    routeType: 'MESH_RELAY',
+    relayTag
+  });
+
+  try {
+    while (offset < totalBytes) {
+      if (streamState.cancelled) throw new Error('Transferência cancelada');
+      while (streamState.paused) {
+        if (streamState.cancelled) throw new Error('Transferência cancelada');
+        await new Promise((r) => setTimeout(r, 150));
+      }
+
+      const chunkEnd = Math.min(offset + RELAY_CHUNK_SIZE, totalBytes);
+      const sliceBlob = file.slice(offset, chunkEnd);
+      const arrayBuffer = await sliceBlob.arrayBuffer();
+
+      let binary = '';
+      const bytes = new Uint8Array(arrayBuffer);
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i += 8192) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, len)));
+      }
+      const chunkBase64 = btoa(binary);
+
+      offset = chunkEnd;
+      chunkSeq++;
+      const isEof = offset >= totalBytes;
+
+      sendToBackground({
+        type: 'OFFSCREEN_RELAY_CHUNK',
+        transferId,
+        relayTag,
+        targetTag,
+        chunkSeq,
+        totalChunks,
+        chunkBase64,
+        isEof,
+        totalBytes,
+        fileMeta: {
+          name: file.name,
+          size: file.size,
+          type: file.type
+        }
+      });
+
+      const now = Date.now();
+      if (now - lastReport >= 100 || isEof) {
+        const elapsedSec = Math.max(0.1, (now - startTime) / 1000);
+        const speedBps = Math.round(offset / elapsedSec);
+        const progress = totalBytes > 0 ? Math.round((offset / totalBytes) * 100) : 100;
+        reportProgress(transferId, {
+          status: 'TRANSFERRING',
+          progress,
+          transferredBytes: offset,
+          speedBps
+        });
+        lastReport = now;
+      }
+
+      await new Promise((r) => setTimeout(r, 10));
+    }
+
+    reportProgress(transferId, {
+      status: keepStaged ? 'TUNNEL_READY' : 'COMPLETED',
+      progress: 100,
+      transferredBytes: totalBytes,
+      speedBps: 0
+    });
+
+    if (!keepStaged) {
+      await deleteStagedFile(fileKey);
+    }
+  } catch (err) {
+    if (err.message === 'Transferência cancelada') {
+      reportProgress(transferId, { status: 'CANCELLED' });
+    } else {
+      reportProgress(transferId, { status: 'ERROR', error: err.message });
+    }
+  } finally {
+    activeRelayStreams.delete(transferId);
+  }
+}
+
+function handleRelayChunkReceived(msg) {
+  const { transferId, chunkBase64, isEof, totalBytes, fileMeta, relayTag } = msg;
+  let session = incomingRelaySessions.get(transferId);
+  if (!session) {
+    session = {
+      chunks: [],
+      receivedBytes: 0,
+      startTime: Date.now(),
+      lastReport: Date.now(),
+      fileName: fileMeta?.name || 'arquivo_recebido',
+      fileType: fileMeta?.type || 'application/octet-stream',
+      totalBytes: totalBytes || fileMeta?.size || 0
+    };
+    incomingRelaySessions.set(transferId, session);
+  }
+
+  if (chunkBase64) {
+    const chunkBytes = base64ToUint8Array(chunkBase64);
+    session.chunks.push(chunkBytes);
+    session.receivedBytes += chunkBytes.byteLength;
+  }
+
+  const now = Date.now();
+  if (now - session.lastReport >= 100 || isEof) {
+    const elapsedSec = Math.max(0.1, (now - session.startTime) / 1000);
+    const speedBps = Math.round(session.receivedBytes / elapsedSec);
+    const progress = session.totalBytes > 0
+      ? Math.min(isEof ? 100 : 99, Math.round((session.receivedBytes / session.totalBytes) * 100))
+      : (isEof ? 100 : 50);
+
+    reportProgress(transferId, {
+      status: isEof ? 'COMPLETED' : 'TRANSFERRING',
+      progress,
+      transferredBytes: session.receivedBytes,
+      speedBps,
+      routeType: 'MESH_RELAY',
+      relayTag
+    });
+    session.lastReport = now;
+  }
+
+  if (isEof) {
+    const blob = new Blob(session.chunks, { type: session.fileType });
+    session.chunks.length = 0;
+    incomingRelaySessions.delete(transferId);
+    const blobUrl = URL.createObjectURL(blob);
+    sendToBackground({
+      type: 'OFFSCREEN_DOWNLOAD_READY',
+      transferId,
+      blobUrl,
+      fileName: session.fileName
+    });
   }
 }
 
@@ -413,7 +607,7 @@ async function startSenderWebRTC(
   localRoster,
   targetFileMeta
 ) {
-  reportProgress(uiTransferId, { status: 'CONNECTING' });
+  reportProgress(uiTransferId, { status: 'CONNECTING', inProgress: true });
 
   const existing = peerSessions.get(signalTransferId);
   const pendingCandidates = existing?.pendingCandidates || [];
@@ -452,9 +646,14 @@ async function startSenderWebRTC(
 
   pc.onconnectionstatechange = () => {
     if (pc.connectionState === 'failed') {
+      sendToBackground({
+        type: 'OFFSCREEN_DIRECT_ROUTE_FAILED',
+        transferId: signalTransferId,
+        targetTag
+      });
       reportProgress(uiTransferId, {
-        status: 'ERROR',
-        error: 'Falha na rota P2P (NAT/Firewall bloqueou conexão)'
+        status: 'CONNECTING',
+        error: 'Conexão direta falhou. Alternando automaticamente para rota mesh...'
       });
     }
   };
@@ -514,6 +713,7 @@ async function startSenderWebRTC(
     const totalBytes = file.size;
     reportProgress(uiTransferId, {
       status: 'TRANSFERRING',
+      inProgress: true,
       progress: 0,
       transferredBytes: 0
     });
@@ -590,6 +790,7 @@ async function startSenderWebRTC(
 
       reportProgress(uiTransferId, {
         status: keepStaged ? 'TUNNEL_READY' : 'COMPLETED',
+        inProgress: false,
         progress: 100,
         transferredBytes: totalBytes,
         speedBps: 0

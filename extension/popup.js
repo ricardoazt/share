@@ -205,12 +205,23 @@ const settingPortalUrl = document.getElementById('setting-portal-url');
 const btnResetPortalUrl = document.getElementById('btn-reset-portal-url');
 const daemonStatusBadge = document.getElementById('daemon-status-badge');
 
+const toggleMeshRelay = document.getElementById('toggle-mesh-relay');
+const selectRelayBandwidth = document.getElementById('select-relay-bandwidth');
+const relayBandwidthBadge = document.getElementById('relay-bandwidth-badge');
+const activeRelayedRoutesCount = document.getElementById('active-relayed-routes-count');
+const totalRelayedBytesDisplay = document.getElementById('total-relayed-bytes-display');
+
 const myTagInput = document.getElementById('my-tag-input');
 const btnSaveTag = document.getElementById('btn-save-tag');
+const btnSaveTagText = document.getElementById('btn-save-tag-text');
+const registrationStatusBadge = document.getElementById('registration-status-badge');
+const registeredUserInfo = document.getElementById('registered-user-info');
+const registeredHashDisplay = document.getElementById('registered-hash-display');
 const targetContainer = document.getElementById('target-container');
 const targetTagInput = document.getElementById('target-tag-input');
 const rosterCount = document.getElementById('roster-count');
 const peersList = document.getElementById('peers-list');
+const btnViewAllUsers = document.getElementById('btn-view-all-users');
 
 const fileInput = document.getElementById('file-input');
 const tunnelFileInput = document.getElementById('tunnel-file-input');
@@ -224,7 +235,32 @@ const btnCloudflareTunnel = document.getElementById('btn-cloudflare-tunnel');
 const tunnelStatusSub = document.getElementById('tunnel-status-sub');
 const tunnelBadge = document.getElementById('tunnel-badge');
 
+// Navegação Principal em Abas (Ocupa a Janela Inteira)
+const navBtnHome = document.getElementById('nav-btn-home');
+const navBtnTransfers = document.getElementById('nav-btn-transfers');
+const navBtnShares = document.getElementById('nav-btn-shares');
+const navBtnMesh = document.getElementById('nav-btn-mesh');
+
+const navBadgeTransfers = document.getElementById('nav-badge-transfers');
+const navBadgeShares = document.getElementById('nav-badge-shares');
+const navBadgeMesh = document.getElementById('nav-badge-mesh');
+
+const viewHome = document.getElementById('view-home');
+const viewTransfers = document.getElementById('view-transfers');
+const viewShares = document.getElementById('view-shares');
+const viewMesh = document.getElementById('view-mesh');
+
+const sharesList = document.getElementById('shares-list');
+const emptySharesState = document.getElementById('empty-shares-state');
+const countShares = document.getElementById('count-shares');
+const btnNewShareLink = document.getElementById('btn-new-share-link');
+const homeDropZone = document.getElementById('home-drop-zone');
+
+let currentMainTab = 'home'; // 'home' | 'transfers' | 'shares' | 'mesh'
+
 const tabActiveTransfers = document.getElementById('tab-active-transfers');
+const tabUsersMesh = document.getElementById('tab-users-mesh');
+const tabUsersBadge = document.getElementById('tab-users-badge');
 const tabHistoryTransfers = document.getElementById('tab-history-transfers');
 const countActive = document.getElementById('count-active');
 const countHistory = document.getElementById('count-history');
@@ -234,11 +270,76 @@ const toastAlert = document.getElementById('toast-alert');
 const toastMessage = document.getElementById('toast-message');
 const toastClose = document.getElementById('toast-close');
 
+const transfersView = document.getElementById('transfers-view');
 const transfersList = document.getElementById('transfers-list');
 const emptyState = document.getElementById('empty-state');
 
+const usersMeshView = document.getElementById('users-mesh-view');
+const usersSearchInput = document.getElementById('users-search-input');
+const usersMeshSummary = document.getElementById('users-mesh-summary');
+const meshUsersList = document.getElementById('mesh-users-list');
+const btnClearInactiveUsers = document.getElementById('btn-clear-inactive-users');
+const countInactiveUsers = document.getElementById('count-inactive-users');
+
 const footerAutoOpen = document.getElementById('footer-auto-open');
 const onlineCounter = document.getElementById('online-counter');
+
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function formatBandwidth(kbps) {
+  if (!kbps || kbps <= 0) return 'Ilimitada';
+  if (kbps >= 1024) return `${(kbps / 1024).toFixed(kbps % 1024 === 0 ? 0 : 1)} MB/s`;
+  return `${kbps} KB/s`;
+}
+
+function formatLastConnection(timestamp) {
+  if (!timestamp || typeof timestamp !== 'number' || timestamp <= 0) {
+    return 'Data desconhecida';
+  }
+  const date = new Date(timestamp);
+  const now = Date.now();
+  const diffMs = Math.max(0, now - timestamp);
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHours = Math.floor(diffMin / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  let relative = '';
+  if (diffSec < 45) {
+    relative = 'agora mesmo';
+  } else if (diffMin < 60) {
+    relative = `há ${diffMin} min`;
+  } else if (diffHours < 24) {
+    relative = `há ${diffHours}h`;
+  } else if (diffDays === 1) {
+    relative = 'ontem';
+  } else {
+    relative = `há ${diffDays} dias`;
+  }
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const d = pad(date.getDate());
+  const m = pad(date.getMonth() + 1);
+  const y = date.getFullYear();
+  const hh = pad(date.getHours());
+  const mm = pad(date.getMinutes());
+
+  return `${d}/${m}/${y} às ${hh}:${mm} (${relative})`;
+}
+
+function formatDate(timestamp) {
+  if (!timestamp || typeof timestamp !== 'number' || timestamp <= 0) return 'Data desconhecida';
+  const d = new Date(timestamp);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} às ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 // Modal Elements
 const tunnelConfigModal = document.getElementById('tunnel-config-modal');
@@ -259,7 +360,10 @@ const modalCompressOptions = document.getElementById('modal-compress-options');
 const modalCompressFormat = document.getElementById('modal-compress-format');
 const modalCompressLevel = document.getElementById('modal-compress-level');
 const modalCompressName = document.getElementById('modal-compress-name');
-const modalCompressExtBadge = document.getElementById('modal-compress-ext-badge');
+const modalP2pTargetSection = document.getElementById('modal-p2p-target-section');
+const modalTargetTagInput = document.getElementById('modal-target-tag-input');
+const modalTargetTagSelect = document.getElementById('modal-target-tag-select');
+const modalP2pTargetBadge = document.getElementById('modal-p2p-target-badge');
 
 const modalTunnelOptions = document.getElementById('modal-tunnel-options');
 const modalExpirationSelect = document.getElementById('modal-expiration-select');
@@ -280,21 +384,38 @@ let currentState = {
   peerRegistry: {},
   transfers: {},
   stagedTunnelFiles: [],
-  tunnelModalOpen: false
+  tunnelModalOpen: false,
+  modalMode: 'p2p',
+  modalTargetTag: ''
 };
 
 let stagedTunnelFiles = []; // Array de { fileId, name, size, type, fileObj }
-let currentModalMode = 'tunnel'; // 'tunnel' | 'p2p'
+let currentModalMode = 'p2p'; // 'p2p' | 'tunnel'
 let currentTransfersTab = 'active'; // 'active' | 'history'
 const expandedTransferIds = new Set();
 
-function showToast(msg) {
+function showToast(msg, type = 'info') {
   if (!toastAlert || !toastMessage) return;
   toastMessage.textContent = msg;
+
+  toastAlert.className = 'mb-1 px-3 py-1.5 rounded-lg text-[11px] flex items-center justify-between shrink-0 transition-all shadow-md ';
+
+  if (type === 'error') {
+    toastAlert.className += 'bg-rose-950/95 border border-rose-500/50 text-rose-200';
+  } else if (type === 'success') {
+    toastAlert.className += 'bg-emerald-950/95 border border-emerald-500/50 text-emerald-200';
+  } else if (type === 'warning') {
+    toastAlert.className += 'bg-amber-950/95 border border-amber-500/50 text-amber-200';
+  } else {
+    toastAlert.className += 'bg-indigo-950/95 border border-indigo-500/50 text-indigo-200';
+  }
+
   toastAlert.classList.remove('hidden');
-  setTimeout(() => {
+
+  if (toastAlert._timer) clearTimeout(toastAlert._timer);
+  toastAlert._timer = setTimeout(() => {
     toastAlert.classList.add('hidden');
-  }, 4000);
+  }, 5000);
 }
 
 if (toastClose) {
@@ -343,6 +464,30 @@ function renderSettingsSwitches() {
     }`;
   }
 
+  if (toggleMeshRelay) {
+    const isRelay = currentState.meshRelayEnabled !== false;
+    toggleMeshRelay.setAttribute('aria-checked', String(isRelay));
+    toggleMeshRelay.className = `w-10 h-5 rounded-full p-0.5 flex items-center transition-colors duration-150 shrink-0 cursor-pointer ${
+      isRelay ? 'bg-indigo-500 justify-end' : 'bg-slate-700 justify-start'
+    }`;
+  }
+
+  if (selectRelayBandwidth) {
+    selectRelayBandwidth.value = String(currentState.relayBandwidthLimitKbps ?? 2048);
+  }
+
+  if (relayBandwidthBadge) {
+    relayBandwidthBadge.textContent = formatBandwidth(currentState.relayBandwidthLimitKbps ?? 2048);
+  }
+
+  if (activeRelayedRoutesCount) {
+    activeRelayedRoutesCount.textContent = `${currentState.activeRelayedRoutes || 0} ativas`;
+  }
+
+  if (totalRelayedBytesDisplay) {
+    totalRelayedBytesDisplay.textContent = formatBytes(currentState.relayedBytesTotal || 0);
+  }
+
   if (footerAutoOpen) {
     footerAutoOpen.textContent = currentState.autoOpenOnReceive ? 'ON' : 'OFF';
     footerAutoOpen.className = currentState.autoOpenOnReceive ? 'text-emerald-400' : 'text-slate-500';
@@ -353,44 +498,410 @@ function renderPeerDirectory() {
   const peers = Object.values(currentState.peerRegistry || {});
   const now = Date.now();
   const onlinePeers = peers.filter(
-    (p) => p.tag && p.tag !== currentState.myTag && now - (p.lastSeen || 0) < 60000
+    (p) => p.tag && p.tag !== currentState.myTag && (p.status === 'online' || now - (p.lastSeen || 0) < 45000)
   );
 
-  rosterCount.textContent = `${onlinePeers.length} na lista`;
-  onlineCounter.textContent = `${onlinePeers.length} online`;
+  if (rosterCount) rosterCount.textContent = `${onlinePeers.length} online`;
+  if (onlineCounter) onlineCounter.textContent = `${onlinePeers.length} online`;
+  if (tabUsersBadge) tabUsersBadge.textContent = String(onlinePeers.length);
 
-  peersList.innerHTML = '';
-  if (onlinePeers.length === 0) {
-    const span = document.createElement('span');
-    span.className = 'text-[10px] text-slate-500 italic';
-    span.textContent = 'Nenhum outro @usuario ativo no momento.';
-    peersList.appendChild(span);
+  if (peersList) {
+    peersList.innerHTML = '';
+    if (onlinePeers.length === 0) {
+      const span = document.createElement('span');
+      span.className = 'text-[10px] text-slate-500 italic';
+      span.textContent = 'Nenhum outro @usuario ativo no momento.';
+      peersList.appendChild(span);
+    } else {
+      const currentSelected = normalizeTag(targetTagInput ? targetTagInput.value : '');
+
+      onlinePeers.forEach((peer) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        const isSelected = peer.tag === currentSelected;
+
+        btn.className = `px-2 py-0.5 rounded-full text-[10px] font-mono font-medium transition-all cursor-pointer shrink-0 flex items-center gap-1 ${
+          isSelected
+            ? 'bg-emerald-500 text-slate-950 font-bold shadow-md'
+            : 'bg-slate-800/90 text-emerald-300 hover:bg-emerald-500/20 border border-emerald-500/30'
+        }`;
+
+        const dot = document.createElement('span');
+        dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0';
+        btn.appendChild(dot);
+
+        const txt = document.createElement('span');
+        txt.textContent = peer.tag;
+        btn.appendChild(txt);
+
+        if (peer.relayEnabled) {
+          const relayIcon = document.createElement('span');
+          relayIcon.className = 'text-[9px] text-indigo-300';
+          relayIcon.textContent = '⚡';
+          relayIcon.title = `Nó de Rota (${formatBandwidth(peer.relayBandwidthLimitKbps)})`;
+          btn.appendChild(relayIcon);
+        }
+
+        btn.title = `Clique para selecionar ${peer.tag}`;
+        btn.addEventListener('click', () => {
+          if (targetTagInput) targetTagInput.value = peer.tag;
+          chrome.storage.local.set({ lastTargetTag: peer.tag });
+          renderPeerDirectory();
+        });
+
+        peersList.appendChild(btn);
+      });
+    }
+  }
+
+  renderMeshUsersTab();
+
+  if (currentModalMode === 'p2p' && tunnelConfigModal && !tunnelConfigModal.classList.contains('hidden')) {
+    const curTag = modalTargetTagInput ? modalTargetTagInput.value.trim() : '';
+    populateModalPeerSelect(curTag ? (curTag.startsWith('@') ? curTag : `@${curTag}`) : '');
+  }
+}
+
+function populateModalPeerSelect(selectedTag = '') {
+  if (!modalTargetTagSelect) return;
+  modalTargetTagSelect.innerHTML = '<option value="">-- Escolher da rede --</option>';
+  const now = Date.now();
+  const peers = Object.values(currentState.peerRegistry || {}).filter(
+    (p) => p.tag && p.tag !== currentState.myTag
+  );
+
+  peers.sort((a, b) => {
+    const isOnlineA = a.status === 'online' || now - (a.lastSeen || 0) < 45000;
+    const isOnlineB = b.status === 'online' || now - (b.lastSeen || 0) < 45000;
+    if (isOnlineA && !isOnlineB) return -1;
+    if (!isOnlineA && isOnlineB) return 1;
+    return (a.tag || '').localeCompare(b.tag || '');
+  });
+
+  const normalizedSelected = normalizeTag(selectedTag);
+
+  peers.forEach((peer) => {
+    const isOnline = peer.status === 'online' || now - (peer.lastSeen || 0) < 45000;
+    const isAway = !isOnline && now - (peer.lastSeen || 0) < 180000;
+    const statusText = isOnline ? 'Online' : isAway ? 'Ausente' : 'Offline';
+    const statusIcon = isOnline ? '🟢' : isAway ? '🟡' : '⚪';
+    const opt = document.createElement('option');
+    opt.value = peer.tag;
+    opt.textContent = `${statusIcon} ${peer.tag} (${statusText})`;
+    if (normalizedSelected && normalizeTag(peer.tag) === normalizedSelected) {
+      opt.selected = true;
+    }
+    modalTargetTagSelect.appendChild(opt);
+  });
+}
+
+function renderMeshUsersTab() {
+  if (!meshUsersList) return;
+
+  const now = Date.now();
+  const searchFilter = (usersSearchInput ? usersSearchInput.value.trim().toLowerCase() : '');
+  const allPeers = Object.values(currentState.peerRegistry || {});
+
+  const sortedPeers = allPeers.slice().sort((a, b) => {
+    if (a.tag === currentState.myTag) return -1;
+    if (b.tag === currentState.myTag) return 1;
+
+    const isOnlineA = a.status === 'online' || now - (a.lastSeen || 0) < 45000;
+    const isOnlineB = b.status === 'online' || now - (b.lastSeen || 0) < 45000;
+    if (isOnlineA && !isOnlineB) return -1;
+    if (!isOnlineA && isOnlineB) return 1;
+
+    return (b.lastSeen || 0) - (a.lastSeen || 0);
+  });
+
+  const filteredPeers = sortedPeers.filter((p) => {
+    if (!p.tag) return false;
+    if (searchFilter && !p.tag.toLowerCase().includes(searchFilter)) return false;
+    return true;
+  });
+
+  const onlineCount = allPeers.filter(
+    (p) => p.tag !== currentState.myTag && (p.status === 'online' || now - (p.lastSeen || 0) < 45000)
+  ).length;
+
+  const inactivePeers = allPeers.filter(
+    (p) => p.tag && p.tag !== currentState.myTag && !(p.status === 'online' || now - (p.lastSeen || 0) < 45000)
+  );
+
+  if (usersMeshSummary) {
+    usersMeshSummary.textContent = `${onlineCount} online • ${allPeers.length} na malha`;
+  }
+
+  if (btnClearInactiveUsers) {
+    if (inactivePeers.length > 0) {
+      btnClearInactiveUsers.classList.remove('hidden');
+      if (countInactiveUsers) countInactiveUsers.textContent = String(inactivePeers.length);
+    } else {
+      btnClearInactiveUsers.classList.add('hidden');
+    }
+  }
+
+  meshUsersList.innerHTML = '';
+
+  if (filteredPeers.length === 0) {
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className =
+      'p-4 rounded-xl bg-slate-900/40 border border-slate-800 text-center flex flex-col items-center justify-center';
+    emptyDiv.innerHTML = `
+      <p class="text-xs text-slate-400 font-medium">Nenhum usuário encontrado na malha</p>
+      <p class="text-[10px] text-slate-500 mt-1">
+        ${searchFilter ? 'Tente outro termo de busca.' : 'Aguardando sincronização de nós na malha global...'}
+      </p>
+    `;
+    meshUsersList.appendChild(emptyDiv);
     return;
   }
 
-  const currentSelected = normalizeTag(targetTagInput.value);
+  for (const peer of filteredPeers) {
+    const isSelf = peer.tag === currentState.myTag;
+    const isOnline = isSelf || peer.status === 'online' || now - (peer.lastSeen || 0) < 45000;
+    const isAway = !isOnline && now - (peer.lastSeen || 0) < 180000;
 
-  onlinePeers.forEach((peer) => {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    const isSelected = peer.tag === currentSelected;
+    const statusDotClass = isOnline
+      ? 'bg-emerald-400'
+      : isAway
+      ? 'bg-amber-400'
+      : 'bg-slate-500';
 
-    btn.className = `px-2 py-0.5 rounded-full text-[10px] font-mono font-medium transition-all cursor-pointer shrink-0 ${
-      isSelected
-        ? 'bg-emerald-500 text-slate-950 font-bold shadow-md'
-        : 'bg-slate-800/90 text-emerald-300 hover:bg-emerald-500/20 border border-emerald-500/30'
-    }`;
-    btn.textContent = peer.tag;
-    btn.title = `Clique para enviar arquivos para ${peer.tag}`;
+    const statusText = isSelf
+      ? 'Você (Este Nó Local)'
+      : isOnline
+      ? '🟢 Online agora'
+      : isAway
+      ? '🟡 Ausente'
+      : '⚪ Offline / Inativo';
 
-    btn.addEventListener('click', () => {
-      targetTagInput.value = peer.tag;
-      chrome.storage.local.set({ lastTargetTag: peer.tag });
-      renderPeerDirectory();
-    });
+    const lastSeenFormatted = formatLastConnection(peer.lastSeen || peer.joinedAt);
 
-    peersList.appendChild(btn);
-  });
+    const card = document.createElement('div');
+    card.className =
+      `p-2.5 rounded-xl border flex items-center justify-between gap-2.5 transition-all shadow-sm ${
+        isSelf
+          ? 'bg-indigo-950/20 border-indigo-500/30'
+          : isOnline
+          ? 'bg-slate-900/90 border-slate-800 hover:border-slate-700'
+          : 'bg-slate-950/60 border-slate-800/60 opacity-80'
+      }`;
+
+    const leftWrap = document.createElement('div');
+    leftWrap.className = 'flex items-center gap-2.5 min-w-0 flex-1';
+
+    const avatar = document.createElement('div');
+    avatar.className =
+      'relative w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-xs text-indigo-300 shrink-0';
+    avatar.textContent = (peer.tag.replace(/^@/, '')[0] || 'U').toUpperCase();
+
+    const dot = document.createElement('span');
+    dot.className = `absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-950 ${statusDotClass}`;
+    avatar.appendChild(dot);
+    leftWrap.appendChild(avatar);
+
+    const details = document.createElement('div');
+    details.className = 'flex flex-col min-w-0 flex-1';
+
+    const tagRow = document.createElement('div');
+    tagRow.className = 'flex items-center gap-1.5 flex-wrap';
+
+    const tagSpan = document.createElement('span');
+    tagSpan.className = 'text-xs font-mono font-bold text-slate-100 truncate';
+    tagSpan.textContent = peer.tag;
+    tagRow.appendChild(tagSpan);
+
+    if (isSelf) {
+      const selfBadge = document.createElement('span');
+      selfBadge.className = 'text-[9px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-bold';
+      selfBadge.textContent = 'VOCÊ';
+      tagRow.appendChild(selfBadge);
+    }
+
+    if (peer.relayEnabled) {
+      const relayBadge = document.createElement('span');
+      relayBadge.className = 'text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+      relayBadge.textContent = `⚡ Rota (${formatBandwidth(peer.relayBandwidthLimitKbps)})`;
+      relayBadge.title = 'Este nó aceita intermediar transferências para outros usuários';
+      tagRow.appendChild(relayBadge);
+    }
+
+    details.appendChild(tagRow);
+
+    const subText = document.createElement('div');
+    subText.className = 'flex flex-col text-[10px] mt-0.5 leading-tight gap-0.5';
+
+    const statusLine = document.createElement('span');
+    statusLine.className = isSelf
+      ? 'text-indigo-300 font-medium'
+      : isOnline
+      ? 'text-emerald-400 font-medium'
+      : isAway
+      ? 'text-amber-400 font-medium'
+      : 'text-slate-400';
+    statusLine.textContent = statusText;
+    subText.appendChild(statusLine);
+
+    const dateLine = document.createElement('span');
+    dateLine.className = 'text-[9.5px] text-slate-400 flex items-center gap-1';
+    dateLine.innerHTML = `<span class="text-slate-500">Última conexão:</span> <span class="font-mono text-slate-300">${lastSeenFormatted}</span>`;
+    subText.appendChild(dateLine);
+
+    if (peer.regHash) {
+      const hashLine = document.createElement('span');
+      hashLine.className = 'text-[9px] font-mono text-slate-400 flex items-center gap-1';
+      hashLine.innerHTML = `<span class="text-slate-500">Hash de Registro:</span> <span class="text-indigo-300 font-medium">${peer.regHash}</span>`;
+      subText.appendChild(hashLine);
+    }
+
+    if (peer.registeredAt) {
+      const regLine = document.createElement('span');
+      regLine.className = 'text-[9px] text-slate-400 flex items-center gap-1';
+      regLine.innerHTML = `<span class="text-slate-500">Registrado em:</span> <span class="font-mono text-slate-300">${formatDate(peer.registeredAt)}</span>`;
+      subText.appendChild(regLine);
+    }
+
+    details.appendChild(subText);
+    leftWrap.appendChild(details);
+    card.appendChild(leftWrap);
+
+    if (!isSelf) {
+      const actionsWrap = document.createElement('div');
+      actionsWrap.className = 'flex items-center gap-1.5 shrink-0';
+
+      // Se o usuário não está online (está inativo/offline/ausente), exibe botão para excluir da rede
+      if (!isOnline) {
+        const btnDeletePeer = document.createElement('button');
+        btnDeletePeer.type = 'button';
+        btnDeletePeer.className =
+          'px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 active:scale-95 text-rose-300 border border-rose-500/30 text-[10px] font-medium transition-all cursor-pointer flex items-center gap-1';
+        btnDeletePeer.title = `Excluir usuário inativo ${peer.tag} da rede`;
+        btnDeletePeer.innerHTML = `
+          <svg class="w-3 h-3 text-rose-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          <span>Excluir</span>
+        `;
+        btnDeletePeer.addEventListener('click', (e) => {
+          e.stopPropagation();
+          chrome.runtime.sendMessage({ action: 'DELETE_PEER', tag: peer.tag }, (res) => {
+            if (res && res.state) {
+              currentState = res.state;
+              renderAll();
+              showToast(`Usuário ${peer.tag} foi excluído da rede.`);
+            }
+          });
+        });
+        actionsWrap.appendChild(btnDeletePeer);
+      }
+
+      const btnSendToPeer = document.createElement('button');
+      btnSendToPeer.type = 'button';
+      btnSendToPeer.className = isOnline
+        ? 'px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-[10px] font-bold shadow-md transition-all cursor-pointer flex items-center gap-1'
+        : 'px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 border border-slate-700 text-[10px] font-medium transition-all cursor-pointer flex items-center gap-1';
+      btnSendToPeer.innerHTML = `
+        <svg class="w-3 h-3 ${isOnline ? 'text-white' : 'text-slate-400'}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
+        </svg>
+        <span>Enviar</span>
+      `;
+      btnSendToPeer.title = `Enviar arquivos para ${peer.tag}`;
+      btnSendToPeer.addEventListener('click', () => {
+        if (targetTagInput) targetTagInput.value = peer.tag;
+        chrome.storage.local.set({ lastTargetTag: peer.tag });
+        openModalForP2P(peer.tag);
+      });
+      actionsWrap.appendChild(btnSendToPeer);
+
+      card.appendChild(actionsWrap);
+    }
+
+    meshUsersList.appendChild(card);
+  }
+}
+
+function switchMainTab(tabName) {
+  currentMainTab = tabName;
+
+  const tabs = [
+    { name: 'home', btn: navBtnHome, view: viewHome },
+    { name: 'transfers', btn: navBtnTransfers, view: viewTransfers },
+    { name: 'shares', btn: navBtnShares, view: viewShares },
+    { name: 'mesh', btn: navBtnMesh, view: viewMesh }
+  ];
+
+  for (const t of tabs) {
+    const isActive = t.name === tabName;
+    if (t.btn) {
+      if (isActive) {
+        t.btn.className =
+          'nav-tab active py-2.5 px-1 flex flex-col items-center justify-center gap-1 text-[11px] font-bold text-indigo-400 border-b-2 border-indigo-500 bg-slate-800/50 transition-all cursor-pointer relative';
+        const svg = t.btn.querySelector('svg');
+        if (svg) {
+          svg.classList.remove('text-slate-400');
+          svg.classList.add('text-indigo-400');
+        }
+      } else {
+        t.btn.className =
+          'nav-tab py-2.5 px-1 flex flex-col items-center justify-center gap-1 text-[11px] font-medium text-slate-400 hover:text-slate-200 border-b-2 border-transparent transition-all cursor-pointer relative';
+        const svg = t.btn.querySelector('svg');
+        if (svg) {
+          svg.classList.remove('text-indigo-400');
+          svg.classList.add('text-slate-400');
+        }
+      }
+    }
+    if (t.view) {
+      if (isActive) {
+        t.view.classList.remove('hidden');
+      } else {
+        t.view.classList.add('hidden');
+      }
+    }
+  }
+
+  if (tabName === 'home') {
+    renderRegistrationCard();
+    renderPeerDirectory();
+  } else if (tabName === 'transfers') {
+    renderTransfers();
+  } else if (tabName === 'shares') {
+    renderShares();
+  } else if (tabName === 'mesh') {
+    renderMeshUsersTab();
+  }
+  updateNavBadges();
+}
+
+function switchTransfersSubTab(tabName) {
+  currentTransfersTab = tabName;
+
+  if (tabActiveTransfers) {
+    tabActiveTransfers.className =
+      tabName === 'active'
+        ? 'px-2.5 py-1 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 cursor-pointer'
+        : 'px-2.5 py-1 rounded-md text-[10px] font-medium text-slate-400 hover:text-slate-200 cursor-pointer';
+  }
+
+  if (tabHistoryTransfers) {
+    tabHistoryTransfers.className =
+      tabName === 'history'
+        ? 'px-2.5 py-1 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 cursor-pointer'
+        : 'px-2.5 py-1 rounded-md text-[10px] font-medium text-slate-400 hover:text-slate-200 cursor-pointer';
+  }
+
+  renderTransfers();
+}
+
+function switchTab(tabName) {
+  if (tabName === 'users') {
+    switchMainTab('mesh');
+  } else {
+    switchMainTab('transfers');
+    switchTransfersSubTab(tabName === 'history' ? 'history' : 'active');
+  }
 }
 
 function renderReceiveButton() {
@@ -708,6 +1219,17 @@ function renderTransfers() {
       speedText = ` • ${formatSpeed(t.speedBps)}`;
     }
 
+    let routeBadgeHtml = '';
+    if (isTunnel) {
+      routeBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-orange-500/15 text-orange-300 border border-orange-500/30 shrink-0">Link WebRTC</span>`;
+    } else if (t.direction === 'relay' || t.isRelayingForOthers) {
+      routeBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 font-bold shrink-0">🔁 Relay: ${t.fromPeer || 'origem'} ➔ ${t.toPeer || 'destino'}</span>`;
+    } else if (t.routeType === 'MESH_RELAY' || t.relayTag) {
+      routeBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-bold shrink-0">🔀 Mesh (${t.relayTag})</span>`;
+    } else {
+      routeBadgeHtml = `<span class="text-[9px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0">⚡ P2P Direto</span>`;
+    }
+
     let statusText = '';
     if (isExpired) statusText = 'Expirado';
     else if (isCancelled) statusText = 'Cancelado';
@@ -716,7 +1238,7 @@ function renderTransfers() {
     else if (isWaitingAccept) statusText = 'Aguardando aceite';
     else if (isTunnel) statusText = isDone ? 'Link P2P Pronto' : 'Transmitindo...';
     else if (isDone) statusText = 'Concluído';
-    else statusText = 'Transferindo...';
+    else statusText = t.routeDescription || 'Transferindo...';
 
     card.innerHTML = `
       <div class="flex items-center justify-between gap-1.5">
@@ -724,6 +1246,7 @@ function renderTransfers() {
           <span class="text-[9px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${badgeColor} shrink-0">
             ${badgeLabel}
           </span>
+          ${routeBadgeHtml}
           <span class="text-xs font-bold text-slate-100 truncate" title="${displayName}">
             ${displayName}
           </span>
@@ -756,6 +1279,279 @@ function renderTransfers() {
   }
 }
 
+function updateNavBadges() {
+  const allTransfers = Object.values(currentState.transfers || {});
+  const now = Date.now();
+
+  const activeCount = allTransfers.filter(
+    (t) => t.status === 'TRANSFERRING' || t.status === 'CONNECTING' || (!isTransferHistory(t, now) && t.direction !== 'tunnel')
+  ).length;
+
+  if (navBadgeTransfers) {
+    if (activeCount > 0) {
+      navBadgeTransfers.textContent = String(activeCount);
+      navBadgeTransfers.classList.remove('hidden');
+    } else {
+      navBadgeTransfers.classList.add('hidden');
+    }
+  }
+
+  const activeLinks = allTransfers.filter(
+    (t) => (t.direction === 'tunnel' || Boolean(t.shareId)) && t.status !== 'CANCELLED' && (!t.expiresAt || now < t.expiresAt)
+  );
+
+  if (navBadgeShares) {
+    if (activeLinks.length > 0) {
+      navBadgeShares.textContent = String(activeLinks.length);
+      navBadgeShares.classList.remove('hidden');
+    } else {
+      navBadgeShares.classList.add('hidden');
+    }
+  }
+
+  const peers = Object.values(currentState.peerRegistry || {}).filter(
+    (p) => p.tag && p.tag !== currentState.myTag && (p.status === 'online' || now - (p.lastSeen || 0) < 45000)
+  );
+
+  if (navBadgeMesh) {
+    if (peers.length > 0) {
+      navBadgeMesh.textContent = String(peers.length);
+      navBadgeMesh.classList.remove('hidden');
+    } else {
+      navBadgeMesh.classList.add('hidden');
+    }
+  }
+}
+
+function renderShares() {
+  if (!sharesList) return;
+
+  const allTransfers = Object.values(currentState.transfers || {}).sort(
+    (a, b) => (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0)
+  );
+
+  const now = Date.now();
+  const shareLinks = allTransfers.filter((t) => t.direction === 'tunnel' || Boolean(t.shareId));
+
+  if (countShares) countShares.textContent = String(shareLinks.length);
+
+  if (shareLinks.length === 0) {
+    if (emptySharesState) emptySharesState.classList.remove('hidden');
+    Array.from(sharesList.children).forEach((child) => {
+      if (child.id !== 'empty-shares-state') child.remove();
+    });
+    return;
+  }
+
+  if (emptySharesState) emptySharesState.classList.add('hidden');
+  Array.from(sharesList.children).forEach((child) => {
+    if (child.id !== 'empty-shares-state') child.remove();
+  });
+
+  for (const t of shareLinks) {
+    const isCancelled = t.status === 'CANCELLED';
+    const isExpired = t.status === 'EXPIRED' || (t.expiresAt && now >= t.expiresAt);
+    const isPermanent = !t.expiresAt;
+
+    // Destinatário já iniciou a transferência e está em progresso
+    const isInProgress = !isCancelled && !isExpired && (
+      t.inProgress === true ||
+      t.status === 'TRANSFERRING' ||
+      t.status === 'CONNECTING'
+    );
+
+    const completedDownloads = Number(t.completedDownloads || t.completedPacks || 0);
+    const totalDownloads = Number(t.downloads || 0);
+
+    const card = document.createElement('div');
+    card.className =
+      `p-3 rounded-xl bg-slate-900 border ${
+        isInProgress
+          ? 'border-emerald-500/60 shadow-lg shadow-emerald-500/10 ring-1 ring-emerald-500/30'
+          : isExpired || isCancelled
+          ? 'border-slate-800/80 opacity-75'
+          : 'border-slate-800'
+      } flex flex-col gap-2 transition-all`;
+
+    // Badges de tipo / expiração
+    let typeBadgeHtml = '';
+    if (isCancelled) {
+      typeBadgeHtml = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">Cancelado</span>`;
+    } else if (isExpired) {
+      typeBadgeHtml = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">Expirado</span>`;
+    } else if (isPermanent) {
+      typeBadgeHtml = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 font-mono">♾️ Link Permanente</span>`;
+    } else {
+      const remainingSec = Math.max(0, Math.floor((t.expiresAt - now) / 1000));
+      const m = Math.floor(remainingSec / 60);
+      const s = remainingSec % 60;
+      typeBadgeHtml = `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">⏳ Expira em ${m}m ${s}s</span>`;
+    }
+
+    // Seção de Progresso em Tempo Real / Notificação de Início do Destinatário
+    let inProgressSectionHtml = '';
+    if (isInProgress) {
+      const pct = Math.min(100, Math.max(0, Math.round(t.progress || 0)));
+      const speed = t.speedBps ? formatSpeed(t.speedBps) : 'iniciando conexão...';
+      const transferred = formatBytes(t.transferredBytes || 0);
+      const total = formatBytes(t.totalSize || t.fileSize || 0);
+
+      inProgressSectionHtml = `
+        <div class="p-2.5 rounded-lg bg-emerald-950/60 border border-emerald-500/40 flex flex-col gap-1.5 shadow-sm">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="font-bold text-emerald-300 flex items-center gap-1.5 animate-pulse">
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span>Destinatário iniciou a transferência!</span>
+            </span>
+            <span class="text-emerald-400 font-mono font-bold">${pct}% • ${speed}</span>
+          </div>
+          <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+            <div class="bg-gradient-to-r from-emerald-500 to-green-400 h-1.5 transition-all duration-150" style="width: ${pct}%"></div>
+          </div>
+          <div class="flex items-center justify-between text-[9px] font-mono text-emerald-300/80">
+            <span>Enviando dados via WebRTC P2P</span>
+            <span>${transferred} / ${total}</span>
+          </div>
+        </div>
+      `;
+    } else if (!isExpired && !isCancelled) {
+      if (completedDownloads > 0) {
+        inProgressSectionHtml = `
+          <div class="flex items-center justify-between text-[10px] px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-400">
+            <span class="flex items-center gap-1.5 text-emerald-400 font-medium">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              <span>Pronto para novos downloads</span>
+            </span>
+            <span class="text-slate-400 font-mono">${isPermanent ? 'Ativo permanentemente' : 'Aguardando'}</span>
+          </div>
+        `;
+      } else {
+        inProgressSectionHtml = `
+          <div class="flex items-center justify-between text-[10px] px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-slate-400">
+            <span class="flex items-center gap-1.5 text-amber-400 font-medium">
+              <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+              <span>Aguardando destinatário acessar o link</span>
+            </span>
+            <span class="text-slate-500 font-mono">Pendente</span>
+          </div>
+        `;
+      }
+    }
+
+    // Se for um link permanente, DEVE MOSTRAR o número de downloads já concluídos associados àquele link!
+    let downloadsCountHtml = '';
+    if (isPermanent) {
+      downloadsCountHtml = `
+        <div class="flex items-center justify-between px-3 py-2 rounded-lg bg-indigo-950/40 border border-indigo-500/30 text-xs">
+          <span class="text-indigo-200 font-semibold flex items-center gap-1.5">
+            <svg class="w-4 h-4 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            </svg>
+            <span>Downloads concluídos:</span>
+          </span>
+          <span class="font-mono font-bold text-emerald-400 text-sm bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">${completedDownloads}</span>
+        </div>
+      `;
+    } else {
+      downloadsCountHtml = `
+        <div class="flex items-center justify-between text-[10px] text-slate-400 px-1">
+          <span>Downloads concluídos: <strong class="text-emerald-400 font-mono">${completedDownloads}</strong>${
+            t.maxDownloads ? ` / ${t.maxDownloads} máx` : ''
+          }</span>
+          ${totalDownloads > completedDownloads ? `<span class="text-[9px] text-slate-500 font-mono">(${totalDownloads} tentativas)</span>` : ''}
+        </div>
+      `;
+    }
+
+    // Senha se houver
+    let passwordHtml = '';
+    if (t.hasPassword && t.password) {
+      passwordHtml = `
+        <div class="flex items-center justify-between text-[10px] px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-slate-300">
+          <span class="text-slate-400">🔑 Senha de proteção:</span>
+          <div class="flex items-center gap-1.5 font-mono">
+            <span class="font-bold text-amber-300 bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">${escapeHtml(t.password)}</span>
+            <button
+              type="button"
+              data-action="copy-text"
+              data-text="${escapeHtml(t.password)}"
+              class="text-slate-400 hover:text-white px-1 cursor-pointer"
+              title="Copiar senha"
+            >📋</button>
+          </div>
+        </div>
+      `;
+    }
+
+    const displayName = t.packName || t.fileName || 'Pack Compartilhado';
+    const totalSize = t.totalSize || t.fileSize || 0;
+    const filesCount = Array.isArray(t.files) ? t.files.length : 1;
+
+    card.innerHTML = `
+      <div class="flex items-start justify-between gap-2">
+        <div class="flex flex-col min-w-0 flex-1">
+          <div class="flex items-center gap-1.5 flex-wrap mb-0.5">
+            ${typeBadgeHtml}
+            <span class="text-[10px] font-mono text-orange-400 font-bold">#${t.shareId}</span>
+          </div>
+          <span class="text-xs font-bold text-white truncate" title="${displayName}">
+            ${displayName}
+          </span>
+          <span class="text-[10px] text-slate-400">
+            ${filesCount} arquivo${filesCount > 1 ? 's' : ''} • ${formatBytes(totalSize)}
+          </span>
+        </div>
+        <div class="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            data-action="delete-single-transfer"
+            data-transfer-id="${t.id}"
+            title="Encerrar e excluir este compartilhamento"
+            class="p-1 rounded-lg hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 text-xs font-bold transition-colors cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      ${inProgressSectionHtml}
+
+      ${downloadsCountHtml}
+
+      ${passwordHtml}
+
+      <!-- URL e Botões de Compartilhar -->
+      <div class="flex items-center justify-between gap-1.5 pt-1.5 border-t border-slate-800/80">
+        <span class="text-[9px] font-mono text-slate-400 truncate flex-1" title="${t.shareUrl || ''}">
+          ${t.shareUrl || ''}
+        </span>
+        <div class="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            data-action="copy-tunnel-formatted"
+            data-transfer-id="${t.id}"
+            title="Copiar mensagem formatada completa (link + arquivos + senha)"
+            class="px-2.5 py-1 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-300 border border-orange-500/30 text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+          >
+            <span>📋 Copiar Link</span>
+          </button>
+          <button
+            type="button"
+            data-action="open-tunnel-url"
+            data-url="${t.shareUrl}"
+            title="Abrir no navegador"
+            class="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs transition-colors cursor-pointer"
+          >
+            ↗
+          </button>
+        </div>
+      </div>
+    `;
+
+    sharesList.appendChild(card);
+  }
+}
+
 function syncModalWithState() {
   if (Array.isArray(currentState.stagedTunnelFiles)) {
     if (stagedTunnelFiles.length === 0 && currentState.stagedTunnelFiles.length > 0) {
@@ -772,17 +1568,64 @@ function syncModalWithState() {
   }
 
   if (currentState.tunnelModalOpen && tunnelConfigModal) {
-    tunnelConfigModal.classList.remove('hidden');
+    if (currentState.modalMode === 'tunnel') {
+      openModalForTunnel();
+    } else {
+      openModalForP2P(currentState.modalTargetTag || (targetTagInput ? targetTagInput.value : ''));
+    }
+  } else if (tunnelConfigModal) {
+    tunnelConfigModal.classList.add('hidden');
   }
   renderModalFiles();
 }
 
+function renderRegistrationCard() {
+  const isRegistered = Boolean(currentState.myTag && currentState.myTag.startsWith('@'));
+  const myEntry = currentState.peerRegistry ? currentState.peerRegistry[currentState.myTag] : null;
+
+  if (myTagInput && document.activeElement !== myTagInput) {
+    myTagInput.value = isRegistered ? currentState.myTag.replace(/^@/, '') : '';
+  }
+
+  if (registrationStatusBadge) {
+    if (isRegistered) {
+      registrationStatusBadge.textContent = '🟢 Registrado';
+      registrationStatusBadge.className =
+        'text-[9px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 font-medium';
+    } else {
+      registrationStatusBadge.textContent = 'Não registrado';
+      registrationStatusBadge.className =
+        'text-[9px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700';
+    }
+  }
+
+  if (registeredUserInfo) {
+    if (isRegistered && myEntry) {
+      registeredUserInfo.classList.remove('hidden');
+      if (registeredHashDisplay) {
+        registeredHashDisplay.textContent =
+          myEntry.regHash || ('0x' + (myEntry.nodeId || currentState.nodeId || '').replace(/[^a-f0-9]/gi, '').slice(0, 16));
+      }
+    } else {
+      registeredUserInfo.classList.add('hidden');
+    }
+  }
+
+  if (btnSaveTagText && (!btnSaveTag || !btnSaveTag.disabled)) {
+    btnSaveTagText.textContent = isRegistered ? 'Alterar' : 'Registrar';
+  }
+}
+
 function renderAll() {
   renderConnectionStatus();
+  renderRegistrationCard();
   renderSettingsSwitches();
   renderPeerDirectory();
   renderReceiveButton();
   renderTransfers();
+  renderShares();
+  renderMeshUsersTab();
+  updateNavBadges();
   syncModalWithState();
 }
 
@@ -852,31 +1695,72 @@ if (btnResetPortalUrl && settingPortalUrl) {
   });
 }
 
-function saveMyTag() {
-  const newTag = normalizeTag(myTagInput.value);
+function registerUser() {
+  const rawValue = myTagInput ? myTagInput.value : '';
+  const newTag = normalizeTag(rawValue);
+
   if (!newTag || newTag.length < 3) {
-    showToast('O ID deve ter pelo menos 3 caracteres.');
+    showToast('O nome de usuário deve ter pelo menos 3 caracteres.', 'error');
+    if (myTagInput) myTagInput.focus();
     return;
   }
-  chrome.storage.local.set({ myTag: newTag }, () => {
-    chrome.runtime.sendMessage({ action: 'UPDATE_MY_TAG', tag: newTag }, (res) => {
-      if (res && res.state) {
-        currentState = res.state;
-        myTagInput.value = currentState.myTag;
-        showToast(`Anunciando ${currentState.myTag} na malha P2P!`);
-        renderPeerDirectory();
-      }
-    });
+
+  if (!/^@[a-zA-Z0-9_]{2,30}$/.test(newTag)) {
+    showToast('Use apenas letras, números e sublinhado (ex: @usuario).', 'error');
+    if (myTagInput) myTagInput.focus();
+    return;
+  }
+
+  // Se já está registrado com este exato nome
+  if (currentState.myTag && normalizeTag(currentState.myTag) === newTag) {
+    showToast(`Você já está registrado na rede como ${newTag}.`, 'info');
+    return;
+  }
+
+  // Validação rápida no catálogo local antes de enviar à rede
+  const localConflict = Object.values(currentState.peerRegistry || {}).find(
+    (p) => p.tag && normalizeTag(p.tag) === newTag && p.tag !== currentState.myTag
+  );
+  if (localConflict) {
+    showToast(`O usuário ${newTag} já existe na rede descentralizada! Escolha outro nome.`, 'error');
+    if (myTagInput) myTagInput.focus();
+    return;
+  }
+
+  // Estado de carregamento no botão
+  if (btnSaveTag) btnSaveTag.disabled = true;
+  if (btnSaveTagText) btnSaveTagText.textContent = 'Validando...';
+  showToast('Validando disponibilidade na rede descentralizada...', 'info');
+
+  chrome.runtime.sendMessage({ action: 'REGISTER_USER', tag: newTag }, (res) => {
+    if (btnSaveTag) btnSaveTag.disabled = false;
+    if (btnSaveTagText) btnSaveTagText.textContent = currentState.myTag ? 'Alterar' : 'Registrar';
+
+    if (!res || !res.ok) {
+      const errMsg = (res && res.error) || `O usuário ${newTag} já existe na rede descentralizada!`;
+      showToast(errMsg, 'error');
+      if (myTagInput) myTagInput.focus();
+      return;
+    }
+
+    if (res.state) {
+      currentState = res.state;
+    }
+    currentState.myTag = res.tag;
+    if (myTagInput) myTagInput.value = res.tag.replace(/^@/, '');
+
+    showToast(`Usuário ${res.tag} validado e registrado com sucesso na rede!`, 'success');
+    renderAll();
   });
 }
 
 if (btnSaveTag) {
-  btnSaveTag.addEventListener('click', saveMyTag);
+  btnSaveTag.addEventListener('click', registerUser);
 }
 
 if (myTagInput) {
   myTagInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') saveMyTag();
+    if (e.key === 'Enter') registerUser();
   });
 }
 
@@ -889,51 +1773,166 @@ if (targetTagInput) {
 
 // Modal de Configuração do Pack
 function openModalForTunnel() {
+  if (!currentState.myTag) {
+    showToast('Registre um nome de usuário antes de gerar links públicos na rede descentralizada.', 'warning');
+    if (myTagInput) myTagInput.focus();
+    return;
+  }
   currentModalMode = 'tunnel';
-  if (modalHeaderTitle) modalHeaderTitle.textContent = 'Configurar Link Público (WebRTC)';
+  if (modalHeaderTitle) modalHeaderTitle.textContent = 'Gerar Link Público (GitHub Pages WebRTC)';
   if (modalIndicatorDot) modalIndicatorDot.className = 'w-2.5 h-2.5 rounded-full bg-orange-400';
+
+  if (modalP2pTargetSection) {
+    modalP2pTargetSection.classList.add('hidden');
+  }
+
+  if (btnModalAddMore) {
+    btnModalAddMore.className =
+      'text-orange-300 hover:text-white bg-orange-500/20 hover:bg-orange-500/30 border border-orange-500/30 px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-colors';
+  }
+
   if (modalTunnelOptions) modalTunnelOptions.classList.remove('hidden');
+
   if (btnModalConfirm) {
     btnModalConfirm.className =
-      'flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white text-xs font-bold shadow-md border border-orange-400/30 transition-all cursor-pointer';
-    btnModalConfirm.textContent = 'Confirmar & Gerar Link';
+      'flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white text-xs font-bold shadow-md border border-orange-400/30 transition-all cursor-pointer flex items-center justify-center gap-1.5';
+    btnModalConfirm.innerHTML = `
+      <svg class="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+      </svg>
+      <span>Confirmar & Gerar Link</span>
+    `;
   }
   tunnelConfigModal.classList.remove('hidden');
-  chrome.runtime.sendMessage({ action: 'SET_TUNNEL_MODAL_OPEN', open: true });
+  chrome.runtime.sendMessage({
+    action: 'SET_TUNNEL_MODAL_OPEN',
+    open: true,
+    mode: 'tunnel'
+  });
   renderModalFiles();
 }
 
-function openModalForP2P(targetTag) {
+function openModalForP2P(targetTag = '') {
+  if (!currentState.myTag) {
+    showToast('Registre um nome de usuário antes de enviar arquivos na rede descentralizada.', 'warning');
+    if (myTagInput) myTagInput.focus();
+    return;
+  }
   currentModalMode = 'p2p';
-  if (modalHeaderTitle) modalHeaderTitle.textContent = `Configurar Envio P2P para ${targetTag}`;
+
+  let target = targetTag || (targetTagInput ? targetTagInput.value.trim() : '');
+  if (!target) {
+    const now = Date.now();
+    const onlinePeers = Object.values(currentState.peerRegistry || {}).filter(
+      (p) => p.tag && p.tag !== currentState.myTag && (p.status === 'online' || now - (p.lastSeen || 0) < 45000)
+    );
+    if (onlinePeers.length === 1) {
+      target = onlinePeers[0].tag;
+    }
+  }
+
+  if (target) {
+    target = target.startsWith('@') ? target : `@${target}`;
+    if (targetTagInput) targetTagInput.value = target;
+    chrome.storage.local.set({ lastTargetTag: target });
+  }
+
+  if (modalHeaderTitle) {
+    modalHeaderTitle.textContent = target
+      ? `Enviar para ${target} (P2P Direto)`
+      : 'Enviar para Usuário (P2P Direto)';
+  }
   if (modalIndicatorDot) modalIndicatorDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
-  if (modalTunnelOptions) modalTunnelOptions.classList.add('hidden');
+
+  if (modalP2pTargetSection) {
+    modalP2pTargetSection.classList.remove('hidden');
+  }
+  if (modalTargetTagInput) {
+    modalTargetTagInput.value = target ? target.replace(/^@+/, '') : '';
+  }
+  populateModalPeerSelect(target);
+
+  if (btnModalAddMore) {
+    btnModalAddMore.className =
+      'text-emerald-300 hover:text-white bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 px-2.5 py-1 rounded-lg text-[10px] font-bold cursor-pointer transition-colors';
+  }
+
+  // Opções do link público (Tempo de expiração, limite e senha): TOTALMENTE OCULTAS
+  if (modalTunnelOptions) {
+    modalTunnelOptions.classList.add('hidden');
+  }
+
   if (btnModalConfirm) {
     btnModalConfirm.className =
-      'flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-white text-xs font-bold shadow-md border border-emerald-400/30 transition-all cursor-pointer';
-    btnModalConfirm.textContent = 'Confirmar & Enviar P2P';
+      'flex-1 py-2 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-white text-xs font-bold shadow-md border border-emerald-400/30 transition-all cursor-pointer flex items-center justify-center gap-1.5';
+    btnModalConfirm.innerHTML = `
+      <svg class="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" />
+      </svg>
+      <span>${target ? `Enviar para ${target}` : 'Enviar Arquivos'}</span>
+    `;
   }
+
   tunnelConfigModal.classList.remove('hidden');
-  chrome.runtime.sendMessage({ action: 'SET_TUNNEL_MODAL_OPEN', open: true });
+  chrome.runtime.sendMessage({
+    action: 'SET_TUNNEL_MODAL_OPEN',
+    open: true,
+    mode: 'p2p',
+    targetTag: target
+  });
   renderModalFiles();
+}
+
+if (modalTargetTagInput) {
+  modalTargetTagInput.addEventListener('input', () => {
+    const raw = modalTargetTagInput.value.trim();
+    const tag = raw ? (raw.startsWith('@') ? raw : `@${raw}`) : '';
+    if (targetTagInput) targetTagInput.value = tag;
+    chrome.storage.local.set({ lastTargetTag: tag });
+
+    if (currentModalMode === 'p2p' && btnModalConfirm) {
+      const btnSpan = btnModalConfirm.querySelector('span');
+      if (btnSpan) btnSpan.textContent = tag ? `Enviar para ${tag}` : 'Enviar Arquivos';
+      if (modalHeaderTitle) {
+        modalHeaderTitle.textContent = tag
+          ? `Enviar para ${tag} (P2P Direto)`
+          : 'Enviar para Usuário (P2P Direto)';
+      }
+    }
+  });
+}
+
+if (modalTargetTagSelect) {
+  modalTargetTagSelect.addEventListener('change', () => {
+    const chosenTag = modalTargetTagSelect.value;
+    if (chosenTag) {
+      if (modalTargetTagInput) modalTargetTagInput.value = chosenTag.replace(/^@+/, '');
+      if (targetTagInput) targetTagInput.value = chosenTag;
+      chrome.storage.local.set({ lastTargetTag: chosenTag });
+
+      if (currentModalMode === 'p2p' && btnModalConfirm) {
+        const btnSpan = btnModalConfirm.querySelector('span');
+        if (btnSpan) btnSpan.textContent = `Enviar para ${chosenTag}`;
+        if (modalHeaderTitle) modalHeaderTitle.textContent = `Enviar para ${chosenTag} (P2P Direto)`;
+      }
+    }
+  });
 }
 
 if (btnSend) {
   btnSend.addEventListener('click', () => {
-    const targetTag = normalizeTag(targetTagInput.value);
+    let targetTag = normalizeTag(targetTagInput ? targetTagInput.value : '');
     if (!targetTag || targetTag.length < 3) {
-      showToast('Digite ou selecione um @destinatario na lista P2P.');
-      targetContainer.classList.add('ring-2', 'ring-rose-500');
-      targetTagInput.focus();
-      setTimeout(() => targetContainer.classList.remove('ring-2', 'ring-rose-500'), 1500);
-      return;
+      const now = Date.now();
+      const onlinePeers = Object.values(currentState.peerRegistry || {}).filter(
+        (p) => p.tag && p.tag !== currentState.myTag && (p.status === 'online' || now - (p.lastSeen || 0) < 45000)
+      );
+      if (onlinePeers.length === 1) {
+        targetTag = onlinePeers[0].tag;
+        if (targetTagInput) targetTagInput.value = targetTag;
+        chrome.storage.local.set({ lastTargetTag: targetTag });
+      }
     }
-    if (targetTag === currentState.myTag) {
-      showToast('Escolha um @destinatario diferente do seu próprio ID.');
-      return;
-    }
-    targetTagInput.value = targetTag;
-    chrome.storage.local.set({ lastTargetTag: targetTag });
     openModalForP2P(targetTag);
   });
 }
@@ -1334,7 +2333,12 @@ window.addEventListener('drop', async (e) => {
     const files = await getFilesFromDataTransfer(e.dataTransfer?.items, e.dataTransfer?.files);
     if (files && files.length > 0) {
       if (tunnelConfigModal && tunnelConfigModal.classList.contains('hidden')) {
-        openModalForTunnel();
+        const curTarget = normalizeTag(targetTagInput ? targetTagInput.value : '');
+        if (currentModalMode === 'tunnel') {
+          openModalForTunnel();
+        } else {
+          openModalForP2P(curTarget);
+        }
       }
       handleSelectedFiles(files);
     }
@@ -1386,7 +2390,7 @@ if (btnModalCancel) btnModalCancel.addEventListener('click', closeAndResetModal)
 if (btnModalConfirm) {
   btnModalConfirm.addEventListener('click', async () => {
     if (stagedTunnelFiles.length === 0) {
-      showToast('Adicione pelo menos um arquivo ao pack.');
+      showToast('Adicione pelo menos um arquivo ou pasta.');
       return;
     }
 
@@ -1395,19 +2399,125 @@ if (btnModalConfirm) {
     const customCompressName = modalCompressName ? modalCompressName.value.trim() : '';
 
     btnModalConfirm.disabled = true;
-    const originalConfirmText = btnModalConfirm.textContent;
+    const originalConfirmHTML = btnModalConfirm.innerHTML;
 
     try {
+      // ======================================================================
+      // MODO P2P: Envio Direto para Usuário (SEM gerar link público!)
+      // ======================================================================
+      if (currentModalMode === 'p2p') {
+        const modalTagVal = modalTargetTagInput ? modalTargetTagInput.value.trim() : '';
+        const rawTag = modalTagVal
+          ? (modalTagVal.startsWith('@') ? modalTagVal : `@${modalTagVal}`)
+          : (targetTagInput ? targetTagInput.value.trim() : '');
+        const targetTag = normalizeTag(rawTag);
+
+        if (!targetTag || targetTag.length < 3) {
+          showToast('Informe ou selecione o @destinatário para enviar.');
+          if (modalTargetTagInput) modalTargetTagInput.focus();
+          btnModalConfirm.disabled = false;
+          return;
+        }
+
+        if (targetTag === currentState.myTag) {
+          showToast('Escolha um @destinatário diferente do seu próprio ID.');
+          btnModalConfirm.disabled = false;
+          return;
+        }
+
+        if (targetTagInput) targetTagInput.value = targetTag;
+        chrome.storage.local.set({ lastTargetTag: targetTag });
+
+        let filesToSend = [];
+
+        if (isCompressEnabled) {
+          btnModalConfirm.innerHTML = `<span>Compactando pack em .ZIP (Nível ${compressLevel})...</span>`;
+
+          if (typeof fflate === 'undefined' || !fflate.zipSync) {
+            throw new Error('Biblioteca de compressão fflate não carregada.');
+          }
+
+          const zipData = {};
+          for (const f of stagedTunnelFiles) {
+            let rawFile = f.fileObj;
+            if (!rawFile || !(rawFile instanceof Blob)) {
+              rawFile = await getStagedFile(f.fileId);
+            }
+            if (!rawFile) {
+              throw new Error(`Arquivo "${f.name}" não encontrado na memória/cache.`);
+            }
+            const ab = await rawFile.arrayBuffer();
+            zipData[f.name] = [new Uint8Array(ab), { level: compressLevel }];
+          }
+
+          const zippedU8 = fflate.zipSync(zipData, { level: compressLevel });
+          const rawBaseName =
+            customCompressName ||
+            (stagedTunnelFiles.length === 1
+              ? stagedTunnelFiles[0].name.replace(/\.[^/.]+$/, '')
+              : 'Arquivos_Compartilhados');
+
+          const zipFileName = rawBaseName.replace(/\.zip$/i, '') + '.zip';
+          const zipFile = new File([zippedU8], zipFileName, { type: 'application/zip' });
+
+          filesToSend = [{ file: zipFile, name: zipFileName, size: zipFile.size, type: 'application/zip' }];
+        } else {
+          for (let i = 0; i < stagedTunnelFiles.length; i++) {
+            const f = stagedTunnelFiles[i];
+            let rawFile = f.fileObj;
+            if (!rawFile || !(rawFile instanceof Blob)) {
+              rawFile = await getStagedFile(f.fileId);
+            }
+            if (!rawFile) {
+              throw new Error(`Arquivo "${f.name}" não encontrado na memória/cache.`);
+            }
+            filesToSend.push({
+              file: rawFile,
+              name: f.name,
+              size: f.size,
+              type: f.type || 'application/octet-stream'
+            });
+          }
+        }
+
+        btnModalConfirm.innerHTML = `<span>Iniciando envio P2P para ${targetTag}...</span>`;
+
+        for (const item of filesToSend) {
+          const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+          await saveStagedFile(transferId, item.file);
+
+          chrome.runtime.sendMessage({
+            action: 'START_SEND_FILE',
+            transferId,
+            targetTag,
+            fileMeta: {
+              name: item.name,
+              size: item.size,
+              type: item.type
+            }
+          });
+        }
+
+        showToast(`✓ Enviando ${filesToSend.length} item(ns) para ${targetTag} via P2P!`);
+        switchTab('active');
+        closeAndResetModal();
+        return;
+      }
+
+      // ======================================================================
+      // MODO TUNNEL: Geração de Link Público (GitHub Pages WebRTC)
+      // ======================================================================
       let finalFilesMeta = [];
       let finalPackName = '';
       let finalTotalSize = 0;
+      let createdZipFile = null;
 
       const shareId = `ps-${Array.from(crypto.getRandomValues(new Uint8Array(4)))
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('')}`;
 
       if (isCompressEnabled) {
-        btnModalConfirm.textContent = `Compactando pack em .ZIP (Nível ${compressLevel})...`;
+        btnModalConfirm.innerHTML = `<span>Compactando pack em .ZIP (Nível ${compressLevel})...</span>`;
 
         if (typeof fflate === 'undefined' || !fflate.zipSync) {
           throw new Error('Biblioteca de compressão fflate não carregada.');
@@ -1426,7 +2536,6 @@ if (btnModalConfirm) {
           zipData[f.name] = [new Uint8Array(ab), { level: compressLevel }];
         }
 
-        // Usa zipSync puro sem Web Workers bloqueados por CSP na extensão
         const zippedU8 = fflate.zipSync(zipData, { level: compressLevel });
 
         const rawBaseName =
@@ -1437,8 +2546,8 @@ if (btnModalConfirm) {
 
         const zipFileName = rawBaseName.replace(/\.zip$/i, '') + '.zip';
         const zipFile = new File([zippedU8], zipFileName, { type: 'application/zip' });
+        createdZipFile = zipFile;
 
-        // Salva arquivo ZIP no offscreen e IndexedDB
         await saveStagedFile(`${shareId}:f-0`, zipFile);
         await saveStagedFile(shareId, zipFile);
 
@@ -1453,7 +2562,6 @@ if (btnModalConfirm) {
         finalPackName = zipFileName;
         finalTotalSize = zipFile.size;
       } else {
-        // Sem compactação prévia: salva cada arquivo individualmente
         finalFilesMeta = [];
         for (let i = 0; i < stagedTunnelFiles.length; i++) {
           const f = stagedTunnelFiles[i];
@@ -1483,132 +2591,158 @@ if (btnModalConfirm) {
             : `Pack (${stagedTunnelFiles.length} arquivos)`;
       }
 
-      if (currentModalMode === 'tunnel') {
-        btnModalConfirm.textContent = 'Gerando link P2P...';
-        const expirationMin = Number(modalExpirationSelect ? modalExpirationSelect.value : 30);
-        const expiresAt = expirationMin > 0 ? Date.now() + expirationMin * 60 * 1000 : null;
-        const password = (modalPasswordInput ? modalPasswordInput.value : '').trim();
-        const maxDownloads = Number(modalDownloadLimitSelect ? modalDownloadLimitSelect.value : 0);
+      btnModalConfirm.innerHTML = `<span>Gerando link P2P...</span>`;
+      const expirationMin = Number(modalExpirationSelect ? modalExpirationSelect.value : 30);
+      const expiresAt = expirationMin > 0 ? Date.now() + expirationMin * 60 * 1000 : null;
+      const password = (modalPasswordInput ? modalPasswordInput.value : '').trim();
+      const maxDownloads = Number(modalDownloadLimitSelect ? modalDownloadLimitSelect.value : 0);
 
-        let passwordSalt = '';
-        let passwordHash = '';
-        if (password) {
-          passwordSalt = crypto.randomUUID().slice(0, 8);
-          passwordHash = await computeSha256(password + passwordSalt);
-        }
-
-        const stored = await chrome.storage.local.get(['portalUrl']);
-        const basePortalUrl = (stored.portalUrl || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
-        const shareUrl = `${basePortalUrl}#share=${shareId}&owner=${encodeURIComponent(currentState.myTag)}${
-          expiresAt ? `&exp=${expiresAt}` : ''
-        }`;
-
-        await new Promise((resolve, reject) => {
-          chrome.runtime.sendMessage(
-            {
-              action: 'START_PUBLIC_LINK_SHARE',
-              shareId,
-              packName: finalPackName,
-              files: finalFilesMeta,
-              totalSize: finalTotalSize,
-              shareUrl,
-              hasPassword: Boolean(password),
-              password,
-              passwordSalt,
-              passwordHash,
-              maxDownloads,
-              expiresAt
-            },
-            async (res) => {
-              if (chrome.runtime.lastError) {
-                reject(new Error(chrome.runtime.lastError.message));
-                return;
-              }
-              if (res && res.error) {
-                reject(new Error(res.error));
-                return;
-              }
-              if (res && res.state) {
-                currentState = res.state;
-                renderAll();
-              }
-
-              const formattedMessage = formatShareMessage({
-                shareUrl,
-                password,
-                expiresAt,
-                maxDownloads,
-                files: finalFilesMeta
-              });
-
-              try {
-                await navigator.clipboard.writeText(formattedMessage);
-                showToast('✓ Link P2P gerado e copiado para a área de transferência!');
-              } catch {
-                showToast('✓ Link gerado! Copie na lista abaixo.');
-              }
-              resolve();
-            }
-          );
-        });
-      } else if (currentModalMode === 'p2p') {
-        const targetTag = normalizeTag(targetTagInput.value);
-        if (!targetTag) {
-          throw new Error('Destinatário P2P não especificado.');
-        }
-
-        btnModalConfirm.textContent = 'Iniciando transferência P2P...';
-        for (let i = 0; i < finalFilesMeta.length; i++) {
-          const item = finalFilesMeta[i];
-          const rawFile = isCompressEnabled ? stagedTunnelFiles[0].fileObj : stagedTunnelFiles[i].fileObj;
-          const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-          await saveStagedFile(transferId, rawFile);
-
-          chrome.runtime.sendMessage({
-            action: 'START_SEND_FILE',
-            transferId,
-            targetTag,
-            fileMeta: {
-              name: item.name,
-              size: item.size,
-              type: item.type || 'application/octet-stream'
-            }
-          });
-        }
-        showToast(`Transferência enviada para ${targetTag}!`);
+      let passwordSalt = '';
+      let passwordHash = '';
+      if (password) {
+        passwordSalt = crypto.randomUUID().slice(0, 8);
+        passwordHash = await computeSha256(password + passwordSalt);
       }
 
+      const stored = await chrome.storage.local.get(['portalUrl']);
+      const basePortalUrl = (stored.portalUrl || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
+      const shareUrl = `${basePortalUrl}#share=${shareId}&owner=${encodeURIComponent(currentState.myTag)}${
+        expiresAt ? `&exp=${expiresAt}` : ''
+      }`;
+
+      await new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          {
+            action: 'START_PUBLIC_LINK_SHARE',
+            shareId,
+            packName: finalPackName,
+            files: finalFilesMeta,
+            totalSize: finalTotalSize,
+            shareUrl,
+            hasPassword: Boolean(password),
+            password,
+            passwordSalt,
+            passwordHash,
+            maxDownloads,
+            expiresAt
+          },
+          async (res) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+              return;
+            }
+            if (res && res.error) {
+              reject(new Error(res.error));
+              return;
+            }
+            if (res && res.state) {
+              currentState = res.state;
+              renderAll();
+            }
+
+            const formattedMessage = formatShareMessage({
+              shareUrl,
+              password,
+              expiresAt,
+              maxDownloads,
+              files: finalFilesMeta
+            });
+
+            try {
+              await navigator.clipboard.writeText(formattedMessage);
+              showToast('✓ Link P2P gerado e copiado para a área de transferência!');
+            } catch {
+              showToast('✓ Link gerado! Copie na lista abaixo.');
+            }
+            resolve();
+          }
+        );
+      });
+
       closeAndResetModal();
+      switchMainTab('transfers');
+      switchTransfersSubTab('active');
     } catch (err) {
-      console.error('Erro ao confirmar pack:', err);
+      console.error('Erro ao confirmar envio:', err);
       showToast(`Erro: ${err.message}`);
     } finally {
       btnModalConfirm.disabled = false;
-      btnModalConfirm.textContent = originalConfirmText;
+      btnModalConfirm.innerHTML = originalConfirmHTML;
     }
   });
 }
 
-// Abas do Gerenciador de Transferências
+// Navegação Principal em Abas (Início, Transferências, Compartilhamentos, Rede Mesh)
+if (navBtnHome) {
+  navBtnHome.addEventListener('click', () => switchMainTab('home'));
+}
+
+if (navBtnTransfers) {
+  navBtnTransfers.addEventListener('click', () => switchMainTab('transfers'));
+}
+
+if (navBtnShares) {
+  navBtnShares.addEventListener('click', () => switchMainTab('shares'));
+}
+
+if (navBtnMesh) {
+  navBtnMesh.addEventListener('click', () => switchMainTab('mesh'));
+}
+
+if (btnNewShareLink) {
+  btnNewShareLink.addEventListener('click', () => openModalForTunnel());
+}
+
 if (tabActiveTransfers) {
-  tabActiveTransfers.addEventListener('click', () => {
-    currentTransfersTab = 'active';
-    tabActiveTransfers.className =
-      'px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 cursor-pointer';
-    tabHistoryTransfers.className =
-      'px-2 py-0.5 rounded-md text-[10px] font-medium text-slate-400 hover:text-slate-200 cursor-pointer';
-    renderTransfers();
-  });
+  tabActiveTransfers.addEventListener('click', () => switchTransfersSubTab('active'));
 }
 
 if (tabHistoryTransfers) {
-  tabHistoryTransfers.addEventListener('click', () => {
-    currentTransfersTab = 'history';
-    tabHistoryTransfers.className =
-      'px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 cursor-pointer';
-    tabActiveTransfers.className =
-      'px-2 py-0.5 rounded-md text-[10px] font-medium text-slate-400 hover:text-slate-200 cursor-pointer';
-    renderTransfers();
+  tabHistoryTransfers.addEventListener('click', () => switchTransfersSubTab('history'));
+}
+
+if (btnViewAllUsers) {
+  btnViewAllUsers.addEventListener('click', () => switchMainTab('mesh'));
+}
+
+if (usersSearchInput) {
+  usersSearchInput.addEventListener('input', () => renderMeshUsersTab());
+}
+
+if (toggleMeshRelay) {
+  toggleMeshRelay.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'TOGGLE_MESH_RELAY' }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        renderAll();
+      }
+    });
+  });
+}
+
+if (selectRelayBandwidth) {
+  selectRelayBandwidth.addEventListener('change', () => {
+    const limit = Number(selectRelayBandwidth.value);
+    chrome.runtime.sendMessage({ action: 'SET_RELAY_BANDWIDTH_LIMIT', limit, limitKbps: limit }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        renderAll();
+        showToast(`Limite da malha ajustado para ${formatBandwidth(limit)}.`);
+      }
+    });
+  });
+}
+
+if (btnClearInactiveUsers) {
+  btnClearInactiveUsers.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'CLEAR_INACTIVE_PEERS' }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        renderAll();
+        const count = res.count || 0;
+        showToast(count > 0 ? `${count} usuários inativos foram excluídos da rede.` : 'Nenhum usuário inativo para excluir.');
+      }
+    });
   });
 }
 
@@ -1712,6 +2846,93 @@ if (transfersList) {
   });
 }
 
+if (sharesList) {
+  sharesList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const transferId = btn.getAttribute('data-transfer-id');
+    const url = btn.getAttribute('data-url');
+    const textToCopy = btn.getAttribute('data-text');
+
+    if (action === 'copy-text' && textToCopy) {
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        showToast('✓ Senha copiada para a área de transferência!');
+      } catch {
+        showToast('Não foi possível copiar automaticamente.');
+      }
+    } else if (action === 'copy-tunnel-formatted' && transferId) {
+      const t = currentState.transfers[transferId];
+      if (!t) return;
+      const formatted = formatShareMessage({
+        shareUrl: t.shareUrl,
+        password: t.password,
+        expiresAt: t.expiresAt,
+        maxDownloads: t.maxDownloads,
+        files: t.files || [{ name: t.fileName, size: t.fileSize }]
+      });
+      try {
+        await navigator.clipboard.writeText(formatted);
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<span>Copiado ✓</span>';
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+        }, 1800);
+        showToast('✓ Link, senha e resumo copiados!');
+      } catch {
+        showToast('Não foi possível copiar automaticamente.');
+      }
+    } else if (action === 'open-tunnel-url' && url) {
+      chrome.tabs.create({ url });
+    } else if (action === 'delete-single-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'CANCEL_TRANSFER', transferId }, (res) => {
+        if (res && res.state) {
+          currentState = res.state;
+          renderAll();
+        }
+      });
+    } else if (action === 'pause-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'PAUSE_TRANSFER', transferId });
+    } else if (action === 'resume-transfer' && transferId) {
+      chrome.runtime.sendMessage({ action: 'RESUME_TRANSFER', transferId });
+    }
+  });
+}
+
+if (homeDropZone) {
+  homeDropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    homeDropZone.classList.add('border-emerald-500', 'bg-emerald-500/10');
+  });
+
+  homeDropZone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    homeDropZone.classList.remove('border-emerald-500', 'bg-emerald-500/10');
+  });
+
+  homeDropZone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    homeDropZone.classList.remove('border-emerald-500', 'bg-emerald-500/10');
+    try {
+      const files = await getFilesFromDataTransfer(e.dataTransfer?.items, e.dataTransfer?.files);
+      if (files && files.length > 0) {
+        handleSelectedFiles(files);
+        openModalForP2P(targetTagInput ? targetTagInput.value : '');
+      }
+    } catch (err) {
+      console.error('Erro no drop da tela inicial:', err);
+    }
+  });
+
+  homeDropZone.addEventListener('click', () => {
+    openModalForP2P(targetTagInput ? targetTagInput.value : '');
+  });
+}
+
 if (btnClearCompleted) {
   btnClearCompleted.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'CLEAR_HISTORY' }, (res) => {
@@ -1725,9 +2946,12 @@ if (btnClearCompleted) {
 
 // Escuta atualizações de estado do background
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.action === 'STATE_UPDATED' && msg.state) {
+  if ((msg.action === 'STATE_UPDATED' || msg.type === 'STATE_UPDATED') && msg.state) {
     currentState = msg.state;
     renderAll();
+  } else if (msg.type === 'USER_REGISTRATION_CONFLICT') {
+    showToast(msg.error || `O usuário ${msg.tag} já existe na rede descentralizada!`, 'error');
+    if (myTagInput) myTagInput.focus();
   }
 });
 
@@ -1740,11 +2964,12 @@ document.addEventListener('DOMContentLoaded', () => {
   chrome.storage.local.get(['myTag', 'lastTargetTag'], (res) => {
     if (res.myTag) {
       currentState.myTag = res.myTag;
-      if (myTagInput) myTagInput.value = res.myTag;
+      if (myTagInput) myTagInput.value = res.myTag.replace(/^@/, '');
     }
     if (res.lastTargetTag && targetTagInput) {
       targetTagInput.value = res.lastTargetTag;
     }
+    renderRegistrationCard();
   });
 
   chrome.runtime.sendMessage({ action: 'GET_STATE' }, (res) => {
