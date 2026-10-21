@@ -234,33 +234,54 @@ const receiveTitle = document.getElementById('receive-title');
 const receiveSubtitle = document.getElementById('receive-subtitle');
 const transfersList = document.getElementById('transfers-list');
 const emptyState = document.getElementById('empty-state');
+const tabActiveTransfers = document.getElementById('tab-active-transfers');
+const tabHistoryTransfers = document.getElementById('tab-history-transfers');
+const countActive = document.getElementById('count-active');
+const countHistory = document.getElementById('count-history');
 const btnClearCompleted = document.getElementById('btn-clear-completed');
 const toastAlert = document.getElementById('toast-alert');
 const toastMessage = document.getElementById('toast-message');
 const toastClose = document.getElementById('toast-close');
 const onlineCounter = document.getElementById('online-counter');
 
-// Elementos do Modal de Configuração do Túnel
+// Elementos do Modal de Configuração do Túnel e Pack
 const tunnelConfigModal = document.getElementById('tunnel-config-modal');
+const modalHeaderTitle = document.getElementById('modal-header-title');
+const modalIndicatorDot = document.getElementById('modal-indicator-dot');
+const modalViewPack = document.getElementById('modal-view-pack');
 const btnModalClose = document.getElementById('btn-modal-close');
 const btnModalCancel = document.getElementById('btn-modal-cancel');
 const btnModalConfirm = document.getElementById('btn-modal-confirm');
 const btnModalAddMore = document.getElementById('btn-modal-add-more');
+const btnModalAddFolder = document.getElementById('btn-modal-add-folder');
 const btnModalQuickBrowser = document.getElementById('btn-modal-quick-browser');
 const modalQuickBrowserPanel = document.getElementById('modal-quick-browser-panel');
 const btnQuickBrowserClose = document.getElementById('btn-quick-browser-close');
 const btnQuickBrowserUp = document.getElementById('btn-quick-browser-up');
+const btnQuickBrowserAddCurrent = document.getElementById('btn-quick-browser-add-current');
 const quickBrowserShortcuts = document.getElementById('quick-browser-shortcuts');
 const quickBrowserPath = document.getElementById('quick-browser-path');
 const quickBrowserEntries = document.getElementById('quick-browser-entries');
+const quickBrowserCount = document.getElementById('quick-browser-count');
 const modalFilesList = document.getElementById('modal-files-list');
 const modalFilesSummary = document.getElementById('modal-files-summary');
+const modalCompressToggle = document.getElementById('modal-compress-toggle');
+const modalCompressOptions = document.getElementById('modal-compress-options');
+const modalCompressFormat = document.getElementById('modal-compress-format');
+const modalCompressLevel = document.getElementById('modal-compress-level');
+const modalCompressName = document.getElementById('modal-compress-name');
+const modalCompressExtBadge = document.getElementById('modal-compress-ext-badge');
+const modalTunnelOptions = document.getElementById('modal-tunnel-options');
 const modalExpirationSelect = document.getElementById('modal-expiration-select');
+const modalDownloadLimitSelect = document.getElementById('modal-download-limit-select');
 const modalPasswordInput = document.getElementById('modal-password-input');
 const btnModalGenPassword = document.getElementById('btn-modal-gen-password');
 const btnModalClearPassword = document.getElementById('btn-modal-clear-password');
 
+let currentTransfersTab = 'active'; // 'active' | 'history'
+const expandedTransferIds = new Set();
 let stagedTunnelFiles = [];
+let currentModalMode = 'tunnel'; // 'tunnel' | 'p2p'
 
 async function checkDaemonStatus() {
   const badge = document.getElementById('daemon-status-badge');
@@ -301,11 +322,14 @@ async function computeSha256(str) {
     .join('');
 }
 
-function formatShareMessage({ shareUrl, password, expiresAt, files }) {
+function formatShareMessage({ shareUrl, password, expiresAt, maxDownloads, files }) {
   let msg = `📦 PulseShare — Compartilhamento de Arquivos\n`;
   msg += `🔗 Link: ${shareUrl}\n`;
   if (password) {
     msg += `🔑 Senha: ${password}\n`;
+  }
+  if (maxDownloads && Number(maxDownloads) > 0) {
+    msg += `🎯 Limite de downloads: ${maxDownloads} download${Number(maxDownloads) === 1 ? ' completo (expira ao concluir)' : 's completos'}\n`;
   }
   if (expiresAt) {
     const remainingMs = expiresAt - Date.now();
@@ -317,7 +341,7 @@ function formatShareMessage({ shareUrl, password, expiresAt, files }) {
       msg += `⏳ Expira em: Expirado\n`;
     }
   } else {
-    msg += `⏳ Expira em: Sem limite (até encerrar)\n`;
+    msg += `⏳ Expira em: Sem limite de tempo\n`;
   }
   if (files && files.length > 0) {
     msg += `📁 Arquivos (${files.length}):\n`;
@@ -487,7 +511,7 @@ function statusLabel(transfer) {
     case 'PAUSED':
       return 'Transferência pausada';
     case 'CANCELLED':
-      return 'Transferência cancelada';
+      return 'Cancelada';
     case 'EXPIRED':
       return 'Túnel expirado';
     case 'TUNNEL_READY': {
@@ -499,11 +523,16 @@ function statusLabel(transfer) {
           const s = remainingSec % 60;
           expInfo = ` • Expira em ${m}m ${s}s`;
         } else {
-          expInfo = ' • Expirado';
+          return 'Túnel expirado';
         }
       }
+      if (transfer.maxDownloads > 0) {
+        const remaining = Math.max(0, transfer.maxDownloads - (transfer.completedPacks || 0));
+        if (remaining === 0) return 'Limite de downloads atingido (Concluído)';
+        expInfo += ` • ${transfer.completedPacks || 0}/${transfer.maxDownloads} downloads`;
+      }
       return transfer.downloads > 0
-        ? `Túnel ativo (${transfer.downloads} download(s))${expInfo}`
+        ? `Túnel ativo (${transfer.downloads} conexões)${expInfo}`
         : `Túnel aberto (aguardando download)${expInfo}`;
     }
     case 'AWAITING_ACCEPT':
@@ -511,9 +540,9 @@ function statusLabel(transfer) {
         ? 'Clique em Receber para aceitar'
         : 'Aguardando destinatário...';
     case 'TRANSFERRING':
-      return speedText ? `Transmitindo P2P • ${speedText}` : 'Transferindo dados P2P...';
+      return speedText ? `Transmitindo P2P • ${speedText}` : 'Transferindo dados...';
     case 'COMPLETED':
-      return 'Transferência concluída';
+      return 'Concluída';
     case 'ERROR':
       return transfer.error || 'Falha na transferência';
     default:
@@ -521,13 +550,43 @@ function statusLabel(transfer) {
   }
 }
 
+function isTransferHistory(t, now = Date.now()) {
+  if (['COMPLETED', 'EXPIRED', 'CANCELLED', 'ERROR'].includes(t.status)) return true;
+  if (t.expiresAt && now >= t.expiresAt) return true;
+  if (t.maxDownloads > 0 && (t.completedPacks || 0) >= t.maxDownloads) return true;
+  return false;
+}
+
 function renderTransfers() {
-  const list = Object.values(currentState.transfers || {}).sort(
+  const allTransfers = Object.values(currentState.transfers || {}).sort(
     (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)
   );
 
+  const now = Date.now();
+  const activeList = allTransfers.filter((t) => !isTransferHistory(t, now));
+  const historyList = allTransfers.filter((t) => isTransferHistory(t, now));
+
+  if (countActive) countActive.textContent = activeList.length;
+  if (countHistory) countHistory.textContent = historyList.length;
+
+  const list = currentTransfersTab === 'active' ? activeList : historyList;
+
   if (list.length === 0) {
     emptyState.classList.remove('hidden');
+    const pTitle = emptyState.querySelector('p.font-medium');
+    const pSub = emptyState.querySelector('p.text-\\[10px\\]');
+    if (pTitle) {
+      pTitle.textContent =
+        currentTransfersTab === 'active'
+          ? 'Nenhuma transferência ativa'
+          : 'Nenhum histórico de transferências';
+    }
+    if (pSub) {
+      pSub.innerHTML =
+        currentTransfersTab === 'active'
+          ? 'Envie via <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Cloudflare</span>.'
+          : 'Transferências concluídas, expiradas ou canceladas aparecerão aqui.';
+    }
     Array.from(transfersList.children).forEach((child) => {
       if (child.id !== 'empty-state') child.remove();
     });
@@ -540,17 +599,18 @@ function renderTransfers() {
     if (child.id !== 'empty-state') child.remove();
   });
 
-  const now = Date.now();
-
   for (const t of list) {
     const isTunnel = t.direction === 'tunnel';
     const isSend = t.direction === 'outgoing';
     const isPaused = t.status === 'PAUSED';
     const isCancelled = t.status === 'CANCELLED';
-    const isExpired = t.status === 'EXPIRED';
-    const isDone = t.status === 'COMPLETED' || (isTunnel && t.status === 'TUNNEL_READY');
+    const isExpired = t.status === 'EXPIRED' || (t.expiresAt && now >= t.expiresAt);
+    const isCompleted = t.status === 'COMPLETED' || (t.maxDownloads > 0 && (t.completedPacks || 0) >= t.maxDownloads);
+    const isDone = isCompleted || (!isExpired && !isCancelled && isTunnel && t.status === 'TUNNEL_READY');
     const isError = t.status === 'ERROR';
     const isWaitingAccept = t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT';
+    const isExpanded = expandedTransferIds.has(t.id);
+
     const pct = Math.min(100, Math.max(0, Math.round(t.progress || 0)));
     const totalBytes = t.totalSize || t.fileSize || 0;
     const transferredBytes =
@@ -697,8 +757,21 @@ function renderTransfers() {
       `;
     }
 
+    // Botão individual para excluir transferência
+    const deleteButtonHtml = `
+      <button
+        type="button"
+        data-action="delete-single-transfer"
+        data-transfer-id="${t.id}"
+        title="Excluir transferência"
+        class="p-1 rounded hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 text-[11px] font-bold transition-colors cursor-pointer shrink-0 ml-1"
+      >
+        ✕
+      </button>
+    `;
+
     let tunnelLinkBoxHtml = '';
-    if (isTunnel) {
+    if (isTunnel && !isCancelled && !isExpired && !isCompleted) {
       let expBadge = '';
       if (t.expiresAt) {
         const remainingSec = Math.max(0, Math.floor((t.expiresAt - now) / 1000));
@@ -714,16 +787,18 @@ function renderTransfers() {
       }
 
       const pwdBadge = t.hasPassword
-        ? `<span class="text-[9px] font-mono text-orange-300">🔑 Senha ativa</span>`
+        ? `<span class="text-[9px] font-mono text-orange-300">🔑 Senha</span>`
         : `<span class="text-[9px] font-mono text-slate-500">🔓 Público</span>`;
+
+      const limitBadge = t.maxDownloads > 0
+        ? `<span class="text-[9px] font-mono text-sky-300">🎯 ${t.completedPacks || 0}/${t.maxDownloads} dl</span>`
+        : '';
 
       const pauseResumeBtn = isPaused
         ? `<button type="button" data-action="resume-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-emerald-500/20 hover:bg-emerald-500/40 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold cursor-pointer" title="Retomar túnel">▶ Retomar</button>`
         : `<button type="button" data-action="pause-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-amber-500/20 hover:bg-amber-500/40 text-amber-300 border border-amber-500/40 text-[9px] font-bold cursor-pointer" title="Pausar túnel">⏸ Pausar</button>`;
 
-      const closeTunnelBtn = !isCancelled && !isExpired
-        ? `<button type="button" data-action="cancel-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 border border-rose-500/40 text-[9px] font-bold cursor-pointer" title="Encerrar túnel">✕ Encerrar</button>`
-        : '';
+      const closeTunnelBtn = `<button type="button" data-action="cancel-transfer" data-transfer-id="${t.id}" class="px-1.5 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 border border-rose-500/40 text-[9px] font-bold cursor-pointer" title="Encerrar túnel">✕ Encerrar</button>`;
 
       tunnelLinkBoxHtml = `
         <div class="mt-1 flex flex-col gap-1 bg-slate-950 border border-orange-500/30 rounded-lg p-1.5">
@@ -732,6 +807,7 @@ function renderTransfers() {
               <span class="font-mono text-orange-300 font-bold shrink-0">#${t.shareId}</span>
               ${expBadge}
               ${pwdBadge}
+              ${limitBadge}
             </div>
             <div class="flex items-center gap-1 shrink-0">
               ${pauseResumeBtn}
@@ -747,7 +823,7 @@ function renderTransfers() {
                 type="button"
                 data-action="copy-tunnel-formatted"
                 data-transfer-id="${t.id}"
-                title="Copiar Link formatado com senha e expiração para a área de transferência"
+                title="Copiar Link formatado com senha, limite e expiração"
                 class="px-2 py-0.5 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-300 border border-orange-500/40 text-[10px] font-bold transition-colors cursor-pointer"
               >
                 Copiar
@@ -768,14 +844,99 @@ function renderTransfers() {
     }
 
     const displayName = t.packName || t.fileName || 'arquivo';
+    const displayFiles = Array.isArray(t.filesProgress) && t.filesProgress.length > 0
+      ? t.filesProgress
+      : Array.isArray(t.files) && t.files.length > 0
+      ? t.files.map((f, i) => ({
+          index: i,
+          name: f.name,
+          size: f.size,
+          bytesSent: isCompleted ? f.size : 0,
+          progress: isCompleted ? 100 : 0,
+          status: isCompleted ? 'DONE' : 'IDLE'
+        }))
+      : [{
+          index: 0,
+          name: displayName,
+          size: totalBytes,
+          bytesSent: transferredBytes,
+          progress: pct,
+          status: pct === 100 || isCompleted ? 'DONE' : pct > 0 ? 'DOWNLOADING' : 'IDLE'
+        }];
+
+    // Seção detalhada / expansível com progresso dos downloads do destinatário
+    let expandedDetailsHtml = '';
+    if (isExpanded) {
+      expandedDetailsHtml = `
+        <div class="mt-2 p-2.5 rounded-lg bg-slate-950/90 border border-slate-700/80 flex flex-col gap-2 transition-all">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="font-bold text-sky-300 flex items-center gap-1">
+              📊 Progresso dos Downloads
+            </span>
+            <span class="font-mono text-emerald-300 font-bold">
+              ${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)} (${pct}%)
+            </span>
+          </div>
+
+          <!-- Barra de progresso geral do pack -->
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center justify-between text-[9px] text-slate-400">
+              <span>Progresso geral do pack:</span>
+              <span class="font-mono font-semibold text-slate-200">${pct}%</span>
+            </div>
+            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden p-0.5">
+              <div class="h-full rounded-full bg-gradient-to-r from-sky-500 via-indigo-500 to-emerald-400 transition-all duration-200" style="width: ${pct}%"></div>
+            </div>
+          </div>
+
+          ${t.maxDownloads > 0 ? `
+            <div class="flex items-center justify-between text-[9px] text-slate-300 font-mono bg-slate-900/90 px-2 py-1 rounded border border-slate-800">
+              <span>🎯 Limite de downloads:</span>
+              <span class="text-sky-300 font-bold">${t.completedPacks || 0} de ${t.maxDownloads} concluído(s)</span>
+            </div>
+          ` : ''}
+
+          <!-- Progresso individual de cada arquivo no pack -->
+          <div class="flex flex-col gap-1.5 pt-1 border-t border-slate-800/80">
+            <span class="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+              Arquivos no pack (${displayFiles.length}):
+            </span>
+            ${displayFiles.map((f) => {
+              const fSize = f.size || 0;
+              const fPct = typeof f.progress === 'number' ? Math.min(100, Math.max(0, Math.round(f.progress))) : (f.status === 'DONE' ? 100 : 0);
+              const fBytes = typeof f.bytesSent === 'number' ? f.bytesSent : (f.status === 'DONE' ? fSize : Math.round((fSize * fPct) / 100));
+              const fStatusLabel = f.status === 'DOWNLOADING' ? '⬇ Baixando...' : f.status === 'DONE' ? '✓ Concluído' : 'Aguardando';
+              const fStatusColor = f.status === 'DOWNLOADING' ? 'text-amber-300' : f.status === 'DONE' ? 'text-emerald-300' : 'text-slate-500';
+              const fBarColor = f.status === 'DONE' ? 'bg-emerald-400' : f.status === 'DOWNLOADING' ? 'bg-amber-400' : 'bg-slate-700';
+
+              return `
+                <div class="flex flex-col gap-1 bg-slate-900/90 p-2 rounded-lg border border-slate-800">
+                  <div class="flex items-center justify-between text-[10px] gap-2">
+                    <span class="truncate text-slate-200 font-medium" title="${f.name}">📄 ${f.name}</span>
+                    <span class="font-mono font-bold text-xs ${fPct === 100 ? 'text-emerald-400' : fPct > 0 ? 'text-sky-300' : 'text-slate-500'} shrink-0">${fPct}%</span>
+                  </div>
+                  <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full ${fBarColor} transition-all duration-150" style="width: ${fPct}%"></div>
+                  </div>
+                  <div class="flex items-center justify-between text-[9px] text-slate-400 font-mono">
+                    <span>${formatBytes(fBytes)} de ${formatBytes(fSize)}</span>
+                    <span class="${fStatusColor} font-semibold">${fStatusLabel}</span>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
 
     card.innerHTML = `
       <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 min-w-0">
+        <div class="flex items-center gap-1.5 min-w-0 cursor-pointer" data-action="toggle-expand-transfer" data-transfer-id="${t.id}" title="Clique para ver o progresso detalhado">
           <span class="text-[9px] font-bold px-1.5 py-0.5 rounded border ${badgeColor} shrink-0">
             ${badgeLabel}
           </span>
-          <span class="text-xs font-semibold text-slate-100 truncate" title="${displayName}">
+          <span class="text-xs font-semibold text-slate-100 truncate hover:text-sky-300 transition-colors" title="${displayName}">
             ${displayName}
           </span>
         </div>
@@ -783,10 +944,11 @@ function renderTransfers() {
           ${controlButtonsHtml}
           ${postActionsHtml}
           <span class="text-xs font-mono font-bold ${pctColor}">${pct}%</span>
+          ${deleteButtonHtml}
         </div>
       </div>
 
-      <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden p-0.5">
+      <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden p-0.5 cursor-pointer" data-action="toggle-expand-transfer" data-transfer-id="${t.id}">
         <div
           class="h-full rounded-full ${barColor} transition-all duration-150"
           style="width: ${pct}%"
@@ -801,6 +963,19 @@ function renderTransfers() {
           ${statusLabel(t)}
         </span>
       </div>
+
+      <!-- Botão para alternar exibição do progresso detalhado -->
+      <button
+        type="button"
+        data-action="toggle-expand-transfer"
+        data-transfer-id="${t.id}"
+        class="w-full text-left text-[10px] text-sky-400 hover:text-sky-300 flex items-center justify-between pt-0.5 cursor-pointer"
+      >
+        <span class="font-medium">${isExpanded ? '▴ Ocultar progresso detalhado' : '▾ Ver progresso dos downloads do destinatário'}</span>
+        <span class="font-mono text-[9px] text-slate-500">${displayFiles.length} arquivo(s)</span>
+      </button>
+
+      ${expandedDetailsHtml}
 
       ${tunnelLinkBoxHtml}
     `;
@@ -890,6 +1065,54 @@ targetTagInput.addEventListener('input', () => {
   renderPeerDirectory();
 });
 
+function openModalForTunnel() {
+  currentModalMode = 'tunnel';
+  if (modalHeaderTitle) modalHeaderTitle.textContent = 'Configurar Pack & Envio (Cloudflare Tunnel)';
+  if (modalIndicatorDot) modalIndicatorDot.className = 'w-2.5 h-2.5 rounded-full bg-orange-400';
+  if (modalTunnelOptions) modalTunnelOptions.classList.remove('hidden');
+  if (btnModalConfirm) {
+    btnModalConfirm.className =
+      'flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-400 hover:to-amber-500 text-white text-xs font-bold shadow-md border border-orange-400/30 transition-all cursor-pointer';
+    btnModalConfirm.textContent = 'Confirmar & Gerar Link';
+  }
+  closeQuickBrowserView();
+  tunnelConfigModal.classList.remove('hidden');
+  chrome.runtime.sendMessage({ action: 'SET_TUNNEL_MODAL_OPEN', open: true });
+
+  if (stagedTunnelFiles.length === 0) {
+    chrome.runtime.sendMessage({
+      action: 'DAEMON_PICK_FILES',
+      mode: 'tunnel',
+      pickType: 'files',
+      append: true
+    });
+  }
+}
+
+function openModalForP2P(targetTag) {
+  currentModalMode = 'p2p';
+  if (modalHeaderTitle) modalHeaderTitle.textContent = `Configurar Envio P2P para ${targetTag}`;
+  if (modalIndicatorDot) modalIndicatorDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400';
+  if (modalTunnelOptions) modalTunnelOptions.classList.add('hidden');
+  if (btnModalConfirm) {
+    btnModalConfirm.className =
+      'flex-1 py-1.5 px-3 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-white text-xs font-bold shadow-md border border-emerald-400/30 transition-all cursor-pointer';
+    btnModalConfirm.textContent = 'Confirmar & Enviar P2P';
+  }
+  closeQuickBrowserView();
+  tunnelConfigModal.classList.remove('hidden');
+  chrome.runtime.sendMessage({ action: 'SET_TUNNEL_MODAL_OPEN', open: true });
+
+  if (stagedTunnelFiles.length === 0) {
+    chrome.runtime.sendMessage({
+      action: 'DAEMON_PICK_FILES',
+      mode: 'tunnel',
+      pickType: 'files',
+      append: true
+    });
+  }
+}
+
 btnSend.addEventListener('click', () => {
   const targetTag = normalizeTag(targetTagInput.value);
   if (!targetTag || targetTag.length < 3) {
@@ -908,65 +1131,53 @@ btnSend.addEventListener('click', () => {
   targetTagInput.value = targetTag;
   chrome.storage.local.set({ lastTargetTag: targetTag });
 
-  // Usa o seletor nativo via daemon para não perder os arquivos quando o popup perder foco
-  chrome.runtime.sendMessage({
-    action: 'DAEMON_PICK_FILES',
-    mode: 'p2p',
-    targetTag
-  });
+  openModalForP2P(targetTag);
 });
 
 btnCloudflareTunnel.addEventListener('click', () => {
-  tunnelConfigModal.classList.remove('hidden');
-  chrome.runtime.sendMessage({ action: 'SET_TUNNEL_MODAL_OPEN', open: true });
-
-  // Se ainda não há arquivos no pack, abre o seletor nativo via daemon e persiste no background
-  if (stagedTunnelFiles.length === 0) {
-    chrome.runtime.sendMessage({
-      action: 'DAEMON_PICK_FILES',
-      mode: 'tunnel',
-      append: true
-    });
-  }
+  openModalForTunnel();
 });
 
 // ============================================================================
-// Modal de Configuração do Túnel Cloudflare (Pack de Arquivos, Expiração e Senha)
+// Modal de Configuração do Pack (Arquivos, Pastas, Compactação ZIP/RAR/7Z, etc)
 // ============================================================================
 function renderModalFiles() {
   modalFilesList.innerHTML = '';
   if (stagedTunnelFiles.length === 0) {
-    modalFilesSummary.textContent = 'Arquivos (0) • 0 B';
+    modalFilesSummary.textContent = 'Itens no Pack (0) • 0 B';
     modalFilesList.innerHTML = `
-      <div class="flex flex-col items-center justify-center py-2 px-1 text-center gap-1">
-        <span class="text-[10px] text-slate-400">Nenhum arquivo adicionado ao pack.</span>
-        <span class="text-[9px] text-slate-500">Clique em <strong class="text-orange-400">+ Adicionar arquivo</strong> ou <strong class="text-sky-400">📁 Pastas Rápidas</strong>.</span>
+      <div class="flex flex-col items-center justify-center py-2.5 px-2 text-center gap-1">
+        <span class="text-[11px] text-slate-300 font-medium">Nenhum item adicionado ao pack.</span>
+        <span class="text-[9px] text-slate-400">Clique em <strong class="text-sky-400">📁 Pastas Rápidas</strong>, <strong class="text-orange-400">+ Arquivo</strong> ou <strong class="text-emerald-400">+ Pasta</strong>.</span>
       </div>
     `;
     return;
   }
 
   const totalBytes = stagedTunnelFiles.reduce((acc, f) => acc + (f.size || 0), 0);
-  modalFilesSummary.textContent = `Arquivos (${stagedTunnelFiles.length}) • ${formatBytes(totalBytes)}`;
+  modalFilesSummary.textContent = `Itens no Pack (${stagedTunnelFiles.length}) • ${formatBytes(totalBytes)}`;
 
   stagedTunnelFiles.forEach((file, index) => {
+    const isDir = Boolean(file.isDirectory);
     const item = document.createElement('div');
     item.className =
-      'flex items-center justify-between gap-1.5 p-1 rounded-lg bg-slate-900 border border-slate-800 text-xs';
+      'flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs';
     item.innerHTML = `
       <div class="flex items-center gap-1.5 min-w-0">
-        <span class="text-[10px] text-orange-400 font-mono">📁</span>
-        <span class="text-[11px] text-slate-200 font-medium truncate max-w-[190px]" title="${file.name}">
+        <span class="text-[11px] ${isDir ? 'text-amber-400' : 'text-sky-400'} font-mono">
+          ${isDir ? '📂' : '📄'}
+        </span>
+        <span class="text-[11px] ${isDir ? 'text-amber-200 font-semibold' : 'text-slate-200 font-medium'} truncate max-w-[170px]" title="${file.name}">
           ${file.name}
         </span>
         <span class="text-[10px] text-slate-400 font-mono shrink-0">
-          (${formatBytes(file.size)})
+          (${isDir && file.fileCount ? `${file.fileCount} itens, ` : ''}${formatBytes(file.size)})
         </span>
       </div>
       <button
         type="button"
         data-remove-index="${index}"
-        class="text-slate-500 hover:text-rose-400 font-bold px-1 text-xs cursor-pointer"
+        class="text-slate-500 hover:text-rose-400 font-bold px-1 text-xs cursor-pointer transition-colors"
         title="Remover do pack"
       >
         ✕
@@ -994,15 +1205,81 @@ btnModalAddMore.addEventListener('click', () => {
   chrome.runtime.sendMessage({
     action: 'DAEMON_PICK_FILES',
     mode: 'tunnel',
+    pickType: 'files',
     append: true
   });
 });
 
+if (btnModalAddFolder) {
+  btnModalAddFolder.addEventListener('click', () => {
+    chrome.runtime.sendMessage({
+      action: 'DAEMON_PICK_FILES',
+      mode: 'tunnel',
+      pickType: 'directory',
+      append: true
+    });
+  });
+}
+
 // ============================================================================
-// Mini Explorador Rápido de Arquivos Embutido (Sem perder foco do Popup)
+// Mini Explorador Rápido de Arquivos e Pastas Embutido (Com rolagem interna e margens)
 // ============================================================================
 let currentQuickBrowserDir = '';
 let parentQuickBrowserDir = '';
+
+function openQuickBrowserView() {
+  if (modalViewPack) modalViewPack.classList.add('hidden');
+  if (modalQuickBrowserPanel) {
+    modalQuickBrowserPanel.classList.remove('hidden');
+    modalQuickBrowserPanel.classList.add('flex');
+  }
+  loadQuickBrowserDir(currentQuickBrowserDir);
+}
+
+function closeQuickBrowserView() {
+  if (modalQuickBrowserPanel) {
+    modalQuickBrowserPanel.classList.add('hidden');
+    modalQuickBrowserPanel.classList.remove('flex');
+  }
+  if (modalViewPack) modalViewPack.classList.remove('hidden');
+}
+
+async function addDirectoryToPack(dirPath) {
+  if (!dirPath) return;
+  try {
+    showToast('Escaneando pasta...');
+    const res = await fetch(`http://127.0.0.1:18765/api/fs/scan-dir?path=${encodeURIComponent(dirPath)}`);
+    const data = await res.json();
+    if (!data || !data.ok) {
+      showToast(data.error || 'Erro ao ler pasta.');
+      return;
+    }
+    const folderObj = {
+      fileId: `folder-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      name: data.name,
+      diskPath: data.diskPath,
+      size: data.totalSize,
+      fileCount: data.fileCount,
+      isDirectory: true,
+      files: data.files
+    };
+
+    chrome.runtime.sendMessage(
+      { action: 'ADD_STAGED_TUNNEL_FILES', files: [folderObj] },
+      (response) => {
+        if (response && response.state) {
+          currentState = response.state;
+          syncModalWithState();
+          loadQuickBrowserDir(currentQuickBrowserDir);
+          showToast(`Pasta "${data.name}" (${data.fileCount} itens, ${formatBytes(data.totalSize)}) adicionada!`);
+        }
+      }
+    );
+  } catch (err) {
+    console.error('Erro ao adicionar pasta:', err);
+    showToast('Falha ao adicionar pasta.');
+  }
+}
 
 async function loadQuickBrowserDir(dir = '') {
   try {
@@ -1020,6 +1297,17 @@ async function loadQuickBrowserDir(dir = '') {
       quickBrowserPath.title = currentQuickBrowserDir;
     }
 
+    if (btnQuickBrowserAddCurrent) {
+      const folderName = currentQuickBrowserDir.split(/[/\\]/).pop() || currentQuickBrowserDir;
+      const span = btnQuickBrowserAddCurrent.querySelector('span');
+      if (span) span.textContent = `📂 + Adicionar esta pasta inteira (${folderName})`;
+    }
+
+    if (quickBrowserCount) {
+      const totalCount = (data.folders || []).length + (data.files || []).length;
+      quickBrowserCount.textContent = `(${totalCount} itens)`;
+    }
+
     if (quickBrowserShortcuts && Array.isArray(data.shortcuts)) {
       quickBrowserShortcuts.innerHTML = data.shortcuts
         .map(
@@ -1027,7 +1315,7 @@ async function loadQuickBrowserDir(dir = '') {
           <button
             type="button"
             data-shortcut-dir="${s.path.replace(/"/g, '&quot;')}"
-            class="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-sky-500/20 text-[9px] text-slate-300 hover:text-sky-300 border border-slate-800 shrink-0 cursor-pointer"
+            class="px-2 py-0.5 rounded-lg bg-slate-900 hover:bg-sky-500/20 text-[9px] text-slate-300 hover:text-sky-300 border border-slate-800 shrink-0 cursor-pointer transition-colors"
           >
             ${s.label}
           </button>
@@ -1040,14 +1328,41 @@ async function loadQuickBrowserDir(dir = '') {
       quickBrowserEntries.innerHTML = '';
 
       (data.folders || []).forEach((folder) => {
-        const row = document.createElement('button');
-        row.type = 'button';
-        row.setAttribute('data-folder-path', folder.path);
+        const isAlreadyAdded = stagedTunnelFiles.some((f) => f.diskPath === folder.path);
+        const row = document.createElement('div');
         row.className =
-          'w-full flex items-center justify-between px-1.5 py-1 rounded hover:bg-slate-900 text-left text-[10px] text-slate-300 cursor-pointer';
+          'w-full flex items-center justify-between px-2 py-1.5 rounded-lg bg-slate-900/60 hover:bg-slate-900 border border-slate-800 text-[11px] text-slate-200 transition-colors';
         row.innerHTML = `
-          <span class="truncate">📂 ${folder.name}</span>
-          <span class="text-[9px] text-slate-500">Abrir ➔</span>
+          <button
+            type="button"
+            data-folder-path="${folder.path.replace(/"/g, '&quot;')}"
+            class="flex items-center gap-1.5 truncate flex-1 text-left hover:text-sky-300 cursor-pointer"
+            title="Abrir pasta ${folder.name}"
+          >
+            <span class="text-amber-400 font-mono">📂</span>
+            <span class="truncate font-medium">${folder.name}</span>
+          </button>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              data-add-folder-path="${folder.path.replace(/"/g, '&quot;')}"
+              class="text-[9px] px-2 py-0.5 rounded font-medium cursor-pointer transition-colors ${
+                isAlreadyAdded
+                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 font-bold'
+                  : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
+              }"
+              title="Adicionar pasta inteira ao pack"
+            >
+              ${isAlreadyAdded ? '✓ Na fila' : '+ Pasta'}
+            </button>
+            <button
+              type="button"
+              data-folder-path="${folder.path.replace(/"/g, '&quot;')}"
+              class="text-[9px] text-slate-400 hover:text-white px-1 py-0.5 cursor-pointer"
+            >
+              Abrir ➔
+            </button>
+          </div>
         `;
         quickBrowserEntries.appendChild(row);
       });
@@ -1057,8 +1372,10 @@ async function loadQuickBrowserDir(dir = '') {
         const row = document.createElement('button');
         row.type = 'button';
         row.setAttribute('data-file-json', JSON.stringify(file));
-        row.className = `w-full flex items-center justify-between px-1.5 py-1 rounded hover:bg-sky-500/15 text-left text-[10px] cursor-pointer ${
-          alreadyAdded ? 'bg-emerald-950/40 text-emerald-300' : 'text-slate-200'
+        row.className = `w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-left text-[11px] cursor-pointer transition-colors ${
+          alreadyAdded
+            ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/30'
+            : 'bg-slate-900/60 hover:bg-sky-500/10 text-slate-200 border border-slate-800/80'
         }`;
         row.innerHTML = `
           <span class="truncate pr-2">📄 ${file.name}</span>
@@ -1071,7 +1388,7 @@ async function loadQuickBrowserDir(dir = '') {
 
       if ((data.folders || []).length === 0 && (data.files || []).length === 0) {
         quickBrowserEntries.innerHTML =
-          '<div class="text-[10px] text-slate-500 italic text-center py-2">Pasta vazia</div>';
+          '<div class="text-[11px] text-slate-500 italic text-center py-4">Pasta vazia</div>';
       }
     }
   } catch (err) {
@@ -1080,30 +1397,25 @@ async function loadQuickBrowserDir(dir = '') {
 }
 
 if (btnModalQuickBrowser) {
-  btnModalQuickBrowser.addEventListener('click', () => {
-    const isHidden = modalQuickBrowserPanel.classList.contains('hidden');
-    if (isHidden) {
-      modalQuickBrowserPanel.classList.remove('hidden');
-      modalQuickBrowserPanel.classList.add('flex');
-      loadQuickBrowserDir(currentQuickBrowserDir);
-    } else {
-      modalQuickBrowserPanel.classList.add('hidden');
-      modalQuickBrowserPanel.classList.remove('flex');
-    }
-  });
+  btnModalQuickBrowser.addEventListener('click', openQuickBrowserView);
 }
 
 if (btnQuickBrowserClose) {
-  btnQuickBrowserClose.addEventListener('click', () => {
-    modalQuickBrowserPanel.classList.add('hidden');
-    modalQuickBrowserPanel.classList.remove('flex');
-  });
+  btnQuickBrowserClose.addEventListener('click', closeQuickBrowserView);
 }
 
 if (btnQuickBrowserUp) {
   btnQuickBrowserUp.addEventListener('click', () => {
     if (parentQuickBrowserDir) {
       loadQuickBrowserDir(parentQuickBrowserDir);
+    }
+  });
+}
+
+if (btnQuickBrowserAddCurrent) {
+  btnQuickBrowserAddCurrent.addEventListener('click', () => {
+    if (currentQuickBrowserDir) {
+      addDirectoryToPack(currentQuickBrowserDir);
     }
   });
 }
@@ -1118,6 +1430,13 @@ if (quickBrowserShortcuts) {
 
 if (quickBrowserEntries) {
   quickBrowserEntries.addEventListener('click', (e) => {
+    const addFolderBtn = e.target.closest('button[data-add-folder-path]');
+    if (addFolderBtn) {
+      const folderPath = addFolderBtn.getAttribute('data-add-folder-path');
+      addDirectoryToPack(folderPath);
+      return;
+    }
+
     const folderBtn = e.target.closest('button[data-folder-path]');
     if (folderBtn) {
       loadQuickBrowserDir(folderBtn.getAttribute('data-folder-path'));
@@ -1143,6 +1462,24 @@ if (quickBrowserEntries) {
   });
 }
 
+// Opções de Compactação do Pack
+if (modalCompressToggle) {
+  modalCompressToggle.addEventListener('change', () => {
+    if (modalCompressToggle.checked) {
+      modalCompressOptions.classList.remove('hidden');
+    } else {
+      modalCompressOptions.classList.add('hidden');
+    }
+  });
+}
+
+if (modalCompressFormat) {
+  modalCompressFormat.addEventListener('change', () => {
+    const ext = '.' + modalCompressFormat.value;
+    if (modalCompressExtBadge) modalCompressExtBadge.textContent = ext;
+  });
+}
+
 btnModalGenPassword.addEventListener('click', () => {
   const randomPass = Math.floor(100000 + Math.random() * 900000).toString();
   modalPasswordInput.value = randomPass;
@@ -1153,8 +1490,11 @@ btnModalClearPassword.addEventListener('click', () => {
 });
 
 function closeAndResetModal() {
+  closeQuickBrowserView();
   tunnelConfigModal.classList.add('hidden');
   stagedTunnelFiles = [];
+  if (modalCompressToggle) modalCompressToggle.checked = false;
+  if (modalCompressOptions) modalCompressOptions.classList.add('hidden');
   chrome.runtime.sendMessage({ action: 'CLEAR_STAGED_TUNNEL_FILES' }, (res) => {
     if (res && res.state) {
       currentState = res.state;
@@ -1168,135 +1508,229 @@ btnModalCancel.addEventListener('click', closeAndResetModal);
 
 btnModalConfirm.addEventListener('click', async () => {
   if (stagedTunnelFiles.length === 0) {
-    showToast('Adicione pelo menos um arquivo para gerar o link.');
+    showToast('Adicione pelo menos um arquivo ou pasta ao pack.');
     return;
   }
 
-  const expirationMin = Number(modalExpirationSelect.value || 30);
-  const expiresAt = expirationMin > 0 ? Date.now() + expirationMin * 60 * 1000 : null;
-  const password = (modalPasswordInput.value || '').trim();
-
-  const shareId = `cf-${Array.from(crypto.getRandomValues(new Uint8Array(3)))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')}`;
-
-  const filesMeta = stagedTunnelFiles.map((f, i) => ({
-    fileId: `f-${i}`,
-    name: f.name,
-    size: f.size,
-    type: f.type || 'application/octet-stream',
-    diskPath: f.diskPath || null
-  }));
-  const totalSize = stagedTunnelFiles.reduce((acc, f) => acc + (f.size || 0), 0);
-  const packName =
-    stagedTunnelFiles.length === 1
-      ? stagedTunnelFiles[0].name
-      : `Pack (${stagedTunnelFiles.length} arquivos)`;
+  const isCompressEnabled = Boolean(modalCompressToggle && modalCompressToggle.checked);
+  const compressFormat = modalCompressFormat ? modalCompressFormat.value : 'zip';
+  const compressLevel = modalCompressLevel ? Number(modalCompressLevel.value) : 5;
+  const customCompressName = modalCompressName ? modalCompressName.value.trim() : '';
 
   btnModalConfirm.disabled = true;
   const originalConfirmText = btnModalConfirm.textContent;
-  btnModalConfirm.textContent = 'Criando sessão no daemon...';
 
   try {
-    // 1. Cria a sessão no daemon local (arquivos com diskPath já são vinculados direto do disco!)
-    const sessionRes = await fetch('http://127.0.0.1:18765/api/tunnel/session', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        shareId,
-        packName,
-        expiresInMinutes: expirationMin,
-        password,
-        totalSize,
-        files: filesMeta
-      })
-    });
-    if (!sessionRes.ok) {
-      throw new Error('Daemon local offline. Verifique se o daemon está rodando em 127.0.0.1:18765');
-    }
+    let finalFilesMeta = [];
+    let finalPackName = '';
+    let finalTotalSize = 0;
 
-    // 2. Se houver algum arquivo em memória (sem diskPath), faz upload para o daemon
-    for (let i = 0; i < stagedTunnelFiles.length; i++) {
-      if (!stagedTunnelFiles[i].diskPath) {
-        btnModalConfirm.textContent = `Preparando arquivo (${i + 1}/${stagedTunnelFiles.length})...`;
-        const upRes = await fetch(
-          `http://127.0.0.1:18765/api/tunnel/upload-file?shareId=${encodeURIComponent(shareId)}&fileIndex=${i}`,
-          {
-            method: 'POST',
-            body: stagedTunnelFiles[i]
-          }
-        );
-        if (!upRes.ok) {
-          throw new Error(`Falha no upload do arquivo ${stagedTunnelFiles[i].name}`);
-        }
+    // Se compactação estiver ativada, comprime tudo em .zip, .rar ou .7z antes de enviar!
+    if (isCompressEnabled) {
+      btnModalConfirm.textContent = `Compactando pack em .${compressFormat} (Nível ${compressLevel})...`;
+      const compRes = await fetch('http://127.0.0.1:18765/api/pack/compress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: stagedTunnelFiles,
+          format: compressFormat,
+          level: compressLevel,
+          outputName: customCompressName
+        })
+      });
+      const compData = await compRes.json();
+      if (!compData || !compData.ok) {
+        throw new Error(compData.error || 'Falha ao compactar arquivos.');
       }
+
+      finalFilesMeta = [
+        {
+          fileId: `f-0`,
+          name: compData.fileName,
+          size: compData.size,
+          type: compData.type || 'application/octet-stream',
+          diskPath: compData.diskPath
+        }
+      ];
+      finalPackName = compData.fileName;
+      finalTotalSize = compData.size;
+    } else {
+      // Sem compactação
+      finalFilesMeta = stagedTunnelFiles.map((f, i) => ({
+        fileId: f.fileId || `f-${i}`,
+        name: f.name,
+        size: f.size,
+        type: f.type || 'application/octet-stream',
+        diskPath: f.diskPath || null,
+        isDirectory: Boolean(f.isDirectory)
+      }));
+      finalTotalSize = stagedTunnelFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+      finalPackName =
+        stagedTunnelFiles.length === 1
+          ? stagedTunnelFiles[0].name
+          : `Pack (${stagedTunnelFiles.length} itens)`;
     }
 
-    // 3. Inicia o túnel Cloudflare Quick Tunnel (*.trycloudflare.com)
-    btnModalConfirm.textContent = 'Gerando link *.trycloudflare.com...';
-    const startRes = await fetch('http://127.0.0.1:18765/api/tunnel/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ shareId })
-    });
-    const startData = await startRes.json();
-    if (!startData.ok || !startData.tunnelUrl) {
-      throw new Error(startData.error || 'Falha ao obter URL do túnel Cloudflare.');
-    }
+    if (currentModalMode === 'tunnel') {
+      const expirationMin = Number(modalExpirationSelect ? modalExpirationSelect.value : 30);
+      const expiresAt = expirationMin > 0 ? Date.now() + expirationMin * 60 * 1000 : null;
+      const password = (modalPasswordInput ? modalPasswordInput.value : '').trim();
+      const maxDownloads = Number(modalDownloadLimitSelect ? modalDownloadLimitSelect.value : 0);
 
-    const shareUrl = startData.tunnelUrl;
+      const shareId = `cf-${Array.from(crypto.getRandomValues(new Uint8Array(3)))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('')}`;
 
-    // 4. Registra no background da extensão (e limpa os stagedTunnelFiles)
-    chrome.runtime.sendMessage(
-      {
-        action: 'START_CLOUDFLARE_TUNNEL_SHARE',
-        shareId,
-        packName,
-        files: filesMeta,
-        totalSize,
-        shareUrl,
-        hasPassword: Boolean(password),
-        password,
-        expiresAt
-      },
-      async (res) => {
-        if (res && res.error) {
-          showToast(res.error);
-          return;
-        }
-        if (res && res.state) {
-          currentState = res.state;
-          renderAll();
-        }
-
-        // 5. Copia automaticamente o link formatado com senha e tempo de expiração
-        const formattedMessage = formatShareMessage({
-          shareUrl,
+      btnModalConfirm.textContent = 'Criando sessão no daemon...';
+      const sessionRes = await fetch('http://127.0.0.1:18765/api/tunnel/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shareId,
+          packName: finalPackName,
+          expiresInMinutes: expirationMin,
           password,
-          expiresAt,
-          files: filesMeta
-        });
+          maxDownloads,
+          totalSize: finalTotalSize,
+          files: finalFilesMeta
+        })
+      });
+      if (!sessionRes.ok) {
+        throw new Error('Daemon local offline. Verifique se o daemon está rodando em 127.0.0.1:18765');
+      }
 
-        try {
-          await navigator.clipboard.writeText(formattedMessage);
-          showToast('✓ Link Cloudflare gerado e copiado para a área de transferência!');
-        } catch {
-          showToast('Túnel aberto! Copie o link na lista abaixo.');
+      // Upload de arquivos sem diskPath (caso haja algum em memória)
+      for (let i = 0; i < finalFilesMeta.length; i++) {
+        if (!finalFilesMeta[i].diskPath && stagedTunnelFiles[i]) {
+          btnModalConfirm.textContent = `Preparando arquivo (${i + 1}/${finalFilesMeta.length})...`;
+          const upRes = await fetch(
+            `http://127.0.0.1:18765/api/tunnel/upload-file?shareId=${encodeURIComponent(shareId)}&fileIndex=${i}`,
+            {
+              method: 'POST',
+              body: stagedTunnelFiles[i]
+            }
+          );
+          if (!upRes.ok) {
+            throw new Error(`Falha no upload do arquivo ${finalFilesMeta[i].name}`);
+          }
         }
       }
-    );
 
-    tunnelConfigModal.classList.add('hidden');
-    stagedTunnelFiles = [];
+      btnModalConfirm.textContent = 'Gerando link *.trycloudflare.com...';
+      const startRes = await fetch('http://127.0.0.1:18765/api/tunnel/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shareId })
+      });
+      const startData = await startRes.json();
+      if (!startData.ok || !startData.tunnelUrl) {
+        throw new Error(startData.error || 'Falha ao obter URL do túnel Cloudflare.');
+      }
+
+      const shareUrl = startData.tunnelUrl;
+      chrome.runtime.sendMessage(
+        {
+          action: 'START_CLOUDFLARE_TUNNEL_SHARE',
+          shareId,
+          packName: finalPackName,
+          files: finalFilesMeta,
+          totalSize: finalTotalSize,
+          shareUrl,
+          hasPassword: Boolean(password),
+          password,
+          maxDownloads,
+          expiresAt
+        },
+        async (res) => {
+          if (res && res.error) {
+            showToast(res.error);
+            return;
+          }
+          if (res && res.state) {
+            currentState = res.state;
+            renderAll();
+          }
+
+          const formattedMessage = formatShareMessage({
+            shareUrl,
+            password,
+            expiresAt,
+            maxDownloads,
+            files: finalFilesMeta
+          });
+
+          try {
+            await navigator.clipboard.writeText(formattedMessage);
+            showToast('✓ Link Cloudflare gerado e copiado para a área de transferência!');
+          } catch {
+            showToast('Túnel aberto! Copie o link na lista abaixo.');
+          }
+        }
+      );
+    } else if (currentModalMode === 'p2p') {
+      const targetTag = normalizeTag(targetTagInput.value);
+      if (!targetTag) {
+        throw new Error('Destinatário P2P não especificado.');
+      }
+
+      btnModalConfirm.textContent = 'Iniciando transferência P2P...';
+      for (const item of finalFilesMeta) {
+        if (item.diskPath) {
+          const fileRes = await fetch(
+            `http://127.0.0.1:18765/api/read-local-file?path=${encodeURIComponent(item.diskPath)}`
+          );
+          if (fileRes.ok) {
+            const blob = await fileRes.blob();
+            const fileObj = new File([blob], item.name, { type: item.type || 'application/octet-stream' });
+            const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+            chrome.runtime.sendMessage({
+              action: 'START_SEND_FILE',
+              transferId,
+              targetTag,
+              fileMeta: {
+                name: item.name,
+                size: item.size,
+                type: item.type || 'application/octet-stream'
+              }
+            });
+          }
+        }
+      }
+      showToast(`Transferência enviada para ${targetTag}!`);
+    }
+
+    closeAndResetModal();
     checkDaemonStatus();
   } catch (err) {
-    console.error('Erro ao gerar túnel Cloudflare:', err);
+    console.error('Erro ao confirmar pack:', err);
     showToast(`Erro: ${err.message}`);
   } finally {
     btnModalConfirm.disabled = false;
     btnModalConfirm.textContent = originalConfirmText;
   }
 });
+
+if (tabActiveTransfers) {
+  tabActiveTransfers.addEventListener('click', () => {
+    currentTransfersTab = 'active';
+    tabActiveTransfers.className =
+      'px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 cursor-pointer';
+    tabHistoryTransfers.className =
+      'px-2 py-0.5 rounded-md text-[10px] font-medium text-slate-400 hover:text-slate-200 cursor-pointer';
+    renderTransfers();
+  });
+}
+
+if (tabHistoryTransfers) {
+  tabHistoryTransfers.addEventListener('click', () => {
+    currentTransfersTab = 'history';
+    tabHistoryTransfers.className =
+      'px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/30 cursor-pointer';
+    tabActiveTransfers.className =
+      'px-2 py-0.5 rounded-md text-[10px] font-medium text-slate-400 hover:text-slate-200 cursor-pointer';
+    renderTransfers();
+  });
+}
 
 btnReceive.addEventListener('click', () => {
   const pendingIncoming = Object.values(currentState.transfers || []).find(
@@ -1322,12 +1756,37 @@ btnReceive.addEventListener('click', () => {
 
 transfersList.addEventListener('click', async (e) => {
   const btn = e.target.closest('button[data-action]');
+  const expandTarget = e.target.closest('[data-action="toggle-expand-transfer"]');
+
+  if (expandTarget && (!btn || btn.getAttribute('data-action') === 'toggle-expand-transfer')) {
+    const tid = expandTarget.getAttribute('data-transfer-id');
+    if (tid) {
+      if (expandedTransferIds.has(tid)) {
+        expandedTransferIds.delete(tid);
+      } else {
+        expandedTransferIds.add(tid);
+      }
+      renderTransfers();
+      return;
+    }
+  }
+
   if (!btn) return;
 
   const action = btn.getAttribute('data-action');
   const downloadId = Number(btn.getAttribute('data-download-id'));
   const transferId = btn.getAttribute('data-transfer-id');
   const url = btn.getAttribute('data-url');
+
+  if (action === 'delete-single-transfer' && transferId) {
+    chrome.runtime.sendMessage({ action: 'DELETE_TRANSFER', transferId }, (res) => {
+      if (res && res.state) {
+        currentState = res.state;
+        renderAll();
+      }
+    });
+    return;
+  }
 
   if (action === 'pause-transfer' && transferId) {
     fetch('http://127.0.0.1:18765/api/tunnel/pause', {
@@ -1380,6 +1839,7 @@ transfersList.addEventListener('click', async (e) => {
       shareUrl: t.shareUrl,
       password: t.password,
       expiresAt: t.expiresAt,
+      maxDownloads: t.maxDownloads,
       files: t.files || [{ name: t.fileName, size: t.fileSize }]
     });
     try {
@@ -1418,10 +1878,8 @@ transfersList.addEventListener('click', async (e) => {
   }
 });
 
-
-
 btnClearCompleted.addEventListener('click', () => {
-  chrome.runtime.sendMessage({ action: 'CLEAR_COMPLETED' }, (res) => {
+  chrome.runtime.sendMessage({ action: 'CLEAR_HISTORY' }, (res) => {
     if (res && res.state) {
       currentState = res.state;
       renderAll();

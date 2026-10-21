@@ -190,17 +190,28 @@ async function startServerlessP2PLinkShare(params) {
   state.transfers[shareId] = {
     id: shareId,
     direction: 'tunnel',
-    peerTag: 'Túnel P2P (Cloudflare WebRTC)',
+    peerTag: 'Túnel Cloudflare (trycloudflare.com)',
     packName,
     fileName: packName,
     files,
     totalSize,
     fileSize: totalSize,
     fileType: 'application/octet-stream',
-    progress: 100,
-    transferredBytes: totalSize,
+    progress: 0,
+    transferredBytes: 0,
+    totalBytesSent: 0,
     speedBps: 0,
     downloads: 0,
+    maxDownloads: Number(params.maxDownloads || 0),
+    completedPacks: 0,
+    filesProgress: (files || []).map((f, i) => ({
+      index: i,
+      name: f.name,
+      size: f.size,
+      bytesSent: 0,
+      progress: 0,
+      status: 'IDLE'
+    })),
     shareId,
     shareUrl,
     ownerTag: state.myTag,
@@ -247,6 +258,22 @@ async function syncTunnelsWithDaemon() {
           if (live.downloads !== t.downloads) {
             t.downloads = live.downloads;
             t.updatedAt = Date.now();
+            changed = true;
+          }
+          if (typeof live.totalBytesSent === 'number') {
+            t.totalBytesSent = live.totalBytesSent;
+            t.transferredBytes = live.totalBytesSent;
+            if (t.totalSize > 0) {
+              t.progress = Math.min(100, Math.round((live.totalBytesSent / t.totalSize) * 100));
+            }
+            changed = true;
+          }
+          if (typeof live.completedPacks === 'number' && t.completedPacks !== live.completedPacks) {
+            t.completedPacks = live.completedPacks;
+            changed = true;
+          }
+          if (Array.isArray(live.filesProgress)) {
+            t.filesProgress = live.filesProgress;
             changed = true;
           }
         } else if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED') {
@@ -677,9 +704,34 @@ async function syncTunnelsWithDaemon() {
             t.updatedAt = Date.now();
             changed = true;
           }
-        } else if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED') {
-          // Túnel não consta mais como ativo no daemon (expirou ou foi cancelado)
-          t.status = t.expiresAt && Date.now() >= t.expiresAt ? 'EXPIRED' : 'CANCELLED';
+          if (live.maxDownloads !== undefined && live.maxDownloads !== t.maxDownloads) {
+            t.maxDownloads = live.maxDownloads;
+            changed = true;
+          }
+          if (live.completedPacks !== undefined && live.completedPacks !== t.completedPacks) {
+            t.completedPacks = live.completedPacks;
+            changed = true;
+          }
+          if (live.totalBytesSent !== undefined && live.totalBytesSent !== t.transferredBytes) {
+            t.transferredBytes = live.totalBytesSent;
+            t.totalBytesSent = live.totalBytesSent;
+            t.progress = t.fileSize > 0 ? Math.min(100, Math.round((t.transferredBytes / t.fileSize) * 100)) : 0;
+            t.updatedAt = Date.now();
+            changed = true;
+          }
+          if (live.filesProgress) {
+            t.filesProgress = live.filesProgress;
+            changed = true;
+          }
+        } else if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED' || t.status === 'TRANSFERRING') {
+          // Túnel não consta mais como ativo no daemon (expirou, atingiu limite de downloads ou foi cancelado)
+          if (t.maxDownloads > 0 && (t.completedPacks || 0) >= t.maxDownloads) {
+            t.status = 'COMPLETED';
+          } else if (t.expiresAt && Date.now() >= t.expiresAt) {
+            t.status = 'EXPIRED';
+          } else {
+            t.status = 'CANCELLED';
+          }
           t.updatedAt = Date.now();
           changed = true;
         }
@@ -692,7 +744,7 @@ async function syncTunnelsWithDaemon() {
   } catch {}
 }
 
-setInterval(syncTunnelsWithDaemon, 4000);
+setInterval(syncTunnelsWithDaemon, 1500);
 syncTunnelsWithDaemon();
 
 let creatingOffscreen = null;
@@ -1071,8 +1123,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const mode = msg.mode || 'tunnel';
       const append = Boolean(msg.append);
       const targetTag = msg.targetTag || '';
+      const pickType = msg.pickType || 'files';
 
-      fetch('http://127.0.0.1:18765/api/pick-files', { method: 'POST' })
+      fetch('http://127.0.0.1:18765/api/pick-files', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pickType })
+      })
         .then((r) => r.json())
         .then(async (data) => {
           if (data && data.ok && !data.cancelled && Array.isArray(data.files) && data.files.length > 0) {
@@ -1312,18 +1369,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
 
+    case 'DELETE_TRANSFER': {
+      const transferId = msg.transferId;
+      const t = state.transfers[transferId];
+      if (t) {
+        if (t.shareId) publicP2PShares.delete(t.shareId);
+        if (t.direction === 'tunnel' || t.shareId) {
+          fetch('http://127.0.0.1:18765/api/tunnel/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shareId: t.shareId || transferId })
+          }).catch(() => {});
+        }
+        if (fileBridgeChannel) {
+          fileBridgeChannel.postMessage({
+            type: 'DELETE_PACK_MEMORY',
+            shareId: t.shareId || transferId
+          });
+          fileBridgeChannel.postMessage({
+            type: 'DELETE_FILE_MEMORY',
+            transferId
+          });
+        }
+        delete state.transfers[transferId];
+        broadcastState();
+      }
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'CLEAR_HISTORY':
     case 'CLEAR_COMPLETED': {
+      const historyStatuses = ['COMPLETED', 'EXPIRED', 'CANCELLED', 'ERROR'];
       for (const [id, t] of Object.entries(state.transfers)) {
-        if (t.status === 'COMPLETED' || t.status === 'ERROR' || t.status === 'TUNNEL_READY') {
+        if (historyStatuses.includes(t.status)) {
           if (t.shareId) publicP2PShares.delete(t.shareId);
           delete state.transfers[id];
           if (fileBridgeChannel) {
             fileBridgeChannel.postMessage({ type: 'DELETE_FILE_MEMORY', transferId: id });
+            fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId: t.shareId || id });
           }
         }
       }
       broadcastState();
-      sendResponse({ state });
+      sendResponse({ ok: true, state });
       return true;
     }
   }

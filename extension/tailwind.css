@@ -8,6 +8,11 @@
 html, body {
   margin: 0;
   padding: 0;
+  width: 380px;
+  height: 580px;
+  max-height: 580px;
+  overflow: hidden;
+  box-sizing: border-box;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -303,16 +308,36 @@ button, input {
 .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 .animate-bounce { animation: bounce 1s infinite; }
 
-/* Scrollbar clean */
+/* Scrollbar clean com rolagem interna suave */
 #transfers-list::-webkit-scrollbar,
 #peers-list::-webkit-scrollbar,
-#modal-files-list::-webkit-scrollbar { width: 4px; height: 4px; }
+#modal-files-list::-webkit-scrollbar,
+#quick-browser-entries::-webkit-scrollbar,
+#modal-view-pack::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
 #transfers-list::-webkit-scrollbar-track,
 #peers-list::-webkit-scrollbar-track,
-#modal-files-list::-webkit-scrollbar-track { background: transparent; }
+#modal-files-list::-webkit-scrollbar-track,
+#quick-browser-entries::-webkit-scrollbar-track,
+#modal-view-pack::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 9999px;
+}
 #transfers-list::-webkit-scrollbar-thumb,
 #peers-list::-webkit-scrollbar-thumb,
-#modal-files-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+#modal-files-list::-webkit-scrollbar-thumb,
+#quick-browser-entries::-webkit-scrollbar-thumb,
+#modal-view-pack::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 9999px;
+}
+#transfers-list::-webkit-scrollbar-thumb:hover,
+#quick-browser-entries::-webkit-scrollbar-thumb:hover,
+#modal-view-pack::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
 
 /* Modal & Overlay Utilities */
 .fixed { position: fixed; }
@@ -322,10 +347,20 @@ button, input {
 .z-50 { z-index: 50; }
 .bg-black\/70 { background-color: rgba(0, 0, 0, 0.7); }
 .bg-black\/80 { background-color: rgba(0, 0, 0, 0.8); }
+.bg-black\/85 { background-color: rgba(0, 0, 0, 0.85); }
 .bg-black\/90 { background-color: rgba(0, 0, 0, 0.9); }
 .bg-slate-900\/95 { background-color: rgba(15, 23, 42, 0.95); }
+.bg-slate-950\/60 { background-color: rgba(2, 6, 23, 0.6); }
+.bg-slate-950\/80 { background-color: rgba(2, 6, 23, 0.8); }
 .bg-slate-950\/95 { background-color: rgba(2, 6, 23, 0.95); }
 .bg-slate-800\/60 { background-color: rgba(30, 41, 59, 0.6); }
+.bg-indigo-600 { background-color: #4f46e5; }
+.bg-indigo-500\/20 { background-color: rgba(99, 102, 241, 0.2); }
+.border-indigo-500 { border-color: #6366f1; }
+.border-indigo-500\/30 { border-color: rgba(99, 102, 241, 0.3); }
+.focus\:border-indigo-500:focus { border-color: #6366f1; }
+.text-indigo-400 { color: #818cf8; }
+
 .bg-amber-500\/10 { background-color: rgba(245, 158, 11, 0.1); }
 .bg-amber-500\/15 { background-color: rgba(245, 158, 11, 0.15); }
 .bg-amber-500\/20 { background-color: rgba(245, 158, 11, 0.2); }
@@ -351,6 +386,18 @@ button, input {
 .text-rose-100 { color: #ffe4e6; }
 
 .backdrop-blur-sm { backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); }
+.w-\[380px\] { width: 380px; }
+.h-\[580px\] { height: 580px; }
+.max-h-\[580px\] { max-height: 580px; }
+.max-h-\[564px\] { max-height: 564px; }
+.h-\[88px\] { height: 88px; }
+.h-\[92px\] { height: 92px; }
 .max-h-\[130px\] { max-height: 130px; }
 .max-h-\[150px\] { max-height: 150px; }
+.max-h-\[220px\] { max-height: 220px; }
+
+/* Peer Switch Styles */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0; }
+.peer:checked ~ div.peer-checked\:bg-indigo-600 { background-color: #4f46e5; }
+.peer:checked ~ div.peer-checked\:after\:translate-x-full::after { transform: translateX(100%); }
 .max-h-\[220px\] { max-height: 220px; }

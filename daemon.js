@@ -16,6 +16,8 @@ const crypto = require('crypto');
 
 const DAEMON_PORT = 18765;
 const CLOUDFLARED_BIN = path.join(__dirname, 'bin', 'cloudflared');
+const BIN_7ZZ = path.join(__dirname, 'bin', '7zz');
+const BIN_RAR = path.join(__dirname, 'bin', 'rar');
 const TEMP_BASE_DIR = path.join(os.tmpdir(), 'pulseshare');
 
 // Garante que o diretório base temporário existe
@@ -451,11 +453,12 @@ function getPortalHtml(tunnel) {
           <span>•</span>
           <span>💾 ${totalSizeFormatted}</span>
           ${tunnel.expiresAt ? `<span>•</span><span class="timer-badge">⏳ <span id="countdown">Calculando...</span></span>` : ''}
+          ${tunnel.maxDownloads > 0 ? `<span>•</span><span style="color:#38bdf8;font-family:monospace;">🎯 Limite: ${tunnel.maxDownloads} download(s)</span>` : ''}
         </div>
       </div>
 
-      <a id="btn-download-all" href="/download-all" class="btn-main">
-        <span>⬇ Baixar Todos os Arquivos (.ZIP)</span>
+      <a id="btn-download-all" ${hasPassword ? 'href="javascript:void(0)" data-href="/download-all" disabled style="opacity:0.4;cursor:not-allowed;pointer-events:none;"' : 'href="/download-all"'} class="btn-main">
+        <span id="btn-download-all-text">${hasPassword ? '🔒 Digite a senha acima para baixar (.ZIP)' : '⬇ Baixar Todos os Arquivos (.ZIP)'}</span>
       </a>
 
       <div style="font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:#94a3b8; margin-top:2px;">
@@ -472,8 +475,8 @@ function getPortalHtml(tunnel) {
                 <span class="file-size">${formatBytes(f.size)}</span>
               </div>
             </div>
-            <a href="/download/${i}" class="btn-download-file" download="${f.name.replace(/"/g, '&quot;')}">
-              ⬇ Baixar
+            <a ${hasPassword ? `href="javascript:void(0)" data-href="/download/${i}" disabled style="opacity:0.4;cursor:not-allowed;pointer-events:none;" title="Digite a senha para desbloquear"` : `href="/download/${i}" download="${f.name.replace(/"/g, '&quot;')}"`} class="btn-download-file">
+              ${hasPassword ? '🔒 Bloqueado' : '⬇ Baixar'}
             </a>
           </div>
         `).join('')}
@@ -490,13 +493,15 @@ function getPortalHtml(tunnel) {
     const hasPassword = ${hasPassword ? 'true' : 'false'};
     const expiresAt = ${tunnel.expiresAt ? Number(tunnel.expiresAt) : 'null'};
 
-    // Validação de Senha
+    // Validação de Senha e Desbloqueio Seguro dos Botões
     if (hasPassword) {
       const btnUnlock = document.getElementById('btn-unlock');
       const inputPassword = document.getElementById('input-password');
       const pwdError = document.getElementById('password-error');
       const pwdScreen = document.getElementById('password-screen');
       const contentScreen = document.getElementById('content-screen');
+      const btnDlAll = document.getElementById('btn-download-all');
+      const btnDlAllText = document.getElementById('btn-download-all-text');
 
       async function verifyPassword() {
         const pwd = inputPassword.value;
@@ -510,7 +515,28 @@ function getPortalHtml(tunnel) {
           if (data && data.valid) {
             pwdScreen.style.display = 'none';
             contentScreen.style.display = 'flex';
+
+            // Habilita com segurança o botão Baixar Todos
+            if (btnDlAll) {
+              btnDlAll.removeAttribute('disabled');
+              btnDlAll.style.opacity = '1';
+              btnDlAll.style.cursor = 'pointer';
+              btnDlAll.style.pointerEvents = 'auto';
+              btnDlAll.href = btnDlAll.getAttribute('data-href') || '/download-all';
+              if (btnDlAllText) btnDlAllText.textContent = '⬇ Baixar Todos os Arquivos (.ZIP)';
+            }
+
+            // Habilita com segurança os botões de download individuais
+            document.querySelectorAll('.btn-download-file').forEach(btn => {
+              btn.removeAttribute('disabled');
+              btn.style.opacity = '1';
+              btn.style.cursor = 'pointer';
+              btn.style.pointerEvents = 'auto';
+              btn.href = btn.getAttribute('data-href') || '#';
+              btn.textContent = '⬇ Baixar';
+            });
           } else {
+            pwdError.textContent = 'Senha incorreta. Tente novamente.';
             pwdError.style.display = 'block';
           }
         } catch (e) {
@@ -620,27 +646,179 @@ function guessMimeType(name) {
 let activeFilePickerPromise = null;
 
 /**
- * Abre o seletor nativo de arquivos do sistema operacional via zenity
+ * Escaneia recursivamente um diretório para listar todos os seus arquivos,
+ * preservando caminhos relativos e calculando tamanho total.
+ */
+function scanDirectoryRecursive(dirPath, maxFiles = 20000) {
+  const results = [];
+  let totalSize = 0;
+  const targetDir = path.resolve(dirPath);
+  if (!fs.existsSync(targetDir)) {
+    return { ok: false, error: 'Diretório não encontrado.' };
+  }
+  const statRoot = fs.statSync(targetDir);
+  if (!statRoot.isDirectory()) {
+    return { ok: false, error: 'O caminho informado não é um diretório.' };
+  }
+
+  const baseName = path.basename(targetDir);
+
+  function walk(currentDir) {
+    if (results.length >= maxFiles) return;
+    try {
+      const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith('.')) continue; // Oculta ocultos
+        const fullPath = path.join(currentDir, entry.name);
+        try {
+          if (entry.isDirectory()) {
+            walk(fullPath);
+          } else if (entry.isFile()) {
+            const stat = fs.statSync(fullPath);
+            const relPath = path.relative(targetDir, fullPath);
+            totalSize += stat.size;
+            results.push({
+              fileId: `f-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+              name: path.join(baseName, relPath),
+              relativePath: relPath,
+              diskPath: fullPath,
+              size: stat.size,
+              type: guessMimeType(entry.name),
+              mtime: stat.mtimeMs
+            });
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  walk(targetDir);
+
+  return {
+    ok: true,
+    isDirectory: true,
+    name: baseName,
+    diskPath: targetDir,
+    fileCount: results.length,
+    totalSize,
+    files: results
+  };
+}
+
+/**
+ * Compacta arquivos e pastas em .zip, .rar ou .7z com nível configurável.
+ */
+function compressPack({ items, format = 'zip', level = 5, outputName = '' }) {
+  return new Promise((resolve, reject) => {
+    format = (format || 'zip').toLowerCase();
+    if (!['zip', 'rar', '7z'].includes(format)) {
+      format = 'zip';
+    }
+
+    const numLevel = Number(level);
+    const safeLevel = Number.isNaN(numLevel) ? 5 : Math.max(0, Math.min(9, numLevel));
+
+    const archivesDir = path.join(TEMP_BASE_DIR, 'archives');
+    if (!fs.existsSync(archivesDir)) {
+      fs.mkdirSync(archivesDir, { recursive: true });
+    }
+
+    const cleanBaseName = (outputName || `Pack_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_${Date.now().toString(36).slice(-4)}`)
+      .replace(/[^a-zA-Z0-9._-]/g, '_');
+    const finalFileName = cleanBaseName.endsWith(`.${format}`) ? cleanBaseName : `${cleanBaseName}.${format}`;
+    const outputPath = path.join(archivesDir, `${Date.now()}_${finalFileName}`);
+
+    // Coleta caminhos reais no disco
+    const inputPaths = [];
+    for (const item of (items || [])) {
+      if (item && item.diskPath && fs.existsSync(item.diskPath)) {
+        inputPaths.push(item.diskPath);
+      }
+    }
+
+    if (inputPaths.length === 0) {
+      return reject(new Error('Nenhum arquivo ou pasta válido no disco para compactar.'));
+    }
+
+    let bin = '';
+    let args = [];
+
+    if (format === '7z') {
+      bin = BIN_7ZZ;
+      args = ['a', '-t7z', `-mx=${safeLevel}`, outputPath, ...inputPaths];
+    } else if (format === 'zip') {
+      bin = BIN_7ZZ;
+      args = ['a', '-tzip', `-mx=${safeLevel}`, outputPath, ...inputPaths];
+    } else if (format === 'rar') {
+      bin = BIN_RAR;
+      const rarLevels = { 0: 0, 1: 1, 3: 2, 5: 3, 7: 4, 9: 5 };
+      const rarLvl = rarLevels[safeLevel] !== undefined ? rarLevels[safeLevel] : 3;
+      args = ['a', `-m${rarLvl}`, '-r', outputPath, ...inputPaths];
+    }
+
+    console.log(`[PulseShare Daemon] Compactando pack para ${format.toUpperCase()} (Nível ${safeLevel}): ${outputPath}`);
+    const proc = spawn(bin, args);
+    let stderr = '';
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+    proc.on('close', (code) => {
+      if (code !== 0 || !fs.existsSync(outputPath)) {
+        return reject(new Error(`Falha ao compactar (${format}): ${stderr || 'código de saída ' + code}`));
+      }
+
+      const stat = fs.statSync(outputPath);
+      const mimeMap = {
+        zip: 'application/zip',
+        rar: 'application/vnd.rar',
+        '7z': 'application/x-7z-compressed'
+      };
+
+      resolve({
+        ok: true,
+        fileName: finalFileName,
+        name: finalFileName,
+        diskPath: outputPath,
+        size: stat.size,
+        type: mimeMap[format] || 'application/octet-stream',
+        format,
+        level: safeLevel,
+        itemCount: inputPaths.length
+      });
+    });
+
+    proc.on('error', (err) => {
+      reject(new Error(`Erro ao executar ferramenta de compactação ${bin}: ${err.message}`));
+    });
+  });
+}
+
+/**
+ * Abre o seletor nativo de arquivos ou pastas do sistema operacional via zenity
  * sem depender do DOM volátil do popup do Chrome.
  */
-function pickFilesWithNativeDialog() {
+function pickFilesWithNativeDialog(pickType = 'files') {
   if (activeFilePickerPromise) {
     return activeFilePickerPromise;
   }
 
   activeFilePickerPromise = new Promise((resolve) => {
-    const proc = spawn(
-      'zenity',
-      [
-        '--file-selection',
-        '--multiple',
-        '--separator=\n',
-        '--title=PulseShare — Selecione os arquivos para compartilhar'
-      ],
-      {
-        env: { ...process.env }
-      }
-    );
+    const isDir = pickType === 'directory';
+    const zenityArgs = isDir
+      ? [
+          '--file-selection',
+          '--directory',
+          '--title=PulseShare — Selecione a pasta para compartilhar'
+        ]
+      : [
+          '--file-selection',
+          '--multiple',
+          '--separator=\n',
+          '--title=PulseShare — Selecione os arquivos para compartilhar'
+        ];
+
+    const proc = spawn('zenity', zenityArgs, {
+      env: { ...process.env }
+    });
 
     let stdout = '';
     proc.stdout.on('data', (chunk) => {
@@ -651,6 +829,30 @@ function pickFilesWithNativeDialog() {
       activeFilePickerPromise = null;
       if (code !== 0 || !stdout.trim()) {
         return resolve({ ok: true, cancelled: true, files: [] });
+      }
+
+      if (isDir) {
+        const dirPath = stdout.trim();
+        const scan = scanDirectoryRecursive(dirPath);
+        if (scan.ok) {
+          const folderObj = {
+            fileId: `folder-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+            name: scan.name,
+            diskPath: scan.diskPath,
+            size: scan.totalSize,
+            fileCount: scan.fileCount,
+            isDirectory: true,
+            files: scan.files
+          };
+          return resolve({
+            ok: true,
+            cancelled: false,
+            isDirectory: true,
+            folder: folderObj,
+            files: [folderObj]
+          });
+        }
+        return resolve({ ok: false, error: scan.error || 'Erro ao escanear pasta.', files: [] });
       }
 
       const paths = stdout
@@ -672,10 +874,23 @@ function pickFilesWithNativeDialog() {
                 type: guessMimeType(name),
                 diskPath: filePath
               });
+            } else if (stat.isDirectory()) {
+              const scan = scanDirectoryRecursive(filePath);
+              if (scan.ok) {
+                files.push({
+                  fileId: `folder-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+                  name: scan.name,
+                  diskPath: scan.diskPath,
+                  size: scan.totalSize,
+                  fileCount: scan.fileCount,
+                  isDirectory: true,
+                  files: scan.files
+                });
+              }
             }
           }
         } catch (err) {
-          console.error('[PulseShare Daemon] Erro ao ler arquivo selecionado:', filePath, err);
+          console.error('[PulseShare Daemon] Erro ao ler item selecionado:', filePath, err);
         }
       }
 
@@ -823,7 +1038,39 @@ function startEphemeralServer(tunnel) {
             'Content-Disposition': `attachment; filename="${encodeURIComponent(zipFileName)}"`,
             'Content-Length': zipBuffer.length
           });
-          res.end(zipBuffer);
+
+          let offset = 0;
+          const CHUNK_SIZE = 64 * 1024;
+          const interval = setInterval(() => {
+            if (offset >= zipBuffer.length) {
+              clearInterval(interval);
+              res.end();
+              tunnel.completedPacks = (tunnel.completedPacks || 0) + 1;
+              (tunnel.files || []).forEach((f) => {
+                f.bytesSent = f.size;
+                f.progress = 100;
+                f.status = 'COMPLETED';
+              });
+              console.log(
+                `[PulseShare] Download ZIP concluído para "${tunnel.packName}" (${tunnel.completedPacks}/${tunnel.maxDownloads || '∞'})`
+              );
+              if (tunnel.maxDownloads > 0 && tunnel.completedPacks >= tunnel.maxDownloads) {
+                console.log(`[PulseShare] Limite de ${tunnel.maxDownloads} downloads atingido. Encerrando túnel em 1.5s...`);
+                setTimeout(() => destroyTunnel(tunnel.shareId), 1500);
+              }
+              return;
+            }
+            const chunk = zipBuffer.subarray(offset, offset + CHUNK_SIZE);
+            offset += chunk.length;
+            tunnel.totalBytesSent = (tunnel.totalBytesSent || 0) + chunk.length;
+            const ratio = Math.min(1, offset / zipBuffer.length);
+            (tunnel.files || []).forEach((f) => {
+              f.bytesSent = Math.round(f.size * ratio);
+              f.progress = Math.min(100, Math.round(ratio * 100));
+              f.status = ratio >= 1 ? 'COMPLETED' : 'DOWNLOADING';
+            });
+            res.write(chunk);
+          }, 8);
         } catch (err) {
           console.error('[PulseShare] Erro ao gerar ZIP:', err);
           res.writeHead(500, { 'Content-Type': 'text/plain' });
@@ -846,17 +1093,19 @@ function startEphemeralServer(tunnel) {
 
         console.log(`[PulseShare] Baixando arquivo ${index}: "${file.name}" (${file.size} bytes)`);
         tunnel.downloads = (tunnel.downloads || 0) + 1;
+        file.status = 'DOWNLOADING';
 
         const stat = fs.statSync(file.diskPath);
         const range = req.headers.range;
 
+        let stream;
         if (range) {
           // Suporte a HTTP Range para retomar download e progresso nativo
           const parts = range.replace(/bytes=/, "").split("-");
           const start = parseInt(parts[0], 10);
           const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
           const chunksize = (end - start) + 1;
-          const stream = fs.createReadStream(file.diskPath, { start, end });
+          stream = fs.createReadStream(file.diskPath, { start, end });
 
           res.writeHead(206, {
             'Content-Range': `bytes ${start}-${end}/${stat.size}`,
@@ -865,7 +1114,6 @@ function startEphemeralServer(tunnel) {
             'Content-Type': file.type || 'application/octet-stream',
             'Content-Disposition': `attachment; filename="${encodeURIComponent(file.name)}"`
           });
-          stream.pipe(res);
         } else {
           res.writeHead(200, {
             'Content-Length': stat.size,
@@ -873,8 +1121,39 @@ function startEphemeralServer(tunnel) {
             'Content-Disposition': `attachment; filename="${encodeURIComponent(file.name)}"`,
             'Accept-Ranges': 'bytes'
           });
-          fs.createReadStream(file.diskPath).pipe(res);
+          stream = fs.createReadStream(file.diskPath);
         }
+
+        stream.on('data', (chunk) => {
+          file.bytesSent = (file.bytesSent || 0) + chunk.length;
+          file.progress = Math.min(100, Math.round((file.bytesSent / file.size) * 100));
+          file.status = file.progress >= 100 ? 'COMPLETED' : 'DOWNLOADING';
+          tunnel.totalBytesSent = (tunnel.totalBytesSent || 0) + chunk.length;
+        });
+
+        stream.on('end', () => {
+          file.progress = 100;
+          file.status = 'COMPLETED';
+          if (!tunnel.downloadedIndices) tunnel.downloadedIndices = new Set();
+          tunnel.downloadedIndices.add(index);
+          console.log(
+            `[PulseShare] Arquivo "${file.name}" baixado completamente (${tunnel.downloadedIndices.size}/${tunnel.files.length} arquivos baixados).`
+          );
+
+          if (tunnel.downloadedIndices.size >= tunnel.files.length) {
+            tunnel.completedPacks = (tunnel.completedPacks || 0) + 1;
+            tunnel.downloadedIndices.clear();
+            console.log(
+              `[PulseShare] Todos os arquivos do pack foram baixados individualmente (${tunnel.completedPacks}/${tunnel.maxDownloads || '∞'})`
+            );
+            if (tunnel.maxDownloads > 0 && tunnel.completedPacks >= tunnel.maxDownloads) {
+              console.log(`[PulseShare] Limite de ${tunnel.maxDownloads} downloads atingido. Encerrando túnel em 1.5s...`);
+              setTimeout(() => destroyTunnel(tunnel.shareId), 1500);
+            }
+          }
+        });
+
+        stream.pipe(res);
         return;
       }
 
@@ -994,28 +1273,118 @@ const daemonServer = http.createServer((req, res) => {
       packName: t.packName,
       fileCount: t.files.length,
       totalSize: t.totalSize,
+      totalBytesSent: t.totalBytesSent || 0,
       tunnelUrl: t.tunnelUrl,
+      localPort: t.localPort,
       expiresAt: t.expiresAt,
+      maxDownloads: t.maxDownloads || 0,
+      completedPacks: t.completedPacks || 0,
       paused: Boolean(t.paused),
       downloads: t.downloads || 0,
-      createdAt: t.createdAt
+      createdAt: t.createdAt,
+      filesProgress: (t.files || []).map((f) => ({
+        index: f.index,
+        name: f.name,
+        size: f.size,
+        bytesSent: f.bytesSent || 0,
+        progress: typeof f.progress === 'number' ? f.progress : 0,
+        status: f.status || 'IDLE'
+      }))
     }));
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
-      version: '2.3.0',
+      version: '2.5.0',
       cloudflaredAvailable: fs.existsSync(CLOUDFLARED_BIN),
+      compressors: {
+        zip: true,
+        rar: fs.existsSync(BIN_RAR),
+        '7z': fs.existsSync(BIN_7ZZ)
+      },
       activeTunnels: tunnelsList
     }));
     return;
   }
 
-  // 0A. Seletor nativo de arquivos (via zenity no daemon, imune ao fechamento do popup do Chrome)
+  // 0A. Seletor nativo de arquivos ou pastas (via zenity no daemon)
   if (pathname === '/api/pick-files' && req.method === 'POST') {
-    pickFilesWithNativeDialog().then((result) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result));
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      let pickType = 'files';
+      try {
+        if (body.trim()) {
+          const parsed = JSON.parse(body);
+          if (parsed.pickType) pickType = parsed.pickType;
+        }
+      } catch {}
+      pickFilesWithNativeDialog(pickType).then((result) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      });
+    });
+    return;
+  }
+
+  // 0A-2. Escanear diretório inteiro recursivamente
+  if (pathname === '/api/fs/scan-dir' && (req.method === 'GET' || req.method === 'POST')) {
+    const handleScan = (dirPath) => {
+      if (!dirPath) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Parâmetro de diretório obrigatório.' }));
+        return;
+      }
+      const scan = scanDirectoryRecursive(dirPath);
+      res.writeHead(scan.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(scan));
+    };
+
+    if (req.method === 'GET') {
+      const dirPath = urlObj.searchParams.get('path');
+      handleScan(dirPath);
+    } else {
+      let body = '';
+      req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          handleScan(data.path);
+        } catch {
+          handleScan(null);
+        }
+      });
+    }
+    return;
+  }
+
+  // 0A-3. Compactação de pack em .zip, .rar ou .7z com nível selecionável
+  if (pathname === '/api/pack/compress' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body);
+        if (!Array.isArray(data.items) || data.items.length === 0) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Lista de arquivos/pastas vazia para compactar.' }));
+          return;
+        }
+
+        const result = await compressPack({
+          items: data.items,
+          format: data.format || 'zip',
+          level: data.level !== undefined ? data.level : 5,
+          outputName: data.outputName || ''
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        console.error('[PulseShare Daemon] Erro na rota /api/pack/compress:', err);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
     });
     return;
   }
@@ -1122,6 +1491,7 @@ const daemonServer = http.createServer((req, res) => {
 
         const expiresInMinutes = Number(data.expiresInMinutes || 30);
         const expiresAt = expiresInMinutes > 0 ? Date.now() + expiresInMinutes * 60 * 1000 : null;
+        const maxDownloads = Number(data.maxDownloads || 0);
 
         const tunnelRecord = {
           shareId,
@@ -1129,6 +1499,10 @@ const daemonServer = http.createServer((req, res) => {
           password: (data.password || '').trim(),
           expiresInMinutes,
           expiresAt,
+          maxDownloads,
+          completedPacks: 0,
+          downloadedIndices: new Set(),
+          totalBytesSent: 0,
           paused: false,
           downloads: 0,
           createdAt: Date.now(),
