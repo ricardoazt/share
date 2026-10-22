@@ -196,6 +196,57 @@
     .files-list::-webkit-scrollbar-track { background: transparent; }
     .files-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
 
+    .overall-prog {
+      background: #090d16;
+      border: 1px solid rgba(249, 115, 22, 0.4);
+      border-radius: 12px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+    .overall-prog-header, .overall-prog-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      font-family: monospace;
+      color: #94a3b8;
+    }
+    .overall-pct {
+      color: #fb923c;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .folder-node {
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 8px;
+    }
+    .folder-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 10px;
+      cursor: pointer;
+      user-select: none;
+      background: rgba(30, 41, 59, 0.4);
+      transition: background 0.15s ease;
+    }
+    .folder-header:hover {
+      background: rgba(30, 41, 59, 0.8);
+    }
+    .folder-children {
+      padding: 6px 6px 6px 14px;
+      border-top: 1px solid rgba(30, 41, 59, 0.6);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
     .file-item {
       background: #090d16;
       border: 1px solid #1e293b;
@@ -456,6 +507,21 @@
           </svg>
           <span id="btn-download-all-text">⬇ Baixar Todos (.ZIP)</span>
         </button>
+      </div>
+
+      <!-- Barra de Progresso Geral de Todos os Arquivos -->
+      <div id="overall-prog-section" class="overall-prog hidden">
+        <div class="overall-prog-header">
+          <span id="overall-st">Progresso Geral</span>
+          <span id="overall-pct" class="overall-pct">0%</span>
+        </div>
+        <div class="prog-bar-bg">
+          <div id="overall-bar" class="prog-bar-fill"></div>
+        </div>
+        <div class="overall-prog-footer">
+          <span id="overall-bytes">0 B / 0 B</span>
+          <span id="overall-spd">0 B/s</span>
+        </div>
       </div>
 
       <!-- Lista de Arquivos com Opção de Baixar Individualmente -->

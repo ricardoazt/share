@@ -144,8 +144,8 @@ O portal de download do destinatário (`index.html`) é servido diretamente pelo
 - O gerenciador de transferências na extensão preenche toda a altura inferior da janela com rolagem suave para acompanhar múltiplas transferências ativas e histórico.
 - **Botão de Expandir Janela** (ícone ao lado da engrenagem): abre o gerenciador em uma aba completa do navegador com visão ampla em tela cheia para monitorar grandes volumes de arquivos.
 - Controles em tempo real nos cards de transferência:
-  - **Copiar Mensagem**: copia o resumo formatado com link, arquivos e senha.
-  - **Copiar Link**: copia apenas o link direto.
+  - **Copiar Link**: copia apenas o link direto (URL).
+  - **Texto Completo**: copia a mensagem formatada completa com link, arquivos e senha.
   - **Abrir no Navegador (↗)**: abre o portal web diretamente no seu próprio navegador para pré-visualização.
   - **Pausar / Retomar**: congela ou retoma o envio do arquivo via canal de dados WebRTC.
   - **Encerrar / Cancelar (✕)**: fecha as conexões, cancela os downloads ativos e descarta os arquivos do cache.

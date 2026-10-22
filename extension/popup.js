@@ -203,6 +203,10 @@ const toggleAutoOpen = document.getElementById('toggle-auto-open');
 const toggleAutoAccept = document.getElementById('toggle-auto-accept');
 const settingPortalUrl = document.getElementById('setting-portal-url');
 const btnResetPortalUrl = document.getElementById('btn-reset-portal-url');
+const settingTurnUrl = document.getElementById('setting-turn-url');
+const settingTurnUsername = document.getElementById('setting-turn-username');
+const settingTurnCredential = document.getElementById('setting-turn-credential');
+const btnClearTurn = document.getElementById('btn-clear-turn');
 const daemonStatusBadge = document.getElementById('daemon-status-badge');
 
 const toggleMeshRelay = document.getElementById('toggle-mesh-relay');
@@ -273,6 +277,28 @@ const toastClose = document.getElementById('toast-close');
 const transfersView = document.getElementById('transfers-view');
 const transfersList = document.getElementById('transfers-list');
 const emptyState = document.getElementById('empty-state');
+
+// Componentes da Confirmação Manual de Transferências
+const homePendingBanner = document.getElementById('home-pending-banner');
+const homePendingTitle = document.getElementById('home-pending-title');
+const homePendingSubtitle = document.getElementById('home-pending-subtitle');
+const btnHomeReviewPending = document.getElementById('btn-home-review-pending');
+
+const pendingApprovalPanel = document.getElementById('pending-approval-panel');
+const checkSelectAllPending = document.getElementById('check-select-all-pending');
+const pendingSelectedBadge = document.getElementById('pending-selected-badge');
+const btnRejectSelected = document.getElementById('btn-reject-selected');
+const btnAcceptSelected = document.getElementById('btn-accept-selected');
+const pendingPanelInfo = document.getElementById('pending-panel-info');
+const pendingPanelSize = document.getElementById('pending-panel-size');
+const pendingTreeContainer = document.getElementById('pending-tree-container');
+
+// Estado das seleções e pastas expandidas na confirmação manual
+const selectedPendingIds = new Set();
+const seenPendingIds = new Set();
+const expandedFolders = new Set();
+const folderExpansionInitialized = new Set();
+const currentPendingFolderMap = new Map();
 
 const usersMeshView = document.getElementById('users-mesh-view');
 const usersSearchInput = document.getElementById('users-search-input');
@@ -391,8 +417,12 @@ let currentState = {
 
 let stagedTunnelFiles = []; // Array de { fileId, name, size, type, fileObj }
 let currentModalMode = 'p2p'; // 'p2p' | 'tunnel'
+let pendingModalClose = false; // true entre o clique em Fechar/Cancelar e a confirmação do background
 let currentTransfersTab = 'active'; // 'active' | 'history'
 const expandedTransferIds = new Set();
+const expandedTransferFiles = new Set();
+const modalTreeExpandedFolders = new Set();
+const cardTreeExpandedFolders = new Set();
 
 function showToast(msg, type = 'info') {
   if (!toastAlert || !toastMessage) return;
@@ -913,11 +943,400 @@ function renderReceiveButton() {
     receiveBadge.classList.remove('hidden');
     receiveBadge.textContent = `${pendingIncoming.length} Pendente${pendingIncoming.length > 1 ? 's' : ''}`;
     receiveTitle.textContent = 'Aceitar Arquivo';
-    receiveSubtitle.textContent = pendingIncoming[0].fileName || 'Clique para baixar';
+    receiveSubtitle.textContent = `${pendingIncoming.length} aguardando aceite`;
+
+    // Atualiza banner na tela inicial
+    if (homePendingBanner) {
+      homePendingBanner.classList.remove('hidden');
+      if (homePendingTitle) {
+        homePendingTitle.textContent = pendingIncoming.length === 1
+          ? `1 transferência pendente de ${pendingIncoming[0].peerTag || 'par'}`
+          : `${pendingIncoming.length} transferências pendentes de ${pendingIncoming[0].peerTag || 'par'}`;
+      }
+      if (homePendingSubtitle) {
+        const totalPendingBytes = pendingIncoming.reduce((acc, t) => acc + (t.fileSize || 0), 0);
+        homePendingSubtitle.textContent = `${formatBytes(totalPendingBytes)} • Clique para selecionar e aceitar em massa`;
+      }
+    }
   } else {
     receiveBadge.classList.add('hidden');
     receiveTitle.textContent = 'Receber';
     receiveSubtitle.textContent = currentState.autoAccept ? 'Escuta Automática: ON' : 'Confirmação Manual';
+
+    if (homePendingBanner) {
+      homePendingBanner.classList.add('hidden');
+    }
+  }
+}
+
+// ============================================================================
+// Confirmação Manual & Árvore Expansível de Diretórios Pendentes
+// ============================================================================
+
+function getFileExtensionIcon(fileName = '') {
+  const ext = (fileName || '').split('.').pop().toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico'].includes(ext)) return '🖼️';
+  if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v'].includes(ext)) return '🎬';
+  if (['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac'].includes(ext)) return '🎵';
+  if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2'].includes(ext)) return '📦';
+  if (['pdf'].includes(ext)) return '📕';
+  if (['doc', 'docx', 'txt', 'md', 'rtf'].includes(ext)) return '📄';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return '📊';
+  if (['ppt', 'pptx'].includes(ext)) return '📈';
+  if (['js', 'ts', 'html', 'css', 'json', 'py', 'dart', 'go', 'rs', 'c', 'cpp', 'java'].includes(ext)) return '💻';
+  return '📄';
+}
+
+function getMasterSelectionState(allPendingTransfers) {
+  if (!allPendingTransfers || allPendingTransfers.length === 0) {
+    return { checked: false, indeterminate: false };
+  }
+  let selectedCount = 0;
+  for (const t of allPendingTransfers) {
+    if (selectedPendingIds.has(t.id)) selectedCount++;
+  }
+  if (selectedCount === allPendingTransfers.length) {
+    return { checked: true, indeterminate: false };
+  }
+  if (selectedCount === 0) {
+    return { checked: false, indeterminate: false };
+  }
+  return { checked: false, indeterminate: true };
+}
+
+function getFolderSelectionState(folderNode) {
+  if (!folderNode.transferIds || folderNode.transferIds.size === 0) {
+    return { checked: false, indeterminate: false };
+  }
+  let selectedCount = 0;
+  for (const tid of folderNode.transferIds) {
+    if (selectedPendingIds.has(tid)) selectedCount++;
+  }
+  if (selectedCount === folderNode.transferIds.size) {
+    return { checked: true, indeterminate: false };
+  }
+  if (selectedCount === 0) {
+    return { checked: false, indeterminate: false };
+  }
+  return { checked: false, indeterminate: true };
+}
+
+function buildPendingTree(pendingTransfers) {
+  const root = {
+    type: 'root',
+    folders: new Map(),
+    files: []
+  };
+
+  for (const t of pendingTransfers) {
+    const rawPath = (t.fileName || 'arquivo').replace(/^\/+/, '');
+    const parts = rawPath.split('/').filter(Boolean);
+
+    if (parts.length <= 1) {
+      root.files.push({
+        type: 'file',
+        name: parts[0] || t.fileName,
+        fullPath: rawPath,
+        transfer: t
+      });
+    } else {
+      let currentFolder = root;
+      let accumulatedPath = '';
+
+      for (let i = 0; i < parts.length - 1; i++) {
+        const folderName = parts[i];
+        accumulatedPath = accumulatedPath ? `${accumulatedPath}/${folderName}` : folderName;
+
+        if (!currentFolder.folders.has(folderName)) {
+          currentFolder.folders.set(folderName, {
+            type: 'folder',
+            name: folderName,
+            fullPath: accumulatedPath,
+            folders: new Map(),
+            files: [],
+            transferIds: new Set(),
+            totalSize: 0
+          });
+        }
+        const node = currentFolder.folders.get(folderName);
+        node.transferIds.add(t.id);
+        node.totalSize += (t.fileSize || 0);
+        currentFolder = node;
+      }
+
+      const fileName = parts[parts.length - 1];
+      currentFolder.files.push({
+        type: 'file',
+        name: fileName,
+        fullPath: rawPath,
+        transfer: t
+      });
+    }
+  }
+
+  return root;
+}
+
+function renderFolderTree(folderNode, parentContainer, depth = 0) {
+  const sortedFolders = Array.from(folderNode.folders.values()).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+  const sortedFiles = [...folderNode.files].sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+
+  for (const subfolder of sortedFolders) {
+    currentPendingFolderMap.set(subfolder.fullPath, subfolder);
+
+    if (!folderExpansionInitialized.has(subfolder.fullPath)) {
+      folderExpansionInitialized.add(subfolder.fullPath);
+      expandedFolders.add(subfolder.fullPath);
+    }
+
+    const isExpanded = expandedFolders.has(subfolder.fullPath);
+    const selState = getFolderSelectionState(subfolder);
+
+    const folderEl = document.createElement('div');
+    folderEl.className = 'folder-node rounded-lg bg-slate-950/70 border border-slate-800/80 overflow-hidden text-left mb-1';
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'folder-header flex items-center justify-between px-2 py-1.5 hover:bg-slate-800/40 transition-colors cursor-pointer select-none';
+    headerEl.setAttribute('data-folder-path', subfolder.fullPath);
+
+    headerEl.innerHTML = `
+      <div class="flex items-center gap-1.5 min-w-0 flex-1">
+        <button
+          type="button"
+          class="btn-toggle-folder p-0.5 text-slate-400 hover:text-white transition-transform cursor-pointer shrink-0"
+          data-folder-path="${escapeHtml(subfolder.fullPath)}"
+          title="${isExpanded ? 'Recolher pasta' : 'Expandir pasta'}"
+        >
+          <svg class="w-3.5 h-3.5 transition-transform duration-150 ${isExpanded ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+          </svg>
+        </button>
+        <input
+          type="checkbox"
+          class="folder-checkbox w-3.5 h-3.5 rounded bg-slate-800 border-slate-700 text-sky-500 focus:ring-sky-500/50 cursor-pointer shrink-0"
+          data-folder-path="${escapeHtml(subfolder.fullPath)}"
+          title="Selecionar todos os arquivos desta pasta"
+        />
+        <span class="text-xs shrink-0">${isExpanded ? '📂' : '📁'}</span>
+        <span class="text-[11px] font-bold text-slate-200 truncate" title="${escapeHtml(subfolder.fullPath)}">
+          ${escapeHtml(subfolder.name)}/
+        </span>
+        <span class="text-[9px] font-mono text-slate-500 shrink-0">
+          (${subfolder.transferIds.size} • ${formatBytes(subfolder.totalSize)})
+        </span>
+      </div>
+      <div class="flex items-center gap-1 shrink-0 ml-1">
+        <button
+          type="button"
+          class="btn-reject-folder p-1 rounded hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 text-xs transition-colors cursor-pointer"
+          title="Recusar pasta inteira (${subfolder.transferIds.size} arquivos)"
+          data-folder-path="${escapeHtml(subfolder.fullPath)}"
+        >
+          ✕
+        </button>
+      </div>
+    `;
+
+    const cb = headerEl.querySelector('.folder-checkbox');
+    if (cb) {
+      cb.checked = selState.checked;
+      cb.indeterminate = selState.indeterminate;
+    }
+
+    const childrenEl = document.createElement('div');
+    childrenEl.className = `folder-children ${isExpanded ? '' : 'hidden'} pl-4 pr-1 py-1 space-y-1 border-t border-slate-800/50 bg-slate-950/40`;
+
+    renderFolderTree(subfolder, childrenEl, depth + 1);
+
+    folderEl.appendChild(headerEl);
+    folderEl.appendChild(childrenEl);
+    parentContainer.appendChild(folderEl);
+  }
+
+  for (const fileItem of sortedFiles) {
+    const t = fileItem.transfer;
+    const isSelected = selectedPendingIds.has(t.id);
+    const fileEl = document.createElement('div');
+    fileEl.className = 'file-node flex items-center justify-between px-2 py-1 rounded bg-slate-900/60 hover:bg-slate-800/50 border border-slate-800/50 transition-colors text-left';
+    fileEl.innerHTML = `
+      <div class="flex items-center gap-1.5 min-w-0 flex-1">
+        <input
+          type="checkbox"
+          class="file-checkbox w-3.5 h-3.5 rounded bg-slate-800 border-slate-700 text-sky-500 focus:ring-sky-500/50 cursor-pointer shrink-0"
+          data-transfer-id="${escapeHtml(t.id)}"
+          ${isSelected ? 'checked' : ''}
+          title="Selecionar para aceitar ou recusar"
+        />
+        <span class="text-xs shrink-0">${getFileExtensionIcon(fileItem.name)}</span>
+        <span class="text-[11px] font-medium text-slate-300 truncate" title="${escapeHtml(fileItem.fullPath)}">
+          ${escapeHtml(fileItem.name)}
+        </span>
+        <span class="text-[9px] font-mono text-slate-500 shrink-0">
+          (${formatBytes(t.fileSize || 0)})
+        </span>
+      </div>
+      <div class="flex items-center gap-1 shrink-0 ml-1">
+        <button
+          type="button"
+          data-action="accept-single-pending"
+          data-transfer-id="${escapeHtml(t.id)}"
+          title="Aceitar este arquivo"
+          class="px-2 py-0.5 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-[9px] transition-colors cursor-pointer"
+        >
+          Aceitar
+        </button>
+        <button
+          type="button"
+          data-action="reject-single-pending"
+          data-transfer-id="${escapeHtml(t.id)}"
+          title="Recusar este arquivo"
+          class="p-1 rounded bg-slate-800 hover:bg-rose-500/30 text-rose-300 text-[10px] transition-colors cursor-pointer"
+        >
+          ✕
+        </button>
+      </div>
+    `;
+    parentContainer.appendChild(fileEl);
+  }
+}
+
+function renderPendingApprovalPanel(pendingTransfers) {
+  if (!pendingApprovalPanel) return;
+
+  const list = pendingTransfers || Object.values(currentState.transfers || []).filter(
+    (t) => t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT'
+  );
+
+  if (list.length === 0) {
+    pendingApprovalPanel.classList.add('hidden');
+    selectedPendingIds.clear();
+    seenPendingIds.clear();
+    folderExpansionInitialized.clear();
+    currentPendingFolderMap.clear();
+    return;
+  }
+
+  pendingApprovalPanel.classList.remove('hidden');
+
+  // Prune IDs que não estão mais na lista de pendentes
+  const currentPendingIdSet = new Set(list.map((t) => t.id));
+  for (const id of selectedPendingIds) {
+    if (!currentPendingIdSet.has(id)) selectedPendingIds.delete(id);
+  }
+  for (const id of seenPendingIds) {
+    if (!currentPendingIdSet.has(id)) seenPendingIds.delete(id);
+  }
+
+  // Novos arquivos que chegam entram pré-selecionados por conveniência
+  for (const t of list) {
+    if (!seenPendingIds.has(t.id)) {
+      seenPendingIds.add(t.id);
+      selectedPendingIds.add(t.id);
+    }
+  }
+
+  // Atualiza Sub-barra informativa
+  const totalPendingBytes = list.reduce((acc, t) => acc + (t.fileSize || 0), 0);
+  const senderTags = Array.from(new Set(list.map((t) => t.peerTag).filter(Boolean)));
+  const senderStr = senderTags.length > 0 ? `De ${senderTags.join(', ')}` : 'De usuário remoto';
+  if (pendingPanelInfo) {
+    pendingPanelInfo.textContent = `${senderStr} • ${list.length} item(ns)`;
+    pendingPanelInfo.title = `${senderStr} • ${list.length} item(ns) aguardando confirmação`;
+  }
+  if (pendingPanelSize) {
+    pendingPanelSize.textContent = formatBytes(totalPendingBytes);
+  }
+
+  // Atualiza Checkbox Mestre (Topo)
+  const masterState = getMasterSelectionState(list);
+  if (checkSelectAllPending) {
+    checkSelectAllPending.checked = masterState.checked;
+    checkSelectAllPending.indeterminate = masterState.indeterminate;
+  }
+  if (pendingSelectedBadge) {
+    pendingSelectedBadge.textContent = `${selectedPendingIds.size}/${list.length}`;
+  }
+
+  // Atualiza Botões de Ação em Massa
+  const hasSelection = selectedPendingIds.size > 0;
+  if (btnAcceptSelected) {
+    btnAcceptSelected.disabled = !hasSelection;
+    const span = btnAcceptSelected.querySelector('span');
+    if (span) {
+      span.textContent = hasSelection
+        ? `Aceitar em massa (${selectedPendingIds.size})`
+        : 'Aceitar em massa';
+    }
+  }
+  if (btnRejectSelected) {
+    btnRejectSelected.disabled = !hasSelection;
+    const span = btnRejectSelected.querySelector('span');
+    if (span) {
+      span.textContent = hasSelection
+        ? `Recusar (${selectedPendingIds.size})`
+        : 'Recusar';
+    }
+  }
+
+  if (!pendingTreeContainer) return;
+  pendingTreeContainer.innerHTML = '';
+  currentPendingFolderMap.clear();
+
+  const treeRoot = buildPendingTree(list);
+
+  // Renderiza subpastas recursivamente
+  renderFolderTree(treeRoot, pendingTreeContainer, 0);
+
+  // Renderiza arquivos raiz (fora de qualquer pasta)
+  const sortedRootFiles = [...treeRoot.files].sort((a, b) => a.name.localeCompare(b.name));
+  for (const fileItem of sortedRootFiles) {
+    const t = fileItem.transfer;
+    const isSelected = selectedPendingIds.has(t.id);
+    const fileEl = document.createElement('div');
+    fileEl.className = 'file-node flex items-center justify-between px-2 py-1 rounded bg-slate-900/60 hover:bg-slate-800/50 border border-slate-800/50 transition-colors text-left';
+    fileEl.innerHTML = `
+      <div class="flex items-center gap-1.5 min-w-0 flex-1">
+        <input
+          type="checkbox"
+          class="file-checkbox w-3.5 h-3.5 rounded bg-slate-800 border-slate-700 text-sky-500 focus:ring-sky-500/50 cursor-pointer shrink-0"
+          data-transfer-id="${escapeHtml(t.id)}"
+          ${isSelected ? 'checked' : ''}
+          title="Selecionar para aceitar ou recusar"
+        />
+        <span class="text-xs shrink-0">${getFileExtensionIcon(fileItem.name)}</span>
+        <span class="text-[11px] font-medium text-slate-300 truncate" title="${escapeHtml(fileItem.fullPath)}">
+          ${escapeHtml(fileItem.name)}
+        </span>
+        <span class="text-[9px] font-mono text-slate-500 shrink-0">
+          (${formatBytes(t.fileSize || 0)})
+        </span>
+      </div>
+      <div class="flex items-center gap-1 shrink-0 ml-1">
+        <button
+          type="button"
+          data-action="accept-single-pending"
+          data-transfer-id="${escapeHtml(t.id)}"
+          title="Aceitar este arquivo"
+          class="px-2 py-0.5 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-[9px] transition-colors cursor-pointer"
+        >
+          Aceitar
+        </button>
+        <button
+          type="button"
+          data-action="reject-single-pending"
+          data-transfer-id="${escapeHtml(t.id)}"
+          title="Recusar este arquivo"
+          class="p-1 rounded bg-slate-800 hover:bg-rose-500/30 text-rose-300 text-[10px] transition-colors cursor-pointer"
+        >
+          ✕
+        </button>
+      </div>
+    `;
+    pendingTreeContainer.appendChild(fileEl);
   }
 }
 
@@ -931,17 +1350,191 @@ function isTransferHistory(t, now = Date.now()) {
   return false;
 }
 
+function buildDirectoryTree(files) {
+  const root = {
+    name: '',
+    fullPath: '',
+    folders: new Map(),
+    files: [],
+    totalSize: 0,
+    totalTransferred: 0,
+    fileCount: 0
+  };
+
+  if (!Array.isArray(files)) return root;
+
+  for (let idx = 0; idx < files.length; idx++) {
+    const f = files[idx];
+    if (!f) continue;
+    const rawPath = (f.name || f.relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const parts = rawPath.split('/').filter(Boolean);
+    const size = f.size || f.fileSize || 0;
+    const transferred = typeof f.transferredBytes === 'number'
+      ? f.transferredBytes
+      : (typeof f.progress === 'number' ? Math.round((size * f.progress) / 100) : 0);
+
+    root.totalSize += size;
+    root.totalTransferred += transferred;
+    root.fileCount++;
+
+    if (parts.length <= 1) {
+      root.files.push({
+        ...f,
+        index: idx,
+        basename: parts[0] || f.name || 'arquivo',
+        fullPath: rawPath
+      });
+      continue;
+    }
+
+    let curr = root;
+    let accumulatedPath = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      accumulatedPath = accumulatedPath ? `${accumulatedPath}/${part}` : part;
+      if (!curr.folders.has(part)) {
+        curr.folders.set(part, {
+          name: part,
+          fullPath: accumulatedPath,
+          folders: new Map(),
+          files: [],
+          totalSize: 0,
+          totalTransferred: 0,
+          fileCount: 0
+        });
+      }
+      curr = curr.folders.get(part);
+      curr.totalSize += size;
+      curr.totalTransferred += transferred;
+      curr.fileCount++;
+    }
+
+    const basename = parts[parts.length - 1];
+    curr.files.push({
+      ...f,
+      index: idx,
+      basename,
+      fullPath: rawPath
+    });
+  }
+
+  return root;
+}
+
+function renderCardFilesTreeHtml(files, transferId) {
+  if (!Array.isArray(files) || files.length === 0) return '';
+  const tree = buildDirectoryTree(files);
+
+  function renderBranch(node, depth = 0) {
+    let html = '';
+
+    const sortedFolders = Array.from(node.folders.values()).sort((a, b) => a.name.localeCompare(b.name));
+    for (const folder of sortedFolders) {
+      const folderKey = `${transferId}:${folder.fullPath}`;
+      const isExpanded = !cardTreeExpandedFolders.has(folderKey + ':collapsed');
+      const folderPct = folder.totalSize > 0
+        ? Math.min(100, Math.round((folder.totalTransferred / folder.totalSize) * 100))
+        : 100;
+      const isComplete = folderPct >= 100;
+      const folderBarColor = isComplete ? 'bg-emerald-500' : 'bg-gradient-to-r from-orange-500 to-amber-500';
+
+      html += `
+        <div class="rounded-lg bg-slate-950/80 border border-slate-800/80 overflow-hidden mb-1 shadow-sm text-left">
+          <div
+            class="flex items-center justify-between px-2 py-1.5 bg-slate-900/60 hover:bg-slate-800/40 cursor-pointer select-none text-[10px]"
+            data-action="toggle-card-folder"
+            data-folder-key="${escapeHtml(folderKey)}"
+          >
+            <div class="flex items-center gap-1.5 min-w-0 flex-1">
+              <span class="text-slate-400 text-[9px] font-mono">${isExpanded ? '▼' : '▶'}</span>
+              <span>${isExpanded ? '📂' : '📁'}</span>
+              <span class="font-bold text-slate-200 truncate" title="${escapeHtml(folder.fullPath)}">${escapeHtml(folder.name)}/</span>
+              <span class="text-[9px] font-mono text-slate-400 shrink-0">(${folder.fileCount} arq • ${formatBytes(folder.totalSize)})</span>
+            </div>
+            <span class="text-[9px] font-mono font-bold ${isComplete ? 'text-emerald-400' : 'text-orange-400'} shrink-0 ml-1">
+              ${folderPct}%
+            </span>
+          </div>
+
+          <div class="w-full bg-slate-800 h-0.5 overflow-hidden">
+            <div class="${folderBarColor} h-0.5" style="width: ${folderPct}%"></div>
+          </div>
+
+          <div class="${isExpanded ? '' : 'hidden'} pl-3 pr-1 py-1 space-y-1 border-t border-slate-800/50 bg-slate-950/40">
+            ${renderBranch(folder, depth + 1)}
+          </div>
+        </div>
+      `;
+    }
+
+    const sortedFiles = [...node.files].sort((a, b) => (a.basename || a.name).localeCompare(b.basename || b.name));
+    for (const f of sortedFiles) {
+      const fSize = f.size || f.fileSize || 0;
+      const fTransferred = typeof f.transferredBytes === 'number'
+        ? f.transferredBytes
+        : (typeof f.progress === 'number' ? Math.round((fSize * f.progress) / 100) : 0);
+      const fPct = fSize > 0
+        ? Math.min(100, Math.round((fTransferred / fSize) * 100))
+        : (f.status === 'COMPLETED' ? 100 : 0);
+      const isComplete = fPct >= 100 || f.status === 'COMPLETED';
+      const fBarColor = isComplete ? 'bg-emerald-500' : 'bg-gradient-to-r from-orange-500 to-amber-500';
+      const fSpeed = f.speedBps && !isComplete ? ` • ${formatSpeed(f.speedBps)}` : '';
+      const fStatus = isComplete
+        ? '✓ Concluído'
+        : (f.status === 'TRANSFERRING' ? 'Transmitindo...' : (f.status === 'PAUSED' ? 'Pausado' : 'Pendente'));
+
+      html += `
+        <div class="px-2 py-1 rounded bg-slate-900/90 border border-slate-800/60 flex flex-col gap-0.5 text-[10px] text-left">
+          <div class="flex items-center justify-between gap-1.5">
+            <div class="flex items-center gap-1.5 min-w-0 flex-1">
+              <span class="text-xs shrink-0">${getFileExtensionIcon(f.name)}</span>
+              <span class="font-medium text-slate-200 truncate" title="${escapeHtml(f.fullPath || f.name)}">
+                ${escapeHtml(f.basename || f.name)}
+              </span>
+            </div>
+            <span class="font-mono text-[9px] font-bold ${isComplete ? 'text-emerald-400' : 'text-orange-400'} shrink-0">
+              ${fPct}%
+            </span>
+          </div>
+
+          <!-- Barra de Progresso Individual do Arquivo -->
+          <div class="w-full bg-slate-800 rounded-full h-1 overflow-hidden">
+            <div class="${fBarColor} h-1 transition-all duration-150" style="width: ${fPct}%"></div>
+          </div>
+
+          <div class="flex items-center justify-between text-[9px] font-mono text-slate-400">
+            <span class="${isComplete ? 'text-emerald-400/90' : 'text-slate-400'}">${fStatus}${fSpeed}</span>
+            <span>${formatBytes(fTransferred)} / ${formatBytes(fSize)}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    return html;
+  }
+
+  return `<div class="flex flex-col gap-1 max-h-56 overflow-y-auto pr-0.5 text-slate-300 mt-1">${renderBranch(tree, 0)}</div>`;
+}
+
 function renderTransfers() {
   const allTransfers = Object.values(currentState.transfers || {}).sort(
     (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)
   );
 
   const now = Date.now();
-  const activeList = allTransfers.filter((t) => !isTransferHistory(t, now));
+  const pendingIncoming = allTransfers.filter(
+    (t) => t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT'
+  );
+  const activeList = allTransfers.filter(
+    (t) => !isTransferHistory(t, now) && t.status !== 'AWAITING_ACCEPT'
+  );
   const historyList = allTransfers.filter((t) => isTransferHistory(t, now));
 
-  if (countActive) countActive.textContent = activeList.length;
+  if (countActive) countActive.textContent = activeList.length + pendingIncoming.length;
   if (countHistory) countHistory.textContent = historyList.length;
+
+  // Atualiza painel dedicado de confirmação manual
+  renderPendingApprovalPanel(pendingIncoming);
 
   const list = currentTransfersTab === 'active' ? activeList : historyList;
 
@@ -952,13 +1545,15 @@ function renderTransfers() {
     if (pTitle) {
       pTitle.textContent =
         currentTransfersTab === 'active'
-          ? 'Nenhuma transferência ativa'
+          ? (pendingIncoming.length > 0 ? 'Aguardando confirmação acima' : 'Nenhuma transferência ativa')
           : 'Nenhum histórico de transferências';
     }
     if (pSub) {
       pSub.innerHTML =
         currentTransfersTab === 'active'
-          ? 'Envie para <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Público</span>.'
+          ? (pendingIncoming.length > 0
+              ? 'Selecione os arquivos ou pastas no painel acima e clique em <span class="text-sky-400 font-bold">Aceitar</span>.'
+              : 'Envie para <span class="text-emerald-400 font-mono">@usuario</span> ou gere um <span class="text-orange-400 font-semibold">Link Público</span>.')
           : 'Transferências concluídas, expiradas ou canceladas aparecerão aqui.';
     }
     Array.from(transfersList.children).forEach((child) => {
@@ -1190,19 +1785,29 @@ function renderTransfers() {
             <div class="flex items-center gap-1 shrink-0">
               <button
                 type="button"
+                data-action="copy-tunnel-link"
+                data-url="${t.shareUrl}"
+                data-transfer-id="${t.id}"
+                title="Copiar apenas o link direto"
+                class="px-2 py-0.5 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-300 border border-orange-500/40 text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap"
+              >
+                <span>🔗 Copiar Link</span>
+              </button>
+              <button
+                type="button"
                 data-action="copy-tunnel-formatted"
                 data-transfer-id="${t.id}"
-                title="Copiar mensagem formatada com link, senha e arquivos"
-                class="px-2 py-0.5 rounded bg-orange-500/20 hover:bg-orange-500/40 text-orange-300 border border-orange-500/40 text-[10px] font-bold transition-colors cursor-pointer"
+                title="Copiar texto completo (link + senha + arquivos)"
+                class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap"
               >
-                Copiar
+                <span>📋 Texto Completo</span>
               </button>
               <button
                 type="button"
                 data-action="open-tunnel-url"
                 data-url="${t.shareUrl}"
                 title="Abrir link no navegador"
-                class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] transition-colors cursor-pointer"
+                class="px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] transition-colors cursor-pointer shrink-0"
               >
                 ↗
               </button>
@@ -1271,6 +1876,30 @@ function renderTransfers() {
           ${pct}% (${formatBytes(transferredBytes)} / ${formatBytes(totalBytes)})
         </span>
       </div>
+
+      ${
+        Array.isArray(t.files) && t.files.length > 1
+          ? `
+            <div class="mt-1 pt-1 border-t border-slate-800/70">
+              <button
+                type="button"
+                data-action="toggle-card-files"
+                data-transfer-id="${t.id}"
+                class="w-full flex items-center justify-between text-[10px] text-slate-400 hover:text-slate-200 py-0.5 cursor-pointer"
+              >
+                <span class="flex items-center gap-1 font-semibold">
+                  <span>📂 Arquivos no Pacote (${t.files.length})</span>
+                  <span class="text-slate-500 font-mono">• ${formatBytes(totalBytes)}</span>
+                </span>
+                <span class="text-[9px] font-mono text-orange-400 font-bold">
+                  ${expandedTransferFiles.has(t.id) ? 'Ocultar ▲' : 'Ver Arquivos ▼'}
+                </span>
+              </button>
+              ${expandedTransferFiles.has(t.id) ? renderCardFilesTreeHtml(t.files, t.id) : ''}
+            </div>
+          `
+          : ''
+      }
 
       ${tunnelLinkBoxHtml}
     `;
@@ -1516,6 +2145,30 @@ function renderShares() {
 
       ${inProgressSectionHtml}
 
+      ${
+        Array.isArray(t.files) && t.files.length > 1
+          ? `
+            <div class="pt-1 border-t border-slate-800/70">
+              <button
+                type="button"
+                data-action="toggle-card-files"
+                data-transfer-id="${t.id}"
+                class="w-full flex items-center justify-between text-[10px] text-slate-400 hover:text-slate-200 py-0.5 cursor-pointer"
+              >
+                <span class="flex items-center gap-1 font-semibold">
+                  <span>📂 Arquivos no Pacote (${t.files.length})</span>
+                  <span class="text-slate-500 font-mono">• ${formatBytes(totalSize)}</span>
+                </span>
+                <span class="text-[9px] font-mono text-orange-400 font-bold">
+                  ${expandedTransferFiles.has(t.id) ? 'Ocultar ▲' : 'Ver Arquivos ▼'}
+                </span>
+              </button>
+              ${expandedTransferFiles.has(t.id) ? renderCardFilesTreeHtml(t.files, t.id) : ''}
+            </div>
+          `
+          : ''
+      }
+
       ${downloadsCountHtml}
 
       ${passwordHtml}
@@ -1528,19 +2181,29 @@ function renderShares() {
         <div class="flex items-center gap-1 shrink-0">
           <button
             type="button"
+            data-action="copy-tunnel-link"
+            data-url="${t.shareUrl}"
+            data-transfer-id="${t.id}"
+            title="Copiar apenas o link direto"
+            class="px-2.5 py-1 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-300 border border-orange-500/30 text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap"
+          >
+            <span>🔗 Copiar Link</span>
+          </button>
+          <button
+            type="button"
             data-action="copy-tunnel-formatted"
             data-transfer-id="${t.id}"
-            title="Copiar mensagem formatada completa (link + arquivos + senha)"
-            class="px-2.5 py-1 rounded-lg bg-orange-500/20 hover:bg-orange-500/30 text-orange-300 border border-orange-500/30 text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+            title="Copiar texto completo (link + arquivos + senha)"
+            class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 text-[10px] font-medium transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap"
           >
-            <span>📋 Copiar Link</span>
+            <span>📋 Texto Completo</span>
           </button>
           <button
             type="button"
             data-action="open-tunnel-url"
             data-url="${t.shareUrl}"
             title="Abrir no navegador"
-            class="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs transition-colors cursor-pointer"
+            class="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs transition-colors cursor-pointer shrink-0"
           >
             ↗
           </button>
@@ -1553,6 +2216,14 @@ function renderShares() {
 }
 
 function syncModalWithState() {
+  // Enquanto um fechamento local está pendente (aguardando o background confirmar o
+  // CLEAR_STAGED_TUNNEL_FILES), ignora broadcasts antigos que ainda dizem "modal aberto"
+  // e não repopula a lista de arquivos que acabou de ser limpa.
+  if (pendingModalClose) {
+    if (tunnelConfigModal) tunnelConfigModal.classList.add('hidden');
+    return;
+  }
+
   if (Array.isArray(currentState.stagedTunnelFiles)) {
     if (stagedTunnelFiles.length === 0 && currentState.stagedTunnelFiles.length > 0) {
       for (const f of currentState.stagedTunnelFiles) {
@@ -1568,10 +2239,17 @@ function syncModalWithState() {
   }
 
   if (currentState.tunnelModalOpen && tunnelConfigModal) {
-    if (currentState.modalMode === 'tunnel') {
-      openModalForTunnel();
-    } else {
-      openModalForP2P(currentState.modalTargetTag || (targetTagInput ? targetTagInput.value : ''));
+    // Só reabre se estiver oculto. Reaplicar a UI a cada broadcast sobrescrevia o
+    // texto digitado/estado do botão de envio e, ao reenviar SET_TUNNEL_MODAL_OPEN,
+    // gerava um loop infinito popup <-> background.
+    if (tunnelConfigModal.classList.contains('hidden')) {
+      if (currentState.modalMode === 'tunnel') {
+        openModalForTunnel({ fromSync: true });
+      } else {
+        openModalForP2P(currentState.modalTargetTag || (targetTagInput ? targetTagInput.value : ''), {
+          fromSync: true
+        });
+      }
     }
   } else if (tunnelConfigModal) {
     tunnelConfigModal.classList.add('hidden');
@@ -1695,6 +2373,40 @@ if (btnResetPortalUrl && settingPortalUrl) {
   });
 }
 
+if (settingTurnUrl && settingTurnUsername && settingTurnCredential) {
+  chrome.storage.local.get(['turnConfig'], (res) => {
+    if (res && res.turnConfig) {
+      settingTurnUrl.value = res.turnConfig.url || '';
+      settingTurnUsername.value = res.turnConfig.username || '';
+      settingTurnCredential.value = res.turnConfig.credential || '';
+    }
+  });
+
+  const saveTurnConfig = () => {
+    const url = (settingTurnUrl.value || '').trim();
+    const username = (settingTurnUsername.value || '').trim();
+    const credential = (settingTurnCredential.value || '').trim();
+    chrome.storage.local.set({ turnConfig: { url, username, credential } }, () => {
+      showToast('Configurações TURN/Relay salvas!');
+    });
+  };
+
+  settingTurnUrl.addEventListener('change', saveTurnConfig);
+  settingTurnUsername.addEventListener('change', saveTurnConfig);
+  settingTurnCredential.addEventListener('change', saveTurnConfig);
+
+  if (btnClearTurn) {
+    btnClearTurn.addEventListener('click', () => {
+      settingTurnUrl.value = '';
+      settingTurnUsername.value = '';
+      settingTurnCredential.value = '';
+      chrome.storage.local.remove(['turnConfig'], () => {
+        showToast('Configurações de TURN removidas.');
+      });
+    });
+  }
+}
+
 function registerUser() {
   const rawValue = myTagInput ? myTagInput.value : '';
   const newTag = normalizeTag(rawValue);
@@ -1772,8 +2484,10 @@ if (targetTagInput) {
 }
 
 // Modal de Configuração do Pack
-function openModalForTunnel() {
-  if (!currentState.myTag) {
+// `fromSync: true` = apenas reflete o estado vindo do background (sem reenviar
+// SET_TUNNEL_MODAL_OPEN, evitando loop popup <-> background).
+function openModalForTunnel({ fromSync = false } = {}) {
+  if (!currentState.myTag && !fromSync) {
     showToast('Registre um nome de usuário antes de gerar links públicos na rede descentralizada.', 'warning');
     if (myTagInput) myTagInput.focus();
     return;
@@ -1804,16 +2518,19 @@ function openModalForTunnel() {
     `;
   }
   tunnelConfigModal.classList.remove('hidden');
-  chrome.runtime.sendMessage({
-    action: 'SET_TUNNEL_MODAL_OPEN',
-    open: true,
-    mode: 'tunnel'
-  });
+  pendingModalClose = false;
+  if (!fromSync) {
+    chrome.runtime.sendMessage({
+      action: 'SET_TUNNEL_MODAL_OPEN',
+      open: true,
+      mode: 'tunnel'
+    });
+  }
   renderModalFiles();
 }
 
-function openModalForP2P(targetTag = '') {
-  if (!currentState.myTag) {
+function openModalForP2P(targetTag = '', { fromSync = false } = {}) {
+  if (!currentState.myTag && !fromSync) {
     showToast('Registre um nome de usuário antes de enviar arquivos na rede descentralizada.', 'warning');
     if (myTagInput) myTagInput.focus();
     return;
@@ -1874,12 +2591,15 @@ function openModalForP2P(targetTag = '') {
   }
 
   tunnelConfigModal.classList.remove('hidden');
-  chrome.runtime.sendMessage({
-    action: 'SET_TUNNEL_MODAL_OPEN',
-    open: true,
-    mode: 'p2p',
-    targetTag: target
-  });
+  pendingModalClose = false;
+  if (!fromSync) {
+    chrome.runtime.sendMessage({
+      action: 'SET_TUNNEL_MODAL_OPEN',
+      open: true,
+      mode: 'p2p',
+      targetTag: target
+    });
+  }
   renderModalFiles();
 }
 
@@ -1965,48 +2685,162 @@ function renderModalFiles() {
     modalFilesSummary.textContent = `Itens no Pack (${stagedTunnelFiles.length}) • ${formatBytes(totalBytes)}`;
   }
 
-  stagedTunnelFiles.forEach((file, index) => {
-    const isFolderItem = Boolean(file.name && file.name.includes('/'));
-    const item = document.createElement('div');
-    item.className =
-      'flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs shadow-sm';
-    item.innerHTML = `
-      <div class="flex items-center gap-2 min-w-0">
-        <span class="text-xs ${isFolderItem ? 'text-emerald-400' : 'text-sky-400'} font-mono shrink-0">${isFolderItem ? '📁' : '📄'}</span>
-        <span class="text-[11px] text-slate-200 font-medium truncate max-w-[220px]" title="${file.name}">
-          ${file.name}
-        </span>
-        <span class="text-[10px] text-slate-400 font-mono shrink-0">
-          (${formatBytes(file.size)})
-        </span>
-      </div>
-      <button
-        type="button"
-        data-remove-index="${index}"
-        class="text-slate-500 hover:text-rose-400 font-bold px-1 text-xs cursor-pointer transition-colors"
-        title="Remover do pack"
-      >
-        ✕
-      </button>
-    `;
-    modalFilesList.appendChild(item);
-  });
+  const tree = buildDirectoryTree(stagedTunnelFiles);
+
+  function renderModalTreeNode(node, container, depth = 0) {
+    const sortedFolders = Array.from(node.folders.values()).sort((a, b) => a.name.localeCompare(b.name));
+    for (const folder of sortedFolders) {
+      if (!modalTreeExpandedFolders.has(folder.fullPath + ':initialized')) {
+        modalTreeExpandedFolders.add(folder.fullPath + ':initialized');
+        modalTreeExpandedFolders.add(folder.fullPath);
+      }
+      const isExpanded = modalTreeExpandedFolders.has(folder.fullPath);
+
+      const folderEl = document.createElement('div');
+      folderEl.className = 'folder-node rounded-lg bg-slate-950/80 border border-slate-800/80 overflow-hidden text-left mb-1 shadow-sm';
+
+      const headerEl = document.createElement('div');
+      headerEl.className = 'flex items-center justify-between px-2 py-1.5 hover:bg-slate-800/40 transition-colors cursor-pointer select-none';
+      headerEl.setAttribute('data-action', 'toggle-modal-folder');
+      headerEl.setAttribute('data-folder-path', folder.fullPath);
+
+      headerEl.innerHTML = `
+        <div class="flex items-center gap-1.5 min-w-0 flex-1">
+          <span class="text-slate-400 text-[9px] font-mono shrink-0">${isExpanded ? '▼' : '▶'}</span>
+          <span class="text-xs shrink-0">${isExpanded ? '📂' : '📁'}</span>
+          <span class="text-[11px] font-bold text-slate-200 truncate" title="${escapeHtml(folder.fullPath)}">
+            ${escapeHtml(folder.name)}/
+          </span>
+          <span class="text-[9px] font-mono text-slate-400 shrink-0">
+            (${folder.fileCount} arq • ${formatBytes(folder.totalSize)})
+          </span>
+        </div>
+        <div class="flex items-center gap-1 shrink-0 ml-1">
+          <button
+            type="button"
+            data-action="remove-modal-folder"
+            data-folder-path="${escapeHtml(folder.fullPath)}"
+            class="text-slate-500 hover:text-rose-400 font-bold px-1.5 py-0.5 rounded hover:bg-rose-500/20 text-xs cursor-pointer transition-colors"
+            title="Remover pasta inteira (${folder.fileCount} arquivos)"
+          >
+            ✕
+          </button>
+        </div>
+      `;
+
+      const childrenEl = document.createElement('div');
+      childrenEl.className = `folder-children ${isExpanded ? '' : 'hidden'} pl-3 pr-1 py-1 space-y-1 border-t border-slate-800/60 bg-slate-950/40`;
+
+      renderModalTreeNode(folder, childrenEl, depth + 1);
+
+      folderEl.appendChild(headerEl);
+      folderEl.appendChild(childrenEl);
+      container.appendChild(folderEl);
+    }
+
+    const sortedFiles = [...node.files].sort((a, b) => (a.basename || a.name).localeCompare(b.basename || b.name));
+    for (const f of sortedFiles) {
+      const item = document.createElement('div');
+      item.className = 'flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs shadow-sm hover:border-slate-700 transition-colors text-left';
+      item.innerHTML = `
+        <div class="flex items-center gap-2 min-w-0 flex-1">
+          <span class="text-xs shrink-0">${getFileExtensionIcon(f.name)}</span>
+          <span class="text-[11px] text-slate-200 font-medium truncate max-w-[220px]" title="${escapeHtml(f.fullPath || f.name)}">
+            ${escapeHtml(f.basename || f.name)}
+          </span>
+          <span class="text-[10px] text-slate-400 font-mono shrink-0">
+            (${formatBytes(f.size)})
+          </span>
+        </div>
+        <button
+          type="button"
+          data-action="remove-modal-file"
+          data-file-id="${escapeHtml(f.fileId)}"
+          class="text-slate-500 hover:text-rose-400 font-bold px-1 text-xs cursor-pointer transition-colors"
+          title="Remover do pack"
+        >
+          ✕
+        </button>
+      `;
+      container.appendChild(item);
+    }
+  }
+
+  renderModalTreeNode(tree, modalFilesList, 0);
 }
 
 if (modalFilesList) {
   modalFilesList.addEventListener('click', (e) => {
-    const btn = e.target.closest('button[data-remove-index]');
+    const btn = e.target.closest('[data-action]');
     if (!btn) return;
-    const idx = Number(btn.getAttribute('data-remove-index'));
-    if (!Number.isNaN(idx) && idx >= 0 && idx < stagedTunnelFiles.length) {
-      const removed = stagedTunnelFiles.splice(idx, 1)[0];
-      if (removed && removed.fileId) {
-        deleteStagedFile(removed.fileId);
+    const action = btn.getAttribute('data-action');
+
+    if (action === 'toggle-modal-folder') {
+      const folderPath = btn.getAttribute('data-folder-path');
+      if (folderPath) {
+        if (modalTreeExpandedFolders.has(folderPath)) {
+          modalTreeExpandedFolders.delete(folderPath);
+        } else {
+          modalTreeExpandedFolders.add(folderPath);
+        }
+        renderModalFiles();
       }
-      renderModalFiles();
-      try {
-        chrome.runtime.sendMessage({ action: 'REMOVE_STAGED_TUNNEL_FILE', index: idx }).catch(() => {});
-      } catch {}
+      return;
+    }
+
+    if (action === 'remove-modal-folder') {
+      e.stopPropagation();
+      const folderPath = btn.getAttribute('data-folder-path');
+      if (folderPath) {
+        const removed = [];
+        stagedTunnelFiles = stagedTunnelFiles.filter((f) => {
+          const raw = (f.name || f.relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+          if (raw === folderPath || raw.startsWith(folderPath + '/')) {
+            removed.push(f);
+            return false;
+          }
+          return true;
+        });
+        removed.forEach((f) => f.fileId && deleteStagedFile(f.fileId));
+        renderModalFiles();
+        try {
+          chrome.runtime.sendMessage({
+            action: 'ADD_STAGED_TUNNEL_FILES',
+            files: stagedTunnelFiles.map((f) => ({
+              fileId: f.fileId,
+              name: f.name,
+              size: f.size,
+              type: f.type
+            }))
+          }).catch(() => {});
+        } catch {}
+        showToast(`✓ Pasta removida (${removed.length} arquivos).`);
+      }
+      return;
+    }
+
+    if (action === 'remove-modal-file') {
+      e.stopPropagation();
+      const fileId = btn.getAttribute('data-file-id');
+      const idx = stagedTunnelFiles.findIndex((f) => f.fileId === fileId);
+      if (idx !== -1) {
+        const removed = stagedTunnelFiles.splice(idx, 1)[0];
+        if (removed && removed.fileId) {
+          deleteStagedFile(removed.fileId);
+        }
+        renderModalFiles();
+        try {
+          chrome.runtime.sendMessage({
+            action: 'ADD_STAGED_TUNNEL_FILES',
+            files: stagedTunnelFiles.map((f) => ({
+              fileId: f.fileId,
+              name: f.name,
+              size: f.size,
+              type: f.type
+            }))
+          }).catch(() => {});
+        } catch {}
+      }
     }
   });
 }
@@ -2040,6 +2874,10 @@ function handleSelectedFiles(files) {
       type: f.type || 'application/octet-stream',
       fileObj
     });
+    if (normalizedName.includes('/')) {
+      const topDir = normalizedName.split('/')[0];
+      modalTreeExpandedFolders.add(topDir);
+    }
     addedCount++;
     // Persiste imediatamente em memória (offscreen) e IndexedDB de forma não-bloqueante
     saveStagedFile(fileId, fileObj).catch((err) => {
@@ -2372,20 +3210,52 @@ if (btnModalClearPassword && modalPasswordInput) {
 }
 
 function closeAndResetModal() {
+  pendingModalClose = true;
   tunnelConfigModal.classList.add('hidden');
   stagedTunnelFiles = [];
+  // Atualiza o estado local imediatamente para que nenhum render reabra o modal.
+  currentState.tunnelModalOpen = false;
+  currentState.stagedTunnelFiles = [];
   if (modalCompressToggle) modalCompressToggle.checked = false;
   if (modalCompressOptions) modalCompressOptions.classList.add('hidden');
-  chrome.runtime.sendMessage({ action: 'CLEAR_STAGED_TUNNEL_FILES' }, (res) => {
-    if (res && res.state) {
-      currentState = res.state;
-      renderAll();
-    }
-  });
+
+  const finishClose = () => {
+    pendingModalClose = false;
+  };
+  // Failsafe: se o service worker não responder, libera o bloqueio mesmo assim.
+  const failsafe = setTimeout(finishClose, 3000);
+
+  try {
+    chrome.runtime.sendMessage({ action: 'CLEAR_STAGED_TUNNEL_FILES' }, (res) => {
+      void chrome.runtime.lastError; // evita "Unchecked runtime.lastError"
+      clearTimeout(failsafe);
+      finishClose();
+      if (res && res.state) {
+        currentState = res.state;
+        renderAll();
+      }
+    });
+  } catch (err) {
+    clearTimeout(failsafe);
+    finishClose();
+    console.warn('Falha ao limpar pack no background:', err);
+  }
 }
 
 if (btnModalClose) btnModalClose.addEventListener('click', closeAndResetModal);
 if (btnModalCancel) btnModalCancel.addEventListener('click', closeAndResetModal);
+
+// Esc fecha o modal (desde que não esteja no meio de um envio)
+document.addEventListener('keydown', (e) => {
+  if (
+    e.key === 'Escape' &&
+    tunnelConfigModal &&
+    !tunnelConfigModal.classList.contains('hidden') &&
+    !(btnModalConfirm && btnModalConfirm.disabled)
+  ) {
+    closeAndResetModal();
+  }
+});
 
 if (btnModalConfirm) {
   btnModalConfirm.addEventListener('click', async () => {
@@ -2482,6 +3352,15 @@ if (btnModalConfirm) {
 
         btnModalConfirm.innerHTML = `<span>Iniciando envio P2P para ${targetTag}...</span>`;
 
+        const isBatch = filesToSend.length > 1;
+        const batchId = isBatch
+          ? `batch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+          : null;
+        const firstSlash = filesToSend[0]?.name?.indexOf('/');
+        const defaultBatchName = firstSlash > 0
+          ? filesToSend[0].name.slice(0, firstSlash)
+          : (isBatch ? `Lote (${filesToSend.length} itens)` : '');
+
         for (const item of filesToSend) {
           const transferId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
           await saveStagedFile(transferId, item.file);
@@ -2493,7 +3372,12 @@ if (btnModalConfirm) {
             fileMeta: {
               name: item.name,
               size: item.size,
-              type: item.type
+              type: item.type,
+              ...(batchId ? {
+                batchId,
+                batchName: defaultBatchName,
+                batchCount: filesToSend.length
+              } : {})
             }
           });
         }
@@ -2746,18 +3630,213 @@ if (btnClearInactiveUsers) {
   });
 }
 
+if (btnHomeReviewPending) {
+  btnHomeReviewPending.addEventListener('click', () => {
+    switchMainTab('transfers');
+    switchTransfersSubTab('active');
+  });
+}
+
+if (checkSelectAllPending) {
+  checkSelectAllPending.addEventListener('change', () => {
+    const pendingIncoming = Object.values(currentState.transfers || []).filter(
+      (t) => t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT'
+    );
+    const masterState = getMasterSelectionState(pendingIncoming);
+    if (masterState.checked) {
+      selectedPendingIds.clear();
+    } else {
+      pendingIncoming.forEach((t) => selectedPendingIds.add(t.id));
+    }
+    renderPendingApprovalPanel(pendingIncoming);
+  });
+}
+
+if (btnAcceptSelected) {
+  btnAcceptSelected.addEventListener('click', () => {
+    if (selectedPendingIds.size === 0) {
+      showToast('Selecione pelo menos uma transferência para aceitar.');
+      return;
+    }
+    const toAccept = Array.from(selectedPendingIds);
+    chrome.runtime.sendMessage(
+      {
+        action: 'RESPOND_INCOMING',
+        transferIds: toAccept,
+        accept: true
+      },
+      (res) => {
+        if (res && res.state) {
+          currentState = res.state;
+          renderAll();
+        }
+      }
+    );
+    toAccept.forEach((id) => selectedPendingIds.delete(id));
+    showToast(`✓ ${toAccept.length} transferência(s) aceita(s)!`);
+  });
+}
+
+if (btnRejectSelected) {
+  btnRejectSelected.addEventListener('click', () => {
+    if (selectedPendingIds.size === 0) {
+      showToast('Selecione pelo menos uma transferência para cancelar.');
+      return;
+    }
+    const toReject = Array.from(selectedPendingIds);
+    chrome.runtime.sendMessage(
+      {
+        action: 'RESPOND_INCOMING',
+        transferIds: toReject,
+        accept: false
+      },
+      (res) => {
+        if (res && res.state) {
+          currentState = res.state;
+          renderAll();
+        }
+      }
+    );
+    toReject.forEach((id) => selectedPendingIds.delete(id));
+    showToast(`✕ ${toReject.length} transferência(s) cancelada(s).`);
+  });
+}
+
+if (pendingTreeContainer) {
+  pendingTreeContainer.addEventListener('change', (e) => {
+    const target = e.target;
+    if (target.classList.contains('folder-checkbox')) {
+      const folderPath = target.getAttribute('data-folder-path');
+      const folder = currentPendingFolderMap.get(folderPath);
+      if (folder) {
+        const shouldCheck = target.checked;
+        for (const tid of folder.transferIds) {
+          if (shouldCheck) {
+            selectedPendingIds.add(tid);
+          } else {
+            selectedPendingIds.delete(tid);
+          }
+        }
+        renderPendingApprovalPanel();
+      }
+    } else if (target.classList.contains('file-checkbox')) {
+      const transferId = target.getAttribute('data-transfer-id');
+      if (transferId) {
+        if (target.checked) {
+          selectedPendingIds.add(transferId);
+        } else {
+          selectedPendingIds.delete(transferId);
+        }
+        renderPendingApprovalPanel();
+      }
+    }
+  });
+
+  pendingTreeContainer.addEventListener('click', (e) => {
+    const btnRejectFolder = e.target.closest('.btn-reject-folder');
+    if (btnRejectFolder) {
+      e.stopPropagation();
+      const folderPath = btnRejectFolder.getAttribute('data-folder-path');
+      const folder = currentPendingFolderMap.get(folderPath);
+      if (folder) {
+        const toReject = Array.from(folder.transferIds);
+        chrome.runtime.sendMessage(
+          {
+            action: 'RESPOND_INCOMING',
+            transferIds: toReject,
+            accept: false
+          },
+          (res) => {
+            if (res && res.state) {
+              currentState = res.state;
+              renderAll();
+            }
+          }
+        );
+        toReject.forEach((id) => selectedPendingIds.delete(id));
+        showToast(`✕ Pasta "${folder.name}" cancelada.`);
+      }
+      return;
+    }
+
+    const btnToggle = e.target.closest('.btn-toggle-folder');
+    if (btnToggle) {
+      e.stopPropagation();
+      const folderPath = btnToggle.getAttribute('data-folder-path');
+      if (folderPath) {
+        if (expandedFolders.has(folderPath)) {
+          expandedFolders.delete(folderPath);
+        } else {
+          expandedFolders.add(folderPath);
+        }
+        renderPendingApprovalPanel();
+      }
+      return;
+    }
+
+    const folderHeader = e.target.closest('.folder-header');
+    if (folderHeader && !e.target.closest('input, button')) {
+      const folderPath = folderHeader.getAttribute('data-folder-path');
+      if (folderPath) {
+        if (expandedFolders.has(folderPath)) {
+          expandedFolders.delete(folderPath);
+        } else {
+          expandedFolders.add(folderPath);
+        }
+        renderPendingApprovalPanel();
+      }
+      return;
+    }
+
+    const btnAcceptSingle = e.target.closest('[data-action="accept-single-pending"]');
+    if (btnAcceptSingle) {
+      e.stopPropagation();
+      const transferId = btnAcceptSingle.getAttribute('data-transfer-id');
+      if (transferId) {
+        chrome.runtime.sendMessage(
+          { action: 'RESPOND_INCOMING', transferId, accept: true },
+          (res) => {
+            if (res && res.state) {
+              currentState = res.state;
+              renderAll();
+            }
+          }
+        );
+        selectedPendingIds.delete(transferId);
+      }
+      return;
+    }
+
+    const btnRejectSingle = e.target.closest('[data-action="reject-single-pending"]');
+    if (btnRejectSingle) {
+      e.stopPropagation();
+      const transferId = btnRejectSingle.getAttribute('data-transfer-id');
+      if (transferId) {
+        chrome.runtime.sendMessage(
+          { action: 'RESPOND_INCOMING', transferId, accept: false },
+          (res) => {
+            if (res && res.state) {
+              currentState = res.state;
+              renderAll();
+            }
+          }
+        );
+        selectedPendingIds.delete(transferId);
+      }
+      return;
+    }
+  });
+}
+
 if (btnReceive) {
   btnReceive.addEventListener('click', () => {
-    const pendingIncoming = Object.values(currentState.transfers || []).find(
+    const pendingIncoming = Object.values(currentState.transfers || []).filter(
       (t) => t.direction === 'incoming' && t.status === 'AWAITING_ACCEPT'
     );
 
-    if (pendingIncoming) {
-      chrome.runtime.sendMessage({
-        action: 'RESPOND_INCOMING',
-        transferId: pendingIncoming.id,
-        accept: true
-      });
+    if (pendingIncoming.length > 0) {
+      switchMainTab('transfers');
+      switchTransfersSubTab('active');
       return;
     }
 
@@ -2773,13 +3852,37 @@ if (btnReceive) {
 // Ações nos Cards da Lista de Transferências
 if (transfersList) {
   transfersList.addEventListener('click', async (e) => {
-    const btn = e.target.closest('button[data-action]');
+    const btn = e.target.closest('[data-action]');
     if (!btn) return;
 
     const action = btn.getAttribute('data-action');
     const downloadId = Number(btn.getAttribute('data-download-id'));
     const transferId = btn.getAttribute('data-transfer-id');
     const url = btn.getAttribute('data-url');
+
+    if (action === 'toggle-card-files' && transferId) {
+      if (expandedTransferFiles.has(transferId)) {
+        expandedTransferFiles.delete(transferId);
+      } else {
+        expandedTransferFiles.add(transferId);
+      }
+      renderAll();
+      return;
+    }
+
+    if (action === 'toggle-card-folder') {
+      const folderKey = btn.getAttribute('data-folder-key');
+      if (folderKey) {
+        const collapseKey = folderKey + ':collapsed';
+        if (cardTreeExpandedFolders.has(collapseKey)) {
+          cardTreeExpandedFolders.delete(collapseKey);
+        } else {
+          cardTreeExpandedFolders.add(collapseKey);
+        }
+        renderAll();
+      }
+      return;
+    }
 
     if (action === 'delete-single-transfer' && transferId) {
       chrome.runtime.sendMessage({ action: 'DELETE_TRANSFER', transferId }, (res) => {
@@ -2817,48 +3920,22 @@ if (transfersList) {
     } else if (action === 'open-file' && !Number.isNaN(downloadId)) {
       chrome.downloads.open(downloadId);
     } else if (action === 'accept-transfer' && transferId) {
+      selectedPendingIds.delete(transferId);
       chrome.runtime.sendMessage({ action: 'RESPOND_INCOMING', transferId, accept: true });
     } else if (action === 'reject-transfer' && transferId) {
+      selectedPendingIds.delete(transferId);
       chrome.runtime.sendMessage({ action: 'RESPOND_INCOMING', transferId, accept: false });
-    } else if (action === 'copy-tunnel-formatted' && transferId) {
-      const t = currentState.transfers[transferId];
-      if (!t) return;
-      const formatted = formatShareMessage({
-        shareUrl: t.shareUrl,
-        password: t.password,
-        expiresAt: t.expiresAt,
-        maxDownloads: t.maxDownloads,
-        files: t.files || [{ name: t.fileName, size: t.fileSize }]
-      });
+    } else if (action === 'copy-tunnel-link') {
+      const targetUrl = url || (transferId && currentState.transfers[transferId]?.shareUrl);
+      if (!targetUrl) return;
       try {
-        await navigator.clipboard.writeText(formatted);
-        btn.textContent = 'Copiado ✓';
+        await navigator.clipboard.writeText(targetUrl);
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<span>Copiado ✓</span>';
         setTimeout(() => {
-          btn.textContent = 'Copiar';
+          btn.innerHTML = originalHtml;
         }, 1800);
-        showToast('Link, senha e resumo copiados!');
-      } catch {
-        showToast('Não foi possível copiar automaticamente.');
-      }
-    } else if (action === 'open-tunnel-url' && url) {
-      chrome.tabs.create({ url });
-    }
-  });
-}
-
-if (sharesList) {
-  sharesList.addEventListener('click', async (e) => {
-    const btn = e.target.closest('button[data-action]');
-    if (!btn) return;
-    const action = btn.getAttribute('data-action');
-    const transferId = btn.getAttribute('data-transfer-id');
-    const url = btn.getAttribute('data-url');
-    const textToCopy = btn.getAttribute('data-text');
-
-    if (action === 'copy-text' && textToCopy) {
-      try {
-        await navigator.clipboard.writeText(textToCopy);
-        showToast('✓ Senha copiada para a área de transferência!');
+        showToast('✓ Link copiado para a área de transferência!');
       } catch {
         showToast('Não foi possível copiar automaticamente.');
       }
@@ -2879,7 +3956,88 @@ if (sharesList) {
         setTimeout(() => {
           btn.innerHTML = originalHtml;
         }, 1800);
-        showToast('✓ Link, senha e resumo copiados!');
+        showToast('✓ Texto completo copiado com link, arquivos e senha!');
+      } catch {
+        showToast('Não foi possível copiar automaticamente.');
+      }
+    } else if (action === 'open-tunnel-url' && url) {
+      chrome.tabs.create({ url });
+    }
+  });
+}
+
+if (sharesList) {
+  sharesList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.getAttribute('data-action');
+    const transferId = btn.getAttribute('data-transfer-id');
+    const url = btn.getAttribute('data-url');
+    const textToCopy = btn.getAttribute('data-text');
+
+    if (action === 'toggle-card-files' && transferId) {
+      if (expandedTransferFiles.has(transferId)) {
+        expandedTransferFiles.delete(transferId);
+      } else {
+        expandedTransferFiles.add(transferId);
+      }
+      renderAll();
+      return;
+    }
+
+    if (action === 'toggle-card-folder') {
+      const folderKey = btn.getAttribute('data-folder-key');
+      if (folderKey) {
+        const collapseKey = folderKey + ':collapsed';
+        if (cardTreeExpandedFolders.has(collapseKey)) {
+          cardTreeExpandedFolders.delete(collapseKey);
+        } else {
+          cardTreeExpandedFolders.add(collapseKey);
+        }
+        renderAll();
+      }
+      return;
+    }
+
+    if (action === 'copy-text' && textToCopy) {
+      try {
+        await navigator.clipboard.writeText(textToCopy);
+        showToast('✓ Senha copiada para a área de transferência!');
+      } catch {
+        showToast('Não foi possível copiar automaticamente.');
+      }
+    } else if (action === 'copy-tunnel-link') {
+      const targetUrl = url || (transferId && currentState.transfers[transferId]?.shareUrl);
+      if (!targetUrl) return;
+      try {
+        await navigator.clipboard.writeText(targetUrl);
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<span>Copiado ✓</span>';
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+        }, 1800);
+        showToast('✓ Link copiado para a área de transferência!');
+      } catch {
+        showToast('Não foi possível copiar automaticamente.');
+      }
+    } else if (action === 'copy-tunnel-formatted' && transferId) {
+      const t = currentState.transfers[transferId];
+      if (!t) return;
+      const formatted = formatShareMessage({
+        shareUrl: t.shareUrl,
+        password: t.password,
+        expiresAt: t.expiresAt,
+        maxDownloads: t.maxDownloads,
+        files: t.files || [{ name: t.fileName, size: t.fileSize }]
+      });
+      try {
+        await navigator.clipboard.writeText(formatted);
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<span>Copiado ✓</span>';
+        setTimeout(() => {
+          btn.innerHTML = originalHtml;
+        }, 1800);
+        showToast('✓ Texto completo copiado com link, arquivos e senha!');
       } catch {
         showToast('Não foi possível copiar automaticamente.');
       }

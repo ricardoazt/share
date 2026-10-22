@@ -721,7 +721,7 @@ function mergeRemoteRoster(incomingRoster, removedTag = null, originNodeId = nul
       const myRegAt = myEntry?.registeredAt || myEntry?.joinedAt || 0;
       const remoteRegAt = item.registeredAt || item.joinedAt || 0;
       if (remoteRegAt < myRegAt && remoteRegAt > 0) {
-        chrome.runtime.sendMessage({
+        safeSendMessage({
           type: 'USER_REGISTRATION_CONFLICT',
           tag: state.myTag,
           error: `O usuário ${state.myTag} já existe na rede descentralizada e pertence a outro nó!`
@@ -871,7 +871,8 @@ async function tryFailoverToMeshRelay(transferId, targetTag, fileMeta, triedRela
     fileMeta: {
       name: fileMeta.name,
       size: fileMeta.size,
-      type: fileMeta.type
+      type: fileMeta.type,
+      ...pickBatchMeta(fileMeta)
     },
     triedRelays: Array.from(tried)
   });
@@ -1026,7 +1027,7 @@ async function handleMeshPacket(packet) {
         const myRegAt = myEntry?.registeredAt || myEntry?.joinedAt || 0;
 
         if (incomingRegAt < myRegAt && incomingRegAt > 0) {
-          chrome.runtime.sendMessage({
+          safeSendMessage({
             type: 'USER_REGISTRATION_CONFLICT',
             tag: incomingTag,
             error: `O usuário ${incomingTag} já existe na rede descentralizada (pertence a outro nó).`
@@ -1075,7 +1076,7 @@ async function handleMeshPacket(packet) {
       if (!packet.tag) break;
       const alertTag = normalizeTag(packet.tag);
       if (alertTag === normalizeTag(state.myTag) && packet.ownerNodeId !== state.nodeId) {
-        chrome.runtime.sendMessage({
+        safeSendMessage({
           type: 'USER_REGISTRATION_CONFLICT',
           tag: alertTag,
           error: `O usuário ${alertTag} já existe na rede descentralizada e pertence a outro nó!`
@@ -1112,6 +1113,21 @@ async function handleMeshPacket(packet) {
 // ============================================================================
 // 5. Gerenciamento do Offscreen Document e Sincronização de Estado
 // ============================================================================
+
+// Envia mensagem sem gerar "Uncaught (in promise) Error: Could not establish
+// connection. Receiving end does not exist." quando o popup está fechado ou o
+// offscreen document ainda não está pronto.
+function safeSendMessage(message) {
+  try {
+    return chrome.runtime.sendMessage(message).catch((err) => {
+      console.warn('[PulseShare] Mensagem sem destinatário:', message?.action || message?.type, err?.message || err);
+    });
+  } catch (err) {
+    console.warn('[PulseShare] Falha ao enviar mensagem:', err?.message || err);
+    return Promise.resolve();
+  }
+}
+
 function broadcastState() {
   chrome.storage.local.set({
     transfers: state.transfers,
@@ -1127,13 +1143,67 @@ function updateTransfer(transferId, patch) {
 
   const mergedPatch = { ...patch };
 
-  if (existing.direction === 'tunnel') {
+  // Se houver lista de arquivos na remessa e o patch trouxer progresso de um arquivo específico
+  if (Array.isArray(existing.files) && existing.files.length > 0 && patch.fileId) {
+    const updatedFiles = existing.files.map((f) => {
+      if (f.fileId === patch.fileId) {
+        const fileTransferred = typeof patch.fileTransferredBytes === 'number'
+          ? patch.fileTransferredBytes
+          : (typeof patch.transferredBytes === 'number' ? patch.transferredBytes : (f.transferredBytes || 0));
+        const fileSize = f.size || patch.fileTotalBytes || 0;
+        const filePct = fileSize > 0
+          ? Math.min(100, Math.round((fileTransferred / fileSize) * 100))
+          : (patch.fileCompleted ? 100 : 0);
+        return {
+          ...f,
+          transferredBytes: fileTransferred,
+          progress: filePct,
+          speedBps: patch.fileSpeedBps ?? patch.speedBps ?? 0,
+          status: (patch.fileCompleted || filePct >= 100)
+            ? 'COMPLETED'
+            : (patch.status === 'PAUSED' ? 'PAUSED' : 'TRANSFERRING')
+        };
+      }
+      return f;
+    });
+
+    mergedPatch.files = updatedFiles;
+
+    // Calcula progresso GERAL somando todos os arquivos da remessa
+    const totalPackBytes = existing.totalSize || existing.fileSize || updatedFiles.reduce((acc, f) => acc + (f.size || 0), 0);
+    const totalPackTransferred = updatedFiles.reduce((acc, f) => acc + (f.transferredBytes || 0), 0);
+    const overallPct = totalPackBytes > 0
+      ? Math.min(100, Math.round((totalPackTransferred / totalPackBytes) * 100))
+      : 0;
+
+    const allFilesCompleted = updatedFiles.every((f) => (f.progress || 0) >= 100 || f.status === 'COMPLETED');
+
+    mergedPatch.transferredBytes = totalPackTransferred;
+    mergedPatch.progress = overallPct;
+    mergedPatch.speedBps = patch.speedBps || patch.fileSpeedBps || 0;
+
+    if (allFilesCompleted) {
+      if (existing.inProgress) {
+        // Contabiliza 1 download quando concluir o download de todo envio da remessa!
+        mergedPatch.downloads = (existing.downloads || 0) + 1;
+        mergedPatch.completedDownloads = (existing.completedDownloads || 0) + 1;
+      }
+      mergedPatch.status = existing.direction === 'tunnel' ? 'TUNNEL_READY' : 'COMPLETED';
+      mergedPatch.inProgress = false;
+      mergedPatch.progress = 100;
+      mergedPatch.transferredBytes = totalPackBytes;
+    } else {
+      mergedPatch.status = patch.status === 'PAUSED' ? 'PAUSED' : 'TRANSFERRING';
+      mergedPatch.inProgress = true;
+    }
+  } else if (existing.direction === 'tunnel') {
     if (patch.inProgress === true || patch.status === 'TRANSFERRING' || patch.status === 'CONNECTING') {
       mergedPatch.inProgress = true;
     }
-    // Quando a transferência de um link for concluída (100% ou retorno para TUNNEL_READY)
-    if (patch.progress === 100 || (existing.inProgress && (patch.status === 'TUNNEL_READY' || patch.status === 'COMPLETED'))) {
+    // Quando a transferência de um link de arquivo único for concluída
+    if (patch.fileCompleted || patch.progress === 100 || (existing.inProgress && (patch.status === 'TUNNEL_READY' || patch.status === 'COMPLETED'))) {
       if (existing.inProgress) {
+        mergedPatch.downloads = (existing.downloads || 0) + 1;
         mergedPatch.completedDownloads = (existing.completedDownloads || 0) + 1;
         mergedPatch.inProgress = false;
       }
@@ -1199,7 +1269,19 @@ function sendSignal(to, transferId, signalType, payload) {
   return true;
 }
 
+// Metadados de lote (envio de vários arquivos/pastas de uma só vez). Permitem que o
+// destinatário agrupe as ofertas pendentes em árvore e aceite/recuse em massa.
+function pickBatchMeta(source) {
+  if (!source || !source.batchId) return {};
+  return {
+    batchId: String(source.batchId),
+    batchName: source.batchName ? String(source.batchName) : '',
+    batchCount: Number(source.batchCount) || 0
+  };
+}
+
 async function startOutgoingTransfer(transferId, targetTag, fileMeta) {
+  const batchMeta = pickBatchMeta(fileMeta);
   state.transfers[transferId] = {
     id: transferId,
     direction: 'outgoing',
@@ -1207,6 +1289,7 @@ async function startOutgoingTransfer(transferId, targetTag, fileMeta) {
     fileName: fileMeta.name,
     fileSize: fileMeta.size,
     fileType: fileMeta.type,
+    ...batchMeta,
     progress: 0,
     transferredBytes: 0,
     speedBps: 0,
@@ -1223,6 +1306,7 @@ async function startOutgoingTransfer(transferId, targetTag, fileMeta) {
     fileName: fileMeta.name,
     fileSize: fileMeta.size,
     fileType: fileMeta.type,
+    ...batchMeta,
     roster: Object.values(state.peerRegistry)
   });
 
@@ -1296,6 +1380,28 @@ async function handleIncomingSignal(msg) {
     return;
   }
 
+  if (signalType === 'PACK_DOWNLOAD_COMPLETE') {
+    const shareId = payload?.shareId;
+    let shareRecord = publicP2PShares.get(shareId);
+    if (!shareRecord) {
+      const found = Object.values(state.transfers).find((t) => t.shareId === shareId);
+      if (found) shareRecord = { transferId: found.id };
+    }
+    if (shareRecord) {
+      const parentTransfer = state.transfers[shareRecord.transferId];
+      if (parentTransfer) {
+        updateTransfer(shareRecord.transferId, {
+          downloads: (parentTransfer.downloads || 0) + 1,
+          completedDownloads: (parentTransfer.completedDownloads || 0) + 1,
+          inProgress: false,
+          progress: 100,
+          transferredBytes: parentTransfer.totalSize || parentTransfer.fileSize || parentTransfer.transferredBytes
+        });
+      }
+    }
+    return;
+  }
+
   if (signalType === 'PACK_FILE_PULL' || signalType === 'PUBLIC_LINK_PULL') {
     const shareId = payload?.shareId;
     const fileId = payload?.fileId || 'f-0';
@@ -1341,10 +1447,16 @@ async function handleIncomingSignal(msg) {
         return;
       }
 
+      const resetFiles = (!parentTransfer.inProgress && (parentTransfer.progress === 100))
+        ? (parentTransfer.files || []).map((f) => ({ ...f, transferredBytes: 0, progress: 0, status: 'PENDING' }))
+        : parentTransfer.files;
+
       updateTransfer(shareRecord.transferId, {
-        downloads: (parentTransfer.downloads || 0) + 1,
         inProgress: true,
-        status: 'TRANSFERRING'
+        status: 'TRANSFERRING',
+        files: resetFiles,
+        progress: (!parentTransfer.inProgress && parentTransfer.progress === 100) ? 0 : parentTransfer.progress,
+        transferredBytes: (!parentTransfer.inProgress && parentTransfer.progress === 100) ? 0 : parentTransfer.transferredBytes
       });
     }
 
@@ -1357,7 +1469,7 @@ async function handleIncomingSignal(msg) {
       };
 
     await ensureOffscreenDocument();
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       target: 'offscreen',
       action: 'OFFSCREEN_SIGNAL',
       from,
@@ -1430,6 +1542,7 @@ async function handleIncomingSignal(msg) {
       fileName: payload.fileMeta?.name,
       fileSize: payload.fileMeta?.size,
       fileType: payload.fileMeta?.type,
+      ...pickBatchMeta(payload.fileMeta),
       roster: Object.values(state.peerRegistry)
     });
     return;
@@ -1447,7 +1560,7 @@ async function handleIncomingSignal(msg) {
       status: 'TRANSFERRING'
     });
     await ensureOffscreenDocument();
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       target: 'offscreen',
       action: 'START_MESH_RELAY_STREAM',
       transferId,
@@ -1480,7 +1593,7 @@ async function handleIncomingSignal(msg) {
 
   if (signalType === 'MESH_RELAY_CHUNK') {
     await ensureOffscreenDocument();
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       target: 'offscreen',
       action: 'OFFSCREEN_RECEIVE_RELAY_CHUNK',
       transferId,
@@ -1499,6 +1612,9 @@ async function handleIncomingSignal(msg) {
   if (signalType === 'FILE_OFFER') {
     const isRelayed = Boolean(payload.routedVia);
     const peerDisplayTag = isRelayed ? payload.senderTag : from;
+    // Uma oferta repetida (ex.: failover para relay) não deve perder o agrupamento do lote
+    const previousOffer = state.transfers[transferId];
+    const batchMeta = payload.batchId ? pickBatchMeta(payload) : pickBatchMeta(previousOffer);
 
     state.transfers[transferId] = {
       id: transferId,
@@ -1509,6 +1625,7 @@ async function handleIncomingSignal(msg) {
       fileName: payload.fileName,
       fileSize: payload.fileSize,
       fileType: payload.fileType,
+      ...batchMeta,
       progress: 0,
       transferredBytes: 0,
       speedBps: 0,
@@ -1564,7 +1681,7 @@ async function handleIncomingSignal(msg) {
         relayTag: payload.relayTag || from
       });
       await ensureOffscreenDocument();
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         target: 'offscreen',
         action: 'START_MESH_RELAY_STREAM',
         transferId,
@@ -1589,7 +1706,7 @@ async function handleIncomingSignal(msg) {
   }
 
   await ensureOffscreenDocument();
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     target: 'offscreen',
     action: 'OFFSCREEN_SIGNAL',
     from,
@@ -1808,7 +1925,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         t.updatedAt = Date.now();
         broadcastState();
         ensureOffscreenDocument().then(() => {
-          chrome.runtime.sendMessage({
+          safeSendMessage({
             target: 'offscreen',
             action: 'OFFSCREEN_CONTROL',
             subAction: 'PAUSE',
@@ -1827,7 +1944,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         t.updatedAt = Date.now();
         broadcastState();
         ensureOffscreenDocument().then(() => {
-          chrome.runtime.sendMessage({
+          safeSendMessage({
             target: 'offscreen',
             action: 'OFFSCREEN_CONTROL',
             subAction: 'RESUME',
@@ -1849,7 +1966,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         broadcastState();
         ensureOffscreenDocument().then(() => {
-          chrome.runtime.sendMessage({
+          safeSendMessage({
             target: 'offscreen',
             action: 'OFFSCREEN_CONTROL',
             subAction: 'CANCEL',
@@ -1931,40 +2048,69 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     case 'RESPOND_INCOMING': {
-      const transfer = state.transfers[msg.transferId];
-      if (!transfer) {
-        sendResponse({ ok: false });
+      const ids = Array.isArray(msg.transferIds)
+        ? msg.transferIds
+        : (msg.transferId ? [msg.transferId] : []);
+
+      if (ids.length === 0) {
+        sendResponse({ ok: false, error: 'NO_TRANSFER_IDS' });
         return true;
       }
-      if (msg.accept) {
-        updateTransfer(msg.transferId, { status: 'CONNECTING' });
+
+      const toAccept = [];
+      const toReject = [];
+
+      for (const id of ids) {
+        const transfer = state.transfers[id];
+        if (!transfer || transfer.status !== 'AWAITING_ACCEPT') continue;
+
+        if (msg.accept) {
+          updateTransfer(id, { status: 'CONNECTING' });
+          toAccept.push({ id, transfer });
+        } else {
+          toReject.push({ id, transfer });
+          delete state.transfers[id];
+        }
+      }
+
+      if (toAccept.length > 0) {
         ensureOffscreenDocument().then(() => {
-          if (transfer.routeType === 'MESH_RELAY' && transfer.relayTag) {
-            sendSignal(transfer.relayTag, msg.transferId, 'FILE_ACCEPT', {
-              isRelayed: true,
-              senderTag: transfer.peerTag,
-              targetTag: state.myTag,
-              roster: Object.values(state.peerRegistry)
-            });
-          } else {
-            sendSignal(transfer.peerTag, msg.transferId, 'FILE_ACCEPT', {
-              roster: Object.values(state.peerRegistry)
-            });
+          for (const item of toAccept) {
+            const transfer = item.transfer;
+            const transferId = item.id;
+            if (transfer.routeType === 'MESH_RELAY' && transfer.relayTag) {
+              sendSignal(transfer.relayTag, transferId, 'FILE_ACCEPT', {
+                isRelayed: true,
+                senderTag: transfer.peerTag,
+                targetTag: state.myTag,
+                roster: Object.values(state.peerRegistry)
+              });
+            } else {
+              sendSignal(transfer.peerTag, transferId, 'FILE_ACCEPT', {
+                roster: Object.values(state.peerRegistry)
+              });
+            }
           }
         });
-      } else {
-        if (transfer.routeType === 'MESH_RELAY' && transfer.relayTag) {
-          sendSignal(transfer.relayTag, msg.transferId, 'TRANSFER_REJECT', {
-            isRelayed: true,
-            senderTag: transfer.peerTag
-          });
-        } else {
-          sendSignal(transfer.peerTag, msg.transferId, 'TRANSFER_REJECT', {});
-        }
-        delete state.transfers[msg.transferId];
-        broadcastState();
       }
-      sendResponse({ state });
+
+      if (toReject.length > 0) {
+        for (const item of toReject) {
+          const transfer = item.transfer;
+          const transferId = item.id;
+          if (transfer.routeType === 'MESH_RELAY' && transfer.relayTag) {
+            sendSignal(transfer.relayTag, transferId, 'TRANSFER_REJECT', {
+              isRelayed: true,
+              senderTag: transfer.peerTag
+            });
+          } else {
+            sendSignal(transfer.peerTag, transferId, 'TRANSFER_REJECT', {});
+          }
+        }
+      }
+
+      broadcastState();
+      sendResponse({ state, count: toAccept.length + toReject.length });
       return true;
     }
 

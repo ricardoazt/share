@@ -32,6 +32,36 @@ const RTC_CONFIG = {
   iceCandidatePoolSize: 4
 };
 
+// Configuração dinâmica de TURN (Relay) carregada de chrome.storage.local
+let customTurnConfig = null;
+chrome.storage.local.get(['turnConfig'], (res) => {
+  if (res && res.turnConfig) customTurnConfig = res.turnConfig;
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.turnConfig) {
+    customTurnConfig = changes.turnConfig.newValue || null;
+  }
+});
+
+function getActiveIceServers() {
+  const baseServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
+  ];
+  if (customTurnConfig && customTurnConfig.url) {
+    const urls = customTurnConfig.url.split(',').map((u) => u.trim()).filter(Boolean);
+    const entry = { urls };
+    if (customTurnConfig.username) entry.username = customTurnConfig.username;
+    if (customTurnConfig.credential) entry.credential = customTurnConfig.credential;
+    baseServers.push(entry);
+  }
+  return baseServers;
+}
+
 // Armazenamento em memória para arquivos grandes (evita gargalo de copiar 110MB+ no IndexedDB)
 const inMemoryFiles = new Map();
 
@@ -563,7 +593,7 @@ async function handleSignal({
       payload?.fileMeta
     );
   } else if (signalType === 'WEBRTC_OFFER') {
-    await startReceiverWebRTC(transferId, from, payload.sdp, roster, transferMeta);
+    await startReceiverWebRTC(transferId, from, payload.sdp, roster, transferMeta, payload.iceServers);
   } else if (signalType === 'WEBRTC_ANSWER') {
     let session = peerSessions.get(transferId);
     if (session?.pc && payload?.sdp) {
@@ -612,7 +642,8 @@ async function startSenderWebRTC(
   const existing = peerSessions.get(signalTransferId);
   const pendingCandidates = existing?.pendingCandidates || [];
 
-  const pc = new RTCPeerConnection(RTC_CONFIG);
+  const iceServers = getActiveIceServers();
+  const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
   const channel = pc.createDataChannel('pulseshare-file-channel', { ordered: true });
   channel.binaryType = 'arraybuffer';
   channel.bufferedAmountLowThreshold = LOW_BUFFER_THRESHOLD;
@@ -773,7 +804,11 @@ async function startSenderWebRTC(
               status: session.paused ? 'PAUSED' : 'TRANSFERRING',
               progress,
               transferredBytes: offset,
-              speedBps
+              speedBps,
+              fileId: targetFileMeta?.fileId,
+              fileTransferredBytes: offset,
+              fileTotalBytes: totalBytes,
+              fileSpeedBps: speedBps
             });
             lastReport = now;
           }
@@ -793,7 +828,12 @@ async function startSenderWebRTC(
         inProgress: false,
         progress: 100,
         transferredBytes: totalBytes,
-        speedBps: 0
+        speedBps: 0,
+        fileId: targetFileMeta?.fileId,
+        fileTransferredBytes: totalBytes,
+        fileTotalBytes: totalBytes,
+        fileSpeedBps: 0,
+        fileCompleted: true
       });
 
       if (!keepStaged) {
@@ -814,15 +854,19 @@ async function startSenderWebRTC(
   await waitForIceGathering(pc, 1000);
 
   sendSignalViaBackground(targetTag, signalTransferId, 'WEBRTC_OFFER', {
-    sdp: pc.localDescription
+    sdp: pc.localDescription,
+    iceServers
   });
 }
 
-async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster, transferMeta) {
+async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster, transferMeta, remoteIceServers = null) {
   const existing = peerSessions.get(transferId);
   const pendingCandidates = existing?.pendingCandidates || [];
 
-  const pc = new RTCPeerConnection(RTC_CONFIG);
+  const effectiveIceServers = (remoteIceServers && Array.isArray(remoteIceServers) && remoteIceServers.length > 0)
+    ? remoteIceServers
+    : getActiveIceServers();
+  const pc = new RTCPeerConnection({ iceServers: effectiveIceServers, iceCandidatePoolSize: 4 });
   const chunks = [];
   let receivedBytes = 0;
   const totalBytes = transferMeta?.fileSize || 0;

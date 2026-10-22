@@ -24,6 +24,39 @@ const RTC_CONFIG = {
   iceCandidatePoolSize: 4
 };
 
+let customTurnConfig = null;
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+  chrome.storage.local.get(['turnConfig'], (res) => {
+    if (res && res.turnConfig) customTurnConfig = res.turnConfig;
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.turnConfig) {
+      customTurnConfig = changes.turnConfig.newValue || null;
+    }
+  });
+}
+
+function getActiveIceServers() {
+  const baseServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' }
+  ];
+
+  if (customTurnConfig && customTurnConfig.url) {
+    const urls = customTurnConfig.url.split(',').map((u) => u.trim()).filter(Boolean);
+    const entry = { urls };
+    if (customTurnConfig.username) entry.username = customTurnConfig.username;
+    if (customTurnConfig.credential) entry.credential = customTurnConfig.credential;
+    baseServers.push(entry);
+  }
+
+  return baseServers;
+}
+
 // Lê parâmetros tanto do Hash quanto da Query String
 const hashStr = window.location.hash ? window.location.hash.replace(/^#/, '') : '';
 const searchStr = window.location.search ? window.location.search.replace(/^\?/, '') : '';
@@ -73,6 +106,124 @@ const seenPacketIds = new Set();
 
 // Map de downloads ativos: fileId -> { pc, channel, paused, cancelled, chunks, receivedBytes, totalBytes }
 const activeDownloads = new Map();
+const completedFileIds = new Set();
+const fileProgressMap = new Map();
+let packCompletionNotified = false;
+const receiverExpandedFolders = new Set();
+
+function buildFileTree(files) {
+  const root = {
+    name: '',
+    fullPath: '',
+    folders: new Map(),
+    files: [],
+    totalSize: 0,
+    fileCount: 0
+  };
+
+  if (!Array.isArray(files)) return root;
+
+  for (const f of files) {
+    if (!f) continue;
+    const rawPath = (f.name || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const parts = rawPath.split('/').filter(Boolean);
+    const size = f.size || 0;
+
+    root.totalSize += size;
+    root.fileCount++;
+
+    if (parts.length <= 1) {
+      root.files.push({
+        ...f,
+        basename: parts[0] || f.name,
+        fullPath: rawPath
+      });
+      continue;
+    }
+
+    let curr = root;
+    let accumulatedPath = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      const part = parts[i];
+      accumulatedPath = accumulatedPath ? `${accumulatedPath}/${part}` : part;
+      if (!curr.folders.has(part)) {
+        curr.folders.set(part, {
+          name: part,
+          fullPath: accumulatedPath,
+          folders: new Map(),
+          files: [],
+          totalSize: 0,
+          fileCount: 0
+        });
+      }
+      curr = curr.folders.get(part);
+      curr.totalSize += size;
+      curr.fileCount++;
+    }
+
+    const basename = parts[parts.length - 1];
+    curr.files.push({
+      ...f,
+      basename,
+      fullPath: rawPath
+    });
+  }
+
+  return root;
+}
+
+function updateOverallProgress() {
+  const overallEl = document.getElementById('overall-prog-section');
+  if (!overallEl || !packData || !packData.files) return;
+
+  const totalPackBytes = packData.totalSize || packData.files.reduce((acc, f) => acc + (f.size || 0), 0);
+  let totalReceived = 0;
+  let totalSpeed = 0;
+
+  for (const f of packData.files) {
+    const info = fileProgressMap.get(f.fileId);
+    if (info) {
+      totalReceived += info.receivedBytes || 0;
+      totalSpeed += info.speedBps || 0;
+    } else if (completedFileIds.has(f.fileId)) {
+      totalReceived += f.size || 0;
+    }
+  }
+
+  const overallPct = totalPackBytes > 0
+    ? Math.min(100, Math.round((totalReceived / totalPackBytes) * 100))
+    : 0;
+
+  overallEl.classList.remove('hidden');
+
+  const stEl = document.getElementById('overall-st');
+  const pctEl = document.getElementById('overall-pct');
+  const barEl = document.getElementById('overall-bar');
+  const bytesEl = document.getElementById('overall-bytes');
+  const spdEl = document.getElementById('overall-spd');
+
+  if (pctEl) pctEl.textContent = `${overallPct}%`;
+  if (barEl) barEl.style.width = `${overallPct}%`;
+  if (bytesEl) bytesEl.textContent = `${formatBytes(totalReceived)} / ${formatBytes(totalPackBytes)}`;
+  if (spdEl) spdEl.textContent = `${formatBytes(totalSpeed)}/s`;
+
+  if (stEl) {
+    if (overallPct >= 100 || completedFileIds.size === packData.files.length) {
+      stEl.textContent = `✓ Todos os ${packData.files.length} arquivos baixados com sucesso!`;
+    } else {
+      stEl.textContent = `Baixando arquivos (${completedFileIds.size}/${packData.files.length} concluídos)`;
+    }
+  }
+
+  if (completedFileIds.size === packData.files.length && !packCompletionNotified) {
+    packCompletionNotified = true;
+    broadcastSignal('PACK_DOWNLOAD_COMPLETE', {
+      shareId,
+      totalFiles: packData.files.length,
+      totalBytes: totalPackBytes
+    }, ownerTag, transferId);
+  }
+}
 
 function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
@@ -282,7 +433,7 @@ function handleIncomingPacket(pkt) {
   }
 
   if (signalType === 'WEBRTC_OFFER') {
-    handleWebRtcOffer(transferId, payload.sdp);
+    handleWebRtcOffer(transferId, payload.sdp, payload.iceServers);
     return;
   }
 
@@ -421,61 +572,124 @@ if (toggleZipMode) {
 function renderFilesList() {
   filesList.innerHTML = '';
   const files = packData.files || [];
+  if (files.length === 0) return;
 
-  files.forEach((file) => {
-    const card = document.createElement('div');
-    card.className = 'file-item';
-    card.id = `card-${file.fileId}`;
+  const tree = buildFileTree(files);
 
-    card.innerHTML = `
-      <div class="file-row">
-        <div class="file-name-wrap">
-          <span class="file-icon">${getFileIcon(file.name)}</span>
-          <div style="display: flex; flex-direction: column; min-width: 0;">
-            <span class="file-name" title="${file.name}">${file.name}</span>
-            <span class="file-size">${formatBytes(file.size)}</span>
+  function renderNode(node, container, depth = 0) {
+    // Render subfolders
+    const sortedFolders = Array.from(node.folders.values()).sort((a, b) => a.name.localeCompare(b.name));
+    for (const folder of sortedFolders) {
+      if (!receiverExpandedFolders.has(folder.fullPath + ':initialized')) {
+        receiverExpandedFolders.add(folder.fullPath + ':initialized');
+        receiverExpandedFolders.add(folder.fullPath);
+      }
+      const isExpanded = receiverExpandedFolders.has(folder.fullPath);
+
+      const folderEl = document.createElement('div');
+      folderEl.className = 'folder-node';
+
+      const headerEl = document.createElement('div');
+      headerEl.className = 'folder-header';
+      headerEl.setAttribute('data-action', 'toggle-folder');
+      headerEl.setAttribute('data-folder-path', folder.fullPath);
+
+      headerEl.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+          <span style="font-size: 10px; font-family: monospace; color: #94a3b8;">${isExpanded ? '▼' : '▶'}</span>
+          <span style="font-size: 14px;">${isExpanded ? '📂' : '📁'}</span>
+          <span style="font-size: 12px; font-weight: 700; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${folder.fullPath}">
+            ${folder.name}/
+          </span>
+          <span style="font-size: 11px; font-family: monospace; color: #94a3b8;">
+            (${folder.fileCount} arq • ${formatBytes(folder.totalSize)})
+          </span>
+        </div>
+      `;
+
+      const childrenEl = document.createElement('div');
+      childrenEl.className = `folder-children ${isExpanded ? '' : 'hidden'}`;
+
+      renderNode(folder, childrenEl, depth + 1);
+
+      folderEl.appendChild(headerEl);
+      folderEl.appendChild(childrenEl);
+      container.appendChild(folderEl);
+    }
+
+    // Render files
+    const sortedFiles = [...node.files].sort((a, b) => (a.basename || a.name).localeCompare(b.basename || b.name));
+    for (const file of sortedFiles) {
+      const card = document.createElement('div');
+      card.className = 'file-item';
+      card.id = `card-${file.fileId}`;
+
+      card.innerHTML = `
+        <div class="file-row">
+          <div class="file-name-wrap">
+            <span class="file-icon">${getFileIcon(file.name)}</span>
+            <div style="display: flex; flex-direction: column; min-width: 0;">
+              <span class="file-name" title="${file.name}">${file.basename || file.name}</span>
+              <span class="file-size">${formatBytes(file.size)}</span>
+            </div>
+          </div>
+          <button
+            id="btn-dl-${file.fileId}"
+            type="button"
+            class="file-btn"
+            data-file-id="${file.fileId}"
+          >
+            ⬇ Baixar
+          </button>
+        </div>
+
+        <div id="prog-${file.fileId}" class="prog-section hidden">
+          <div class="prog-bar-bg">
+            <div id="bar-${file.fileId}" class="prog-bar-fill"></div>
+          </div>
+          <div class="prog-info">
+            <span id="st-${file.fileId}">Conectando túnel P2P...</span>
+            <span id="pct-${file.fileId}">0%</span>
+          </div>
+          <div class="prog-info">
+            <span id="bytes-${file.fileId}">0 B / ${formatBytes(file.size)}</span>
+            <span id="spd-${file.fileId}">0 B/s</span>
+          </div>
+          <div class="prog-controls">
+            <button id="btn-pause-${file.fileId}" type="button" class="ctrl-btn btn-pause" data-file-id="${file.fileId}">
+              ⏸ Pausar
+            </button>
+            <button id="btn-cancel-${file.fileId}" type="button" class="ctrl-btn btn-cancel" data-file-id="${file.fileId}">
+              ✕ Cancelar
+            </button>
           </div>
         </div>
-        <button
-          id="btn-dl-${file.fileId}"
-          type="button"
-          class="file-btn"
-          data-file-id="${file.fileId}"
-        >
-          ⬇ Baixar
-        </button>
-      </div>
+      `;
+      container.appendChild(card);
+    }
+  }
 
-      <div id="prog-${file.fileId}" class="prog-section hidden">
-        <div class="prog-bar-bg">
-          <div id="bar-${file.fileId}" class="prog-bar-fill"></div>
-        </div>
-        <div class="prog-info">
-          <span id="st-${file.fileId}">Conectando túnel P2P...</span>
-          <span id="pct-${file.fileId}">0%</span>
-        </div>
-        <div class="prog-info">
-          <span id="bytes-${file.fileId}">0 B / ${formatBytes(file.size)}</span>
-          <span id="spd-${file.fileId}">0 B/s</span>
-        </div>
-        <div class="prog-controls">
-          <button id="btn-pause-${file.fileId}" type="button" class="ctrl-btn btn-pause" data-file-id="${file.fileId}">
-            ⏸ Pausar
-          </button>
-          <button id="btn-cancel-${file.fileId}" type="button" class="ctrl-btn btn-cancel" data-file-id="${file.fileId}">
-            ✕ Cancelar
-          </button>
-        </div>
-      </div>
-    `;
-    filesList.appendChild(card);
-  });
+  renderNode(tree, filesList, 0);
 }
 
 // ============================================================================
 // Download de Arquivos e Compactação em .ZIP (fflate)
 // ============================================================================
 filesList.addEventListener('click', (e) => {
+  const toggleHeader = e.target.closest('[data-action="toggle-folder"]');
+  if (toggleHeader) {
+    const folderPath = toggleHeader.getAttribute('data-folder-path');
+    if (folderPath) {
+      if (receiverExpandedFolders.has(folderPath)) {
+        receiverExpandedFolders.delete(folderPath);
+      } else {
+        receiverExpandedFolders.add(folderPath);
+      }
+      renderFilesList();
+    }
+    return;
+  }
+
   const dlBtn = e.target.closest('button[data-file-id]');
   if (!dlBtn) return;
   const fileId = dlBtn.getAttribute('data-file-id');
@@ -606,7 +820,7 @@ function startFileDownload(fileId, onCompleteCallback, returnBufferOnly = false)
   broadcastSignal('PACK_FILE_PULL', { shareId, fileId }, ownerTag, transferId);
 }
 
-async function handleWebRtcOffer(transferId, sdpOffer) {
+async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) {
   const dl = findDownloadByTransferId(transferId);
   if (!dl) return;
 
@@ -614,7 +828,10 @@ async function handleWebRtcOffer(transferId, sdpOffer) {
     try { dl.pc.close(); } catch {}
   }
 
-  const pc = new RTCPeerConnection(RTC_CONFIG);
+  const effectiveIceServers = (remoteIceServers && Array.isArray(remoteIceServers) && remoteIceServers.length > 0)
+    ? remoteIceServers
+    : getActiveIceServers();
+  const pc = new RTCPeerConnection({ iceServers: effectiveIceServers, iceCandidatePoolSize: 4 });
   dl.pc = pc;
 
   pc.onicecandidate = (e) => {
@@ -672,6 +889,12 @@ async function handleWebRtcOffer(transferId, sdpOffer) {
         const elapsed = Math.max(0.1, (now - startTime) / 1000);
         const speedBps = Math.round(dl.receivedBytes / elapsed);
         const pct = dl.fileSize > 0 ? Math.min(99, Math.round((dl.receivedBytes / dl.fileSize) * 100)) : 99;
+        fileProgressMap.set(dl.fileId, {
+          receivedBytes: dl.receivedBytes,
+          speedBps,
+          pct,
+          totalBytes: dl.fileSize
+        });
         updateFileUI(dl.fileId, {
           status: dl.paused ? 'Pausado' : 'Recebendo dados...',
           pct,
@@ -679,6 +902,7 @@ async function handleWebRtcOffer(transferId, sdpOffer) {
           receivedBytes: dl.receivedBytes,
           totalBytes: dl.fileSize
         });
+        updateOverallProgress();
         dl.lastReport = now;
       }
     };
@@ -770,6 +994,15 @@ function finishDownload(dl) {
     totalBytes: dl.fileSize,
     speedBps: 0
   });
+
+  completedFileIds.add(dl.fileId);
+  fileProgressMap.set(dl.fileId, {
+    receivedBytes: dl.fileSize,
+    speedBps: 0,
+    pct: 100,
+    totalBytes: dl.fileSize
+  });
+  updateOverallProgress();
 
   const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
   if (btnDl) {
