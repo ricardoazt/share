@@ -1048,7 +1048,7 @@
           continue;
         }
         // Se o destinatário ou um nó de salto está no conjunto acessível
-        if (reachablePeersSet.has(b.destTag) || reachablePeersSet.has(b.destTag.replace(/^@/, ''))) {
+        if (b.destTag && (reachablePeersSet.has(b.destTag) || reachablePeersSet.has(b.destTag.replace(/^@/, '')))) {
           candidates.push(b);
         }
       }
@@ -1652,6 +1652,52 @@
       return null;
     }
 
+    recordChatMessage(msgId, msgData) {
+      if (!this.initialized) return { lamport: Date.now() };
+      const rawTarget = msgData?.targetTag || msgData?.to || msgData?.peerTag || '';
+      const rawSender = msgData?.senderTag || msgData?.from || '';
+      const peerTag = (rawTarget && rawTarget.toLowerCase() !== (this.myTag || '').toLowerCase())
+        ? rawTarget
+        : rawSender;
+      const isSending = Boolean(rawSender && rawSender.toLowerCase() === (this.myTag || '').toLowerCase());
+      if (peerTag && !this.ratchetSessions.has(peerTag)) {
+        this.ratchetSessions.set(peerTag, new DoubleRatchetSession(peerTag, isSending));
+      }
+      if (this.crdt) {
+        this.crdt.tick(msgData?.lamport || 0);
+      }
+      if (this.messageLog) {
+        return this.messageLog.append(msgId, msgData);
+      }
+      return { id: msgId, lamport: 1 };
+    }
+
+    async stageOfflineChatBundle(targetTag, chatPayload) {
+      if (!this.dtn) return null;
+      return await this.dtn.stageBundle({
+        bundleId: `chat-dtn-${chatPayload.id || crypto.randomUUID()}`,
+        sourceTag: this.myTag,
+        destTag: targetTag,
+        payload: chatPayload,
+        createdAt: Date.now(),
+        ttlMs: 7 * 86400000 // 7 dias de custódia DTN
+      });
+    }
+
+    async acknowledgeChatMessage(msgId) {
+      if (!this.dtn || !msgId) return;
+      await this.dtn.removeBundle(`chat-dtn-${msgId}`);
+    }
+
+    async flushDeliverableChatBundles(reachablePeersSet) {
+      if (!this.dtn) return [];
+      const bundles = await this.dtn.getDeliverableBundles(reachablePeersSet);
+      for (const b of bundles) {
+        await this.dtn.removeBundle(b.bundleId);
+      }
+      return bundles;
+    }
+
     getStatusSummary() {
       return {
         initialized: this.initialized,
@@ -1680,7 +1726,8 @@
         },
         crdt: {
           registeredPeersCount: this.crdt ? Object.keys(this.crdt.readAll()).length : 0,
-          lamportClock: this.crdt?.lamportClock || 0
+          lamportClock: this.crdt?.lamportClock || 0,
+          causalChatEvents: this.messageLog ? this.messageLog.entries.size : 0
         },
         dtn: {
           stagedBundlesCount: this.dtn ? this.dtn.memoryBundles.size : 0

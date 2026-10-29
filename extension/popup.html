@@ -240,7 +240,7 @@
   </header>
 
   <!-- BARRA DE NAVEGAÇÃO PRINCIPAL EM ABAS (CADA UMA OCUPA A JANELA INTEIRA) -->
-  <nav class="grid grid-cols-4 bg-slate-900/95 border-b border-slate-800 shrink-0 select-none">
+  <nav class="grid grid-cols-5 bg-slate-900/95 border-b border-slate-800 shrink-0 select-none">
     <button
       id="nav-btn-home"
       type="button"
@@ -250,6 +250,20 @@
         <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
       </svg>
       <span>Início</span>
+    </button>
+
+    <button
+      id="nav-btn-chat"
+      type="button"
+      class="nav-tab py-2.5 px-1 flex flex-col items-center justify-center gap-1 text-[11px] font-medium text-slate-400 hover:text-slate-200 border-b-2 border-transparent transition-all cursor-pointer relative"
+    >
+      <div class="relative">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+        </svg>
+        <span id="nav-badge-chat" class="hidden absolute -top-1 -right-2.5 px-1 rounded-full text-[9px] font-bold bg-emerald-500 text-slate-950 font-mono">0</span>
+      </div>
+      <span>Chat P2P</span>
     </button>
 
     <button
@@ -768,6 +782,318 @@
         <!-- Cards de Usuários renderizados via JS -->
       </div>
     </div>
+
+    <!-- ==================================================================== -->
+    <!-- ABA 5: CHAT P2P (ESTILO WHATSAPP: CONVERSAS, MÍDIA INLINE, VOZ, EMOJI, ENCAMINHAMENTO) -->
+    <!-- ==================================================================== -->
+    <div id="view-chat" class="hidden flex-1 min-h-0 w-full px-3 py-2 flex flex-col">
+      <!-- Input Oculto para Enviar Imagens, Vídeos, Áudios e Arquivos no Chat -->
+      <input id="chat-file-input" type="file" multiple class="hidden" />
+
+      <div class="chat-root-layout flex-1 min-h-0">
+        <!-- COLUNA ESQUERDA: LISTA DE CONVERSAS E NÓS ONLINE DA REDE -->
+        <aside id="chat-sidebar-pane" class="chat-sidebar-pane">
+          <!-- Topo da Lista de Conversas: Busca / Iniciar Conversa com @usuario -->
+          <div class="p-2 border-b border-slate-800 bg-slate-900/90 flex flex-col gap-1.5 shrink-0">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-bold text-emerald-400 flex items-center gap-1">
+                <span>💬 Conversas P2P</span>
+              </span>
+              <span id="chat-sidebar-online-badge" class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                Malha P2P
+              </span>
+            </div>
+            <!-- Identidade do Nó Atual -->
+            <div class="flex items-center justify-between px-2 py-1 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[10px]">
+              <div class="flex items-center gap-1.5 truncate">
+                <span class="text-slate-400 font-sans">Você:</span>
+                <span id="chat-my-tag-display" class="font-mono font-bold text-emerald-400 truncate">@usuario</span>
+              </div>
+              <button id="btn-chat-edit-my-tag" type="button" class="text-[9px] text-indigo-400 hover:text-indigo-300 cursor-pointer font-sans underline" title="Alterar seu nome de usuário na aba Início">Alterar</button>
+            </div>
+            <div class="flex items-center gap-1">
+              <div class="flex-1 flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1 focus-within:border-emerald-500/70">
+                <span class="text-slate-500 text-xs font-mono">@</span>
+                <input
+                  id="chat-peer-search-input"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="Buscar ou abrir @usuario..."
+                  class="w-full bg-transparent text-xs font-mono text-slate-200 focus:outline-none placeholder-slate-500"
+                />
+              </div>
+              <button
+                id="btn-chat-start-new"
+                type="button"
+                title="Iniciar conversa com este @usuario"
+                class="px-2 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold transition-colors cursor-pointer shrink-0"
+              >
+                Abrir
+              </button>
+            </div>
+          </div>
+
+          <!-- Lista Rolável de Conversas e Nós da Rede -->
+          <div id="chat-conversations-list" class="flex-1 min-h-0 overflow-y-auto divide-y divide-slate-800/60">
+            <!-- Renderizado dinamicamente via popup.js -->
+          </div>
+        </aside>
+
+        <!-- COLUNA DIREITA: JANELA DE CONVERSA ATIVA -->
+        <section id="chat-conversation-pane" class="chat-conversation-pane chat-mobile-hidden">
+          <!-- Placeholder quando nenhuma conversa está aberta -->
+          <div id="chat-empty-placeholder" class="flex-1 flex flex-col items-center justify-center text-center p-6 select-none">
+            <div class="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-2xl mb-2 shadow-inner">
+              💬
+            </div>
+            <h3 class="text-xs font-bold text-slate-200">PulseShare Messenger P2P</h3>
+            <p class="text-[10px] text-slate-400 mt-1 max-w-[250px] leading-tight">
+              Selecione um nó <span class="text-emerald-400 font-mono">@usuario</span> ao lado para conversar em tempo real, enviar fotos, vídeos, áudios, arquivos, gravar voz pelo microfone e encaminhar mensagens na malha P2P.
+            </p>
+            <div class="mt-3 flex flex-wrap items-center justify-center gap-1.5 text-[9px] font-mono text-slate-400">
+              <span class="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-800 text-emerald-300">🔒 Double Ratchet E2EE</span>
+              <span class="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-800 text-sky-300">🎤 Voz &amp; Mídia Inline</span>
+              <span class="px-2 py-0.5 rounded-full bg-slate-900 border border-slate-800 text-amber-300">↪ Encaminhamento P2P</span>
+            </div>
+          </div>
+
+          <!-- Container da Conversa Ativa -->
+          <div id="chat-active-container" class="hidden flex-1 min-h-0 flex flex-col h-full">
+            <!-- Cabeçalho do Contato Ativo -->
+            <div class="px-2.5 py-2 bg-slate-900/95 border-b border-slate-800 flex items-center justify-between gap-2 shrink-0">
+              <div class="flex items-center gap-2 min-w-0">
+                <button
+                  id="btn-chat-back-list"
+                  type="button"
+                  title="Voltar para lista de conversas"
+                  class="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold cursor-pointer shrink-0"
+                >
+                  ←
+                </button>
+                <div class="relative shrink-0">
+                  <div id="chat-header-avatar" class="w-8 h-8 rounded-full bg-gradient-to-br from-emerald-500 to-green-600 flex items-center justify-center text-xs font-bold text-white font-mono shadow">
+                    @
+                  </div>
+                  <span id="chat-header-dot" class="w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-slate-900 absolute -bottom-0.5 -right-0.5"></span>
+                </div>
+                <div class="flex flex-col min-w-0">
+                  <div class="flex items-center gap-1.5">
+                    <span id="chat-header-tag" class="text-xs font-bold font-mono text-white truncate">@usuario</span>
+                    <span class="text-[8px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0">E2EE</span>
+                  </div>
+                  <span id="chat-header-status" class="text-[10px] text-emerald-400 truncate leading-tight">
+                    online • WebRTC + Mesh P2P
+                  </span>
+                </div>
+              </div>
+
+              <!-- Ações Rápidas do Cabeçalho da Conversa -->
+              <div class="flex items-center gap-1 shrink-0">
+                <button
+                  id="btn-chat-toggle-select"
+                  type="button"
+                  title="Selecionar mensagens para encaminhar ou apagar"
+                  class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[10px] font-semibold flex items-center gap-1 cursor-pointer border border-slate-700"
+                >
+                  <span>↪</span>
+                  <span>Selecionar</span>
+                </button>
+                <button
+                  id="btn-chat-header-attach"
+                  type="button"
+                  title="Enviar fotos, vídeos, áudios ou arquivos na conversa"
+                  class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs cursor-pointer border border-slate-700"
+                >
+                  📎
+                </button>
+                <button
+                  id="btn-chat-clear"
+                  type="button"
+                  title="Limpar histórico desta conversa"
+                  class="p-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 text-xs cursor-pointer border border-slate-700"
+                >
+                  🗑️
+                </button>
+              </div>
+            </div>
+
+            <!-- Barra de Seleção Múltipla (Encaminhar / Apagar Mensagens Selecionadas) -->
+            <div
+              id="chat-selection-bar"
+              class="hidden px-3 py-1.5 bg-sky-950/90 border-b border-sky-500/40 flex items-center justify-between gap-2 shrink-0"
+            >
+              <div class="flex items-center gap-2">
+                <button
+                  id="btn-chat-select-all"
+                  type="button"
+                  class="text-[10px] font-semibold text-sky-300 hover:text-white underline cursor-pointer"
+                >
+                  Todas
+                </button>
+                <span id="chat-selected-count" class="text-xs font-bold text-white font-mono">
+                  0 selecionadas
+                </span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <button
+                  id="btn-chat-forward-selected"
+                  type="button"
+                  class="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold flex items-center gap-1 shadow cursor-pointer"
+                >
+                  <span>↪</span>
+                  <span>Encaminhar</span>
+                </button>
+                <button
+                  id="btn-chat-delete-selected"
+                  type="button"
+                  class="px-2 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 text-[10px] font-semibold cursor-pointer"
+                >
+                  🗑️
+                </button>
+                <button
+                  id="btn-chat-cancel-select"
+                  type="button"
+                  title="Cancelar seleção"
+                  class="px-1.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-bold cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <!-- Stream de Mensagens da Conversa -->
+            <div id="chat-messages-list" class="chat-messages-stream">
+              <!-- Mensagens renderizadas dinamicamente via popup.js -->
+            </div>
+
+            <!-- Barra de Pré-visualização de Anexos Prontos para Envio -->
+            <div
+              id="chat-attachment-preview"
+              class="hidden px-2.5 py-1.5 bg-slate-900/95 border-t border-slate-800 flex items-center justify-between gap-2 shrink-0"
+            >
+              <div id="chat-attachment-chips" class="flex items-center gap-1.5 overflow-x-auto py-0.5 min-w-0 flex-1">
+                <!-- Chips dos arquivos/imagens/vídeos/áudios anexados -->
+              </div>
+              <button
+                id="btn-chat-clear-attachments"
+                type="button"
+                title="Remover anexos selecionados"
+                class="text-[10px] font-bold text-rose-400 hover:text-rose-300 px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/30 shrink-0 cursor-pointer"
+              >
+                ✕ Limpar
+              </button>
+            </div>
+
+            <!-- Seletor de Emoticons / Emojis Categorizado -->
+            <div id="chat-emoji-picker" class="hidden chat-emoji-popover select-none">
+              <div class="flex items-center justify-between px-2.5 py-1.5 bg-slate-950 border-b border-slate-800">
+                <div id="chat-emoji-tabs" class="flex items-center gap-1">
+                  <button type="button" data-emoji-cat="recent" class="emoji-cat-btn px-1.5 py-0.5 rounded text-xs bg-slate-800 text-white cursor-pointer" title="Recentes e Populares">🕒</button>
+                  <button type="button" data-emoji-cat="faces" class="emoji-cat-btn px-1.5 py-0.5 rounded text-xs hover:bg-slate-800/60 cursor-pointer" title="Rostos e Emoções">😀</button>
+                  <button type="button" data-emoji-cat="gestures" class="emoji-cat-btn px-1.5 py-0.5 rounded text-xs hover:bg-slate-800/60 cursor-pointer" title="Gestos e Pessoas">👋</button>
+                  <button type="button" data-emoji-cat="hearts" class="emoji-cat-btn px-1.5 py-0.5 rounded text-xs hover:bg-slate-800/60 cursor-pointer" title="Corações e Símbolos">❤️</button>
+                  <button type="button" data-emoji-cat="nature" class="emoji-cat-btn px-1.5 py-0.5 rounded text-xs hover:bg-slate-800/60 cursor-pointer" title="Natureza e Comida">🍕</button>
+                  <button type="button" data-emoji-cat="objects" class="emoji-cat-btn px-1.5 py-0.5 rounded text-xs hover:bg-slate-800/60 cursor-pointer" title="Objetos e Tecnologia">🚀</button>
+                </div>
+                <button
+                  id="btn-close-emoji-picker"
+                  type="button"
+                  class="text-slate-400 hover:text-white text-xs font-bold px-1 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+              <div id="chat-emoji-grid" class="p-2 grid grid-cols-8 gap-1 max-h-[150px] overflow-y-auto">
+                <!-- Emojis renderizados via popup.js -->
+              </div>
+            </div>
+
+            <!-- Barra Compositora Normal (Emoji, Anexo, Texto, Microfone, Enviar) -->
+            <div
+              id="chat-composer-bar"
+              class="px-2 py-1.5 bg-slate-900 border-t border-slate-800 flex items-center gap-1.5 shrink-0"
+            >
+              <button
+                id="btn-chat-emoji"
+                type="button"
+                title="Inserir emoticon / emoji"
+                class="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-base flex items-center justify-center shrink-0 cursor-pointer transition-colors"
+              >
+                😊
+              </button>
+              <button
+                id="btn-chat-attach"
+                type="button"
+                title="Anexar imagem, vídeo, áudio ou arquivo"
+                class="w-8 h-8 rounded-xl bg-slate-800 hover:bg-slate-700 text-sm flex items-center justify-center shrink-0 cursor-pointer transition-colors"
+              >
+                📎
+              </button>
+              <div class="flex-1 flex items-center bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-1.5 focus-within:border-emerald-500/70">
+                <input
+                  id="chat-text-input"
+                  type="text"
+                   placeholder="Mensagem, emoji ou mídia..."
+                  class="w-full bg-transparent text-xs text-slate-100 focus:outline-none placeholder-slate-500"
+                />
+              </div>
+              <button
+                id="btn-chat-record-voice"
+                type="button"
+                title="Gravar mensagem de voz pelo microfone"
+                class="w-8 h-8 rounded-xl bg-slate-800 hover:bg-rose-500/20 hover:border-rose-500/40 border border-slate-700 text-sm flex items-center justify-center shrink-0 cursor-pointer transition-all"
+              >
+                🎤
+              </button>
+              <button
+                id="btn-chat-send"
+                type="button"
+                title="Enviar mensagem P2P"
+                class="px-3 h-8 rounded-xl bg-gradient-to-br from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-white text-xs font-bold flex items-center justify-center shadow shrink-0 cursor-pointer transition-all"
+              >
+                ➤
+              </button>
+            </div>
+
+            <!-- Barra de Gravação de Voz ao Vivo (Microfone Ativo + Waveform) -->
+            <div
+              id="chat-voice-recording-bar"
+              class="hidden px-2.5 py-1.5 bg-rose-950/90 border-t border-rose-500/40 flex items-center justify-between gap-2 shrink-0"
+            >
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="voice-rec-dot"></span>
+                <span id="chat-record-timer" class="text-xs font-mono font-bold text-rose-100">00:00</span>
+              </div>
+
+              <!-- Barras de onda sonora em tempo real -->
+              <div id="chat-record-waveform" class="chat-waveform-bars flex-1 mx-1">
+                <!-- Barras animadas via Web Audio API -->
+              </div>
+
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button
+                  id="btn-chat-cancel-voice"
+                  type="button"
+                  title="Cancelar gravação de voz"
+                  class="px-2 py-1 rounded-lg bg-slate-900/80 hover:bg-slate-800 text-rose-200 text-[10px] font-semibold border border-rose-500/30 cursor-pointer"
+                >
+                  🗑️ Cancelar
+                </button>
+                <button
+                  id="btn-chat-send-voice"
+                  type="button"
+                  title="Finalizar e enviar mensagem de voz"
+                  class="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[10px] font-bold shadow cursor-pointer flex items-center gap-1"
+                >
+                  <span>🎤</span>
+                  <span>Enviar Voz</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
   </main>
 
   <!-- RODAPÉ: Status e Estatísticas -->
@@ -1040,6 +1366,140 @@
           Confirmar & Gerar Link
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- MODAL DE ENCAMINHAMENTO P2P DE MENSAGENS E MÍDIAS (SELEÇÃO DE NÓS DA REDE) -->
+  <div
+    id="chat-forward-modal"
+    class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 select-none"
+  >
+    <div class="w-full max-w-[440px] max-h-[90vh] bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+      <!-- Cabeçalho -->
+      <div class="px-4 py-2.5 border-b border-slate-800 bg-slate-950 flex items-center justify-between shrink-0">
+        <div class="flex items-center gap-2">
+          <span class="text-base">↪</span>
+          <div>
+            <h3 class="text-xs font-bold text-white uppercase tracking-wider">Encaminhar na Rede P2P</h3>
+            <p id="chat-forward-summary" class="text-[10px] text-emerald-400 font-mono">1 mensagem selecionada</p>
+          </div>
+        </div>
+        <button
+          id="btn-chat-forward-close"
+          type="button"
+          class="text-slate-400 hover:text-white text-xs font-bold px-2 py-1 rounded-lg hover:bg-slate-800 cursor-pointer"
+        >
+          ✕
+        </button>
+      </div>
+
+      <!-- Busca / Adicionar @usuario destino -->
+      <div class="p-3 border-b border-slate-800/80 bg-slate-900/80 space-y-2 shrink-0">
+        <label class="text-[10px] font-semibold text-slate-300 block">
+          Selecione um ou mais nós (<span class="text-emerald-400 font-mono">@usuarios</span>) da malha P2P:
+        </label>
+        <div class="flex items-center gap-1.5">
+          <div class="flex-1 flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 focus-within:border-emerald-500/70">
+            <span class="text-slate-500 text-xs font-mono">@</span>
+            <input
+              id="chat-forward-search"
+              type="text"
+              spellcheck="false"
+              placeholder="Filtrar ou digitar @usuario..."
+              class="w-full bg-transparent text-xs font-mono text-slate-200 focus:outline-none placeholder-slate-500"
+            />
+          </div>
+          <button
+            id="btn-chat-forward-add-tag"
+            type="button"
+            class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-emerald-300 text-[10px] font-bold cursor-pointer shrink-0"
+          >
+            + Incluir
+          </button>
+        </div>
+      </div>
+
+      <!-- Lista de Nós Disponíveis com Checkboxes -->
+      <div
+        id="chat-forward-peers-list"
+        class="flex-1 min-h-[160px] max-h-[240px] overflow-y-auto p-2.5 space-y-1.5 bg-slate-950/60"
+      >
+        <!-- Nós renderizados via popup.js -->
+      </div>
+
+      <!-- Comentário Adicional Opcional -->
+      <div class="px-3 py-2 border-t border-slate-800 bg-slate-900/90 shrink-0">
+        <input
+          id="chat-forward-note"
+          type="text"
+          placeholder="Adicionar comentário ao encaminhamento (opcional)..."
+          class="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500/70 placeholder-slate-500"
+        />
+      </div>
+
+      <!-- Rodapé -->
+      <div class="px-4 py-2.5 border-t border-slate-800 bg-slate-950 flex items-center justify-between gap-2 shrink-0">
+        <span id="chat-forward-target-count" class="text-[10px] font-mono text-slate-400">
+          0 destinatários
+        </span>
+        <div class="flex items-center gap-2">
+          <button
+            id="btn-chat-forward-cancel"
+            type="button"
+            class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            id="btn-chat-forward-confirm"
+            type="button"
+            class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-400 hover:to-green-500 text-slate-950 text-xs font-bold shadow cursor-pointer flex items-center gap-1"
+          >
+            <span>↪</span>
+            <span>Encaminhar P2P</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL LIGHTBOX PARA VISUALIZAR IMAGENS E VÍDEOS DO CHAT EM TELA CHEIA -->
+  <div
+    id="chat-media-lightbox"
+    class="hidden fixed inset-0 z-50 bg-black/90 backdrop-blur-sm flex flex-col justify-between p-3 select-none"
+  >
+    <div class="flex items-center justify-between px-2 py-1.5 bg-slate-900/80 border border-slate-800 rounded-xl shrink-0">
+      <div class="flex flex-col min-w-0">
+        <span id="lightbox-media-title" class="text-xs font-bold text-white truncate">Mídia do Chat</span>
+        <span id="lightbox-media-meta" class="text-[10px] font-mono text-emerald-400 truncate">@usuario</span>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">
+        <button
+          id="btn-lightbox-forward"
+          type="button"
+          class="px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold cursor-pointer"
+        >
+          ↪ Encaminhar
+        </button>
+        <button
+          id="btn-lightbox-download"
+          type="button"
+          class="px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 text-sky-300 text-[10px] font-bold cursor-pointer"
+        >
+          ⬇ Baixar
+        </button>
+        <button
+          id="btn-lightbox-close"
+          type="button"
+          class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold cursor-pointer"
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+
+    <div id="lightbox-media-stage" class="flex-1 min-h-0 flex items-center justify-center p-2 overflow-hidden">
+      <!-- Imagem ou Vídeo renderizado via popup.js -->
     </div>
   </div>
 

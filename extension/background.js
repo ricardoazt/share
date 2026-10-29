@@ -13,9 +13,8 @@
 importScripts('pulseshare-mesh-engine.js');
 
 const PUBLIC_WSS_BROKERS = [
-  'wss://broker.emqx.io:8084/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
-  'wss://test.mosquitto.org:8081/mqtt'
+  'wss://broker.emqx.io:8084/mqtt'
 ];
 const MESH_TOPIC = 'pulseshare/v2/p2p_mesh_global';
 
@@ -40,7 +39,10 @@ const state = {
   relayedBytesTotal: 0,
   activeRelayedRoutes: 0,
   meshEngineSummary: null,
-  turnConfig: null
+  turnConfig: null,
+  chatMessages: {},
+  chatUnreadCounts: {},
+  peerTypingState: {}
 };
 
 const publicP2PShares = new Map();
@@ -49,6 +51,7 @@ const seenPacketIds = new Set();
 const activeRelaySessions = new Map(); // transferId -> session
 const routeFallbackTimers = new Map(); // transferId -> timer
 const pendingProbes = new Map(); // probeId -> resolveFn
+const pendingOutboundMeshPackets = [];
 
 if (chrome.storage && chrome.storage.onChanged) {
   chrome.storage.onChanged.addListener((changes, area) => {
@@ -201,6 +204,7 @@ async function handleRegisterUser(tagInput) {
 }
 
 let pingInterval = null;
+let chatRetryInterval = null;
 let gossipDebounceTimer = null;
 let popupWindowId = null;
 
@@ -212,7 +216,7 @@ const fileBridgeChannel =
 
 if (localMeshChannel) {
   localMeshChannel.onmessage = (e) => {
-    if (e.data) handleMeshPacket(e.data);
+    if (e.data) handleMeshPacket(e.data, true);
   };
 }
 
@@ -253,9 +257,13 @@ async function isExtensionPopupOpen() {
 function updateBadgeForStagedFiles() {
   try {
     const count = Array.isArray(state.stagedTunnelFiles) ? state.stagedTunnelFiles.length : 0;
+    const unreadChat = Object.values(state.chatUnreadCounts || {}).reduce((acc, v) => acc + (Number(v) || 0), 0);
     if (count > 0 && state.tunnelModalOpen) {
       chrome.action.setBadgeText({ text: String(count) });
       chrome.action.setBadgeBackgroundColor({ color: '#f97316' });
+    } else if (unreadChat > 0) {
+      chrome.action.setBadgeText({ text: unreadChat > 99 ? '99+' : String(unreadChat) });
+      chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
     } else {
       chrome.action.setBadgeText({ text: '' });
     }
@@ -644,11 +652,37 @@ function broadcastToMesh(packet) {
   }
 
   const mqttFrame = buildMqttPublishPacket(MESH_TOPIC, enriched);
+  let sentToAnyBroker = false;
   for (const ws of brokerSockets.values()) {
     if (ws && ws.readyState === WebSocket.OPEN && ws._mqttConnected) {
       try {
         ws.send(mqttFrame);
+        sentToAnyBroker = true;
       } catch {}
+    }
+  }
+
+  // Se nenhum broker estava pronto e é um sinal direto crítico (chat, ack, leitura), coloca na fila para envio imediato na conexão
+  if (!sentToAnyBroker && packet.meshType === 'DIRECT_SIGNAL') {
+    pendingOutboundMeshPackets.push(enriched);
+    if (pendingOutboundMeshPackets.length > 50) {
+      pendingOutboundMeshPackets.shift();
+    }
+  }
+}
+
+function flushPendingOutboundPackets() {
+  if (pendingOutboundMeshPackets.length === 0) return;
+  const toSend = [...pendingOutboundMeshPackets];
+  pendingOutboundMeshPackets.length = 0;
+  for (const enriched of toSend) {
+    const mqttFrame = buildMqttPublishPacket(MESH_TOPIC, enriched);
+    for (const ws of brokerSockets.values()) {
+      if (ws && ws.readyState === WebSocket.OPEN && ws._mqttConnected) {
+        try {
+          ws.send(mqttFrame);
+        } catch {}
+      }
     }
   }
 }
@@ -704,6 +738,7 @@ function connectSingleBroker(brokerUrl) {
         ws.send(buildMqttSubscribePacket(MESH_TOPIC));
         updateConnectionFlag();
         announcePresenceToMesh();
+        flushPendingOutboundPackets();
       } else if (pkt.mqttEvent === 'PUBLISH' && pkt.data) {
         handleMeshPacket(pkt.data);
       }
@@ -720,6 +755,9 @@ function connectSingleBroker(brokerUrl) {
 
   ws.onerror = () => {
     ws._mqttConnected = false;
+    try {
+      ws.close();
+    } catch {}
   };
 }
 
@@ -745,6 +783,44 @@ function connectPublicMesh() {
       });
       broadcastState();
     }, 15000);
+  }
+
+  if (!chatRetryInterval) {
+    chatRetryInterval = setInterval(() => {
+      retryUnconfirmedOutgoingChatMessages();
+      flushPendingDtnChatForOnlinePeers();
+    }, 4000);
+  }
+}
+
+function retryUnconfirmedOutgoingChatMessages() {
+  const now = Date.now();
+  if (!state.chatMessages || typeof state.chatMessages !== 'object') return;
+
+  for (const [peerTag, thread] of Object.entries(state.chatMessages)) {
+    if (!Array.isArray(thread) || thread.length === 0) continue;
+    const peer = state.peerRegistry?.[peerTag];
+    const isPeerOnline = peer && (peer.status === 'online' || now - (peer.lastSeen || 0) < 45000);
+
+    for (const msg of thread) {
+      if (
+        msg.direction === 'outgoing' &&
+        msg.status === 'SENT' &&
+        now - (msg.timestamp || 0) < 120000 &&
+        now - (msg._lastRetryAt || msg.timestamp || 0) >= 3000
+      ) {
+        msg._retryCount = (msg._retryCount || 0) + 1;
+        msg._lastRetryAt = now;
+
+        if (msg._retryCount <= 8 && isPeerOnline) {
+          sendSignal(peerTag, msg.transferId || msg.id, 'CHAT_MESSAGE', {
+            ...msg,
+            senderTag: state.myTag,
+            roster: Object.values(state.peerRegistry)
+          });
+        }
+      }
+    }
   }
 }
 
@@ -887,10 +963,45 @@ function mergeRemoteRoster(incomingRoster, removedTag = null, originNodeId = nul
 
   if (changed) {
     chrome.storage.local.set({ peerRegistry: state.peerRegistry });
+    flushPendingDtnChatForOnlinePeers().catch(() => {});
     broadcastState();
   }
 
   return changed;
+}
+
+async function flushPendingDtnChatForOnlinePeers() {
+  if (!meshEngine.initialized) return;
+  try {
+    const now = Date.now();
+    const onlinePeers = new Set();
+    for (const [tag, peer] of Object.entries(state.peerRegistry || {})) {
+      if (tag !== state.myTag && (peer.status === 'online' || now - (peer.lastSeen || 0) < 45000)) {
+        onlinePeers.add(tag);
+        onlinePeers.add(tag.replace(/^@/, ''));
+      }
+    }
+    if (onlinePeers.size === 0) return;
+    const deliverable = await meshEngine.flushDeliverableChatBundles(onlinePeers);
+    if (!Array.isArray(deliverable)) return;
+    for (const item of deliverable) {
+      const destTag = item?.destTag || item?.targetTag;
+      const chatPayload = item?.payload || item?.chatPayload;
+      if (destTag && chatPayload) {
+        sendSignal(destTag, chatPayload.transferId || chatPayload.id, 'CHAT_MESSAGE', chatPayload);
+        if (chatPayload.transferId && chatPayload.fileMeta) {
+          startChatMediaTransfer(
+            chatPayload.transferId,
+            destTag,
+            chatPayload.fileMeta,
+            chatPayload.id
+          );
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[PulseShare] Erro ao descarregar DTN bundles pendentes:', err);
+  }
 }
 
 function announcePresenceToMesh(previousTag = null) {
@@ -1095,13 +1206,22 @@ function processRelayQueue(session) {
   }, delayMs);
 }
 
-async function handleMeshPacket(packet) {
-  if (!packet || packet.senderNodeId === state.nodeId) return;
+async function handleMeshPacket(packet, isLocalBroadcast = false) {
+  if (!packet) return;
+
+  // Se o pacote veio do próprio nó, ignora repetições (permite apenas auto-conversa)
+  if (packet.senderNodeId === state.nodeId) {
+    const toNorm = packet.to ? normalizeTag(packet.to) : '';
+    const myNorm = state.myTag ? normalizeTag(state.myTag) : '';
+    if (!toNorm || toNorm !== myNorm) {
+      return;
+    }
+  }
 
   // Deduplica pacotes recebidos por múltiplos brokers simultaneamente
   const pktId = packet.pktId || packet.packetId;
   if (pktId) {
-    if (seenPacketIds.has(pktId)) return;
+    if (seenPacketIds.has(pktId) && !isLocalBroadcast) return;
     seenPacketIds.add(pktId);
     if (seenPacketIds.size > 2000) {
       const first = seenPacketIds.values().next().value;
@@ -1256,25 +1376,38 @@ async function handleMeshPacket(packet) {
             Array.from(publicP2PShares.keys()).some((sid) => packet.transferId.startsWith(sid)))
       );
 
-      if (packet.to !== state.myTag && (!toNorm || toNorm !== myNorm) && !isMyShare) return;
+      const isForMe = Boolean(
+        (myNorm && toNorm === myNorm) ||
+        (state.myTag && packet.to === state.myTag)
+      );
+
+      if (!isForMe && !isMyShare) return;
 
       if (packet.senderTag && !packet.senderTag.startsWith('@link_')) {
-        mergeRemoteRoster([
-          {
-            tag: packet.senderTag,
-            nodeId: packet.senderNodeId,
-            lastSeen: Date.now(),
-            status: 'online'
-          }
-        ]);
+        try {
+          mergeRemoteRoster([
+            {
+              tag: packet.senderTag,
+              nodeId: packet.senderNodeId,
+              lastSeen: Date.now(),
+              status: 'online'
+            }
+          ]);
+        } catch (err) {
+          console.warn('[handleMeshPacket] Erro não-fatal ao atualizar roster:', err);
+        }
       }
 
-      await handleIncomingSignal({
-        from: packet.senderTag,
-        transferId: packet.transferId,
-        signalType: packet.signalType,
-        payload: packet.payload
-      });
+      try {
+        await handleIncomingSignal({
+          from: packet.senderTag,
+          transferId: packet.transferId,
+          signalType: packet.signalType,
+          payload: packet.payload
+        });
+      } catch (err) {
+        console.error('[handleMeshPacket] Erro ao processar sinal recebido:', err);
+      }
       break;
     }
   }
@@ -1327,7 +1460,9 @@ function broadcastState() {
     transfers: state.transfers,
     peerRegistry: state.peerRegistry,
     deletedTags: state.deletedTags || {},
-    meshEngineSummary: state.meshEngineSummary
+    meshEngineSummary: state.meshEngineSummary,
+    chatMessages: state.chatMessages || {},
+    chatUnreadCounts: state.chatUnreadCounts || {}
   });
   chrome.runtime.sendMessage({ type: 'STATE_UPDATED', action: 'STATE_UPDATED', state }).catch(() => {});
 }
@@ -1473,6 +1608,29 @@ function updateTransfer(transferId, patch) {
     ...mergedPatch,
     updatedAt: Date.now()
   };
+
+  if (existing.isChatMedia || String(transferId || '').startsWith('chatmedia-')) {
+    const peerKey = existing.chatPeerTag || existing.peerTag;
+    const thread = peerKey ? state.chatMessages?.[peerKey] : null;
+    if (Array.isArray(thread)) {
+      const targetMsg = thread.find((m) => m.transferId === transferId || (existing.chatMsgId && m.id === existing.chatMsgId));
+      if (targetMsg) {
+        if (typeof mergedPatch.progress === 'number') {
+          targetMsg.mediaProgress = mergedPatch.progress;
+        }
+        if (mergedPatch.status === 'COMPLETED') {
+          targetMsg.mediaProgress = 100;
+          targetMsg.mediaStatus = 'READY';
+          if (targetMsg.direction === 'outgoing' && targetMsg.status !== 'READ') {
+            targetMsg.status = 'DELIVERED';
+          }
+        } else if (mergedPatch.status === 'ERROR' || mergedPatch.status === 'CANCELLED') {
+          targetMsg.mediaStatus = 'ERROR';
+        }
+      }
+    }
+  }
+
   broadcastState();
 }
 
@@ -1535,6 +1693,46 @@ function pickBatchMeta(source) {
   };
 }
 
+async function startChatMediaTransfer(transferId, targetTag, fileMeta, chatMsgId) {
+  const normMeta = {
+    name: fileMeta?.name || fileMeta?.fileName || 'midia_chat',
+    size: fileMeta?.size ?? fileMeta?.fileSize ?? 0,
+    type: fileMeta?.type || fileMeta?.fileType || 'application/octet-stream'
+  };
+  state.transfers[transferId] = {
+    id: transferId,
+    direction: 'outgoing',
+    isChatMedia: true,
+    chatPeerTag: targetTag,
+    chatMsgId,
+    peerTag: targetTag,
+    fileName: normMeta.name,
+    fileSize: normMeta.size,
+    fileType: normMeta.type,
+    progress: 0,
+    transferredBytes: 0,
+    speedBps: 0,
+    status: 'AWAITING_ACCEPT',
+    routeType: 'DIRECT',
+    triedRelays: [],
+    updatedAt: Date.now()
+  };
+  broadcastState();
+
+  await ensureOffscreenDocument();
+
+  sendSignal(targetTag, transferId, 'FILE_OFFER', {
+    isChatMedia: true,
+    chatMsgId,
+    fileName: normMeta.name,
+    fileSize: normMeta.size,
+    fileType: normMeta.type,
+    roster: Object.values(state.peerRegistry)
+  });
+
+  setupDirectRouteFallback(transferId, targetTag, normMeta);
+}
+
 async function startOutgoingTransfer(transferId, targetTag, fileMeta) {
   const batchMeta = pickBatchMeta(fileMeta);
   state.transfers[transferId] = {
@@ -1572,7 +1770,11 @@ async function handleIncomingSignal(msg) {
   const { from, transferId, signalType, payload } = msg;
 
   if (payload?.roster) {
-    mergeRemoteRoster(payload.roster);
+    try {
+      mergeRemoteRoster(payload.roster);
+    } catch (err) {
+      console.warn('[handleIncomingSignal] Erro não-fatal ao mesclar roster:', err);
+    }
   }
 
   if (signalType === 'PACK_INFO_REQUEST') {
@@ -1941,9 +2143,206 @@ async function handleIncomingSignal(msg) {
     return;
   }
 
+  if (signalType === 'CHAT_MESSAGE') {
+    const peerTag = normalizeTag(payload?.senderTag || from);
+    if (!peerTag) return;
+
+    if (!state.chatMessages || typeof state.chatMessages !== 'object') {
+      state.chatMessages = {};
+    }
+    if (!Array.isArray(state.chatMessages[peerTag])) {
+      state.chatMessages[peerTag] = [];
+    }
+
+    const msgId = payload?.id || transferId || crypto.randomUUID();
+    const existingMsg = state.chatMessages[peerTag].find((m) => m.id === msgId);
+    const hasMedia = Boolean(payload?.transferId && payload?.fileMeta);
+
+    if (!existingMsg) {
+      const msgType = payload?.msgType || payload?.type || 'text';
+      const isForwarded = Boolean(payload?.forwarded || payload?.isForwarded);
+      const mediaObj = payload?.media || (payload?.transferId && payload?.fileMeta ? { ...payload.fileMeta, transferId: payload.transferId } : null);
+      const incomingMsg = {
+        id: msgId,
+        from: peerTag,
+        to: state.myTag,
+        senderTag: peerTag,
+        peerTag,
+        direction: 'incoming',
+        msgType,
+        type: msgType,
+        text: payload?.text || '',
+        timestamp: payload?.timestamp || Date.now(),
+        status: 'DELIVERED',
+        forwarded: isForwarded,
+        isForwarded,
+        forwardedFrom: payload?.forwardedFrom || null,
+        replyTo: payload?.replyTo || null,
+        reactions: payload?.reactions && typeof payload.reactions === 'object' ? payload.reactions : {},
+        transferId: payload?.transferId || payload?.media?.transferId || null,
+        media: mediaObj,
+        fileMeta: payload?.fileMeta || (payload?.media ? { fileName: payload.media.fileName, fileSize: payload.media.fileSize, fileType: payload.media.fileType } : null),
+        voiceDuration: Number(payload?.voiceDuration || payload?.media?.duration || 0),
+        waveform: Array.isArray(payload?.waveform) ? payload.waveform : (payload?.media?.waveform || null),
+        mediaProgress: hasMedia ? 0 : 100,
+        mediaStatus: hasMedia ? 'RECEIVING' : 'NONE'
+      };
+
+      state.chatMessages[peerTag].push(incomingMsg);
+      state.chatMessages[peerTag].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      if (state.chatMessages[peerTag].length > 500) {
+        state.chatMessages[peerTag] = state.chatMessages[peerTag].slice(-500);
+      }
+
+      if (!state.chatUnreadCounts || typeof state.chatUnreadCounts !== 'object') {
+        state.chatUnreadCounts = {};
+      }
+      state.chatUnreadCounts[peerTag] = (Number(state.chatUnreadCounts[peerTag]) || 0) + 1;
+      if (state.peerTypingState && state.peerTypingState[peerTag]) {
+        state.peerTypingState[peerTag] = { status: 'idle', updatedAt: Date.now() };
+      }
+
+      if (meshEngine.initialized) {
+        try {
+          meshEngine.recordChatMessage(msgId, incomingMsg);
+        } catch (err) {
+          console.warn('[CHAT_MESSAGE] Falha não-fatal no meshEngine record:', err);
+        }
+      }
+      chrome.storage.local.set({ chatMessages: state.chatMessages, chatUnreadCounts: state.chatUnreadCounts });
+      updateBadgeForStagedFiles();
+      broadcastState();
+    }
+
+    // Confirma recebimento imediato da mensagem ao remetente
+    sendSignal(peerTag, msgId, 'CHAT_ACK', {
+      msgId,
+      status: 'DELIVERED',
+      timestamp: Date.now()
+    });
+
+    if (hasMedia) {
+      const mediaTid = payload.transferId;
+      state.transfers[mediaTid] = {
+        id: mediaTid,
+        direction: 'incoming',
+        isChatMedia: true,
+        chatPeerTag: peerTag,
+        chatMsgId: msgId,
+        peerTag,
+        routeType: 'DIRECT',
+        relayTag: null,
+        fileName: payload.fileMeta.name || 'midia_chat',
+        fileSize: payload.fileMeta.size || 0,
+        fileType: payload.fileMeta.type || 'application/octet-stream',
+        progress: 0,
+        transferredBytes: 0,
+        speedBps: 0,
+        status: 'CONNECTING',
+        updatedAt: Date.now()
+      };
+      await ensureOffscreenDocument();
+      sendSignal(peerTag, mediaTid, 'FILE_ACCEPT', {
+        isChatMedia: true,
+        chatMsgId: msgId,
+        roster: Object.values(state.peerRegistry)
+      });
+    }
+
+    broadcastState();
+
+    if (state.autoOpenOnReceive !== false) {
+      await ensureExtensionPopupOpen(`?window=1&chat=${encodeURIComponent(peerTag)}`);
+    }
+    return;
+  }
+
+  if (signalType === 'CHAT_ACK') {
+    const peerTag = normalizeTag(payload?.senderTag || from);
+    const msgId = payload?.msgId || transferId;
+    if (meshEngine.initialized && msgId) {
+      meshEngine.acknowledgeChatMessage(msgId).catch(() => {});
+    }
+    const thread = peerTag ? state.chatMessages?.[peerTag] : null;
+    if (Array.isArray(thread) && msgId) {
+      const targetMsg = thread.find((m) => m.id === msgId);
+      if (targetMsg) {
+        if (payload?.status === 'READ') {
+          targetMsg.status = 'READ';
+        } else if (targetMsg.status !== 'READ') {
+          targetMsg.status = 'DELIVERED';
+        }
+        if (payload?.mediaReady) {
+          targetMsg.mediaProgress = 100;
+          targetMsg.mediaStatus = 'READY';
+        }
+        chrome.storage.local.set({ chatMessages: state.chatMessages });
+        broadcastState();
+      }
+    }
+    return;
+  }
+
+  if (signalType === 'CHAT_READ') {
+    const peerTag = normalizeTag(payload?.readerTag || from);
+    const thread = peerTag ? state.chatMessages?.[peerTag] : null;
+    if (Array.isArray(thread)) {
+      let updated = false;
+      for (const m of thread) {
+        if (m.direction === 'outgoing' && m.status !== 'READ') {
+          m.status = 'READ';
+          updated = true;
+          if (meshEngine.initialized && m.id) {
+            meshEngine.acknowledgeChatMessage(m.id).catch(() => {});
+          }
+        }
+      }
+      if (updated) {
+        chrome.storage.local.set({ chatMessages: state.chatMessages });
+        broadcastState();
+      }
+    }
+    return;
+  }
+
+  if (signalType === 'CHAT_TYPING') {
+    const peerTag = normalizeTag(from);
+    if (peerTag) {
+      if (!state.peerTypingState) state.peerTypingState = {};
+      state.peerTypingState[peerTag] = {
+        status: payload?.status || 'idle',
+        updatedAt: Date.now()
+      };
+      broadcastState();
+    }
+    return;
+  }
+
+  if (signalType === 'CHAT_REACTION') {
+    const peerTag = normalizeTag(from);
+    const msgId = payload?.msgId || transferId;
+    const thread = peerTag ? state.chatMessages?.[peerTag] : null;
+    if (Array.isArray(thread) && msgId) {
+      const targetMsg = thread.find((m) => m.id === msgId);
+      if (targetMsg) {
+        if (!targetMsg.reactions || typeof targetMsg.reactions !== 'object') {
+          targetMsg.reactions = {};
+        }
+        if (payload?.emoji) {
+          targetMsg.reactions[peerTag] = payload.emoji;
+        } else {
+          delete targetMsg.reactions[peerTag];
+        }
+        broadcastState();
+      }
+    }
+    return;
+  }
+
   if (signalType === 'FILE_OFFER') {
     const isRelayed = Boolean(payload.routedVia);
     const peerDisplayTag = isRelayed ? payload.senderTag : from;
+    const isChatMediaOffer = Boolean(payload.isChatMedia || String(transferId || '').startsWith('chatmedia-'));
     // Uma oferta repetida (ex.: failover para relay) não deve perder o agrupamento do lote
     const previousOffer = state.transfers[transferId];
     const batchMeta = payload.batchId ? pickBatchMeta(payload) : pickBatchMeta(previousOffer);
@@ -1951,6 +2350,9 @@ async function handleIncomingSignal(msg) {
     state.transfers[transferId] = {
       id: transferId,
       direction: 'incoming',
+      isChatMedia: isChatMediaOffer || Boolean(previousOffer?.isChatMedia),
+      chatPeerTag: isChatMediaOffer ? normalizeTag(peerDisplayTag) : (previousOffer?.chatPeerTag || null),
+      chatMsgId: payload.chatMsgId || previousOffer?.chatMsgId || null,
       peerTag: peerDisplayTag,
       routeType: isRelayed ? 'MESH_RELAY' : 'DIRECT',
       relayTag: payload.routedVia || null,
@@ -1961,27 +2363,29 @@ async function handleIncomingSignal(msg) {
       progress: 0,
       transferredBytes: 0,
       speedBps: 0,
-      status: state.autoAccept ? 'CONNECTING' : 'AWAITING_ACCEPT',
+      status: (state.autoAccept || isChatMediaOffer) ? 'CONNECTING' : 'AWAITING_ACCEPT',
       updatedAt: Date.now()
     };
     broadcastState();
 
     await ensureOffscreenDocument();
 
-    if (state.autoOpenOnReceive !== false) {
+    if (state.autoOpenOnReceive !== false && !isChatMediaOffer) {
       await ensureExtensionPopupOpen('?window=1');
     }
 
-    if (state.autoAccept) {
+    if (state.autoAccept || isChatMediaOffer) {
       if (isRelayed) {
         sendSignal(payload.routedVia, transferId, 'FILE_ACCEPT', {
           isRelayed: true,
+          isChatMedia: isChatMediaOffer,
           senderTag: payload.senderTag,
           targetTag: state.myTag,
           roster: Object.values(state.peerRegistry)
         });
       } else {
         sendSignal(from, transferId, 'FILE_ACCEPT', {
+          isChatMedia: isChatMediaOffer,
           roster: Object.values(state.peerRegistry)
         });
       }
@@ -2172,6 +2576,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           broadcastState();
         }
       }
+    } else if (msg.type === 'OFFSCREEN_CHAT_MEDIA_READY') {
+      const t = state.transfers[msg.transferId];
+      if (t) {
+        t.status = 'COMPLETED';
+        t.progress = 100;
+        t.transferredBytes = msg.fileSize || t.fileSize || 0;
+        t.speedBps = 0;
+        t.updatedAt = Date.now();
+      }
+      let matchedMsg = null;
+      let matchedPeer = null;
+      for (const [peerKey, thread] of Object.entries(state.chatMessages || {})) {
+        if (!Array.isArray(thread)) continue;
+        const found = thread.find((m) => m.transferId === msg.transferId);
+        if (found) {
+          found.mediaProgress = 100;
+          found.mediaStatus = 'READY';
+          if (found.direction === 'incoming') {
+            found.status = 'DELIVERED';
+          }
+          matchedMsg = found;
+          matchedPeer = peerKey;
+          break;
+        }
+      }
+      if (matchedMsg && matchedPeer) {
+        sendSignal(matchedPeer, matchedMsg.id, 'CHAT_ACK', {
+          msgId: matchedMsg.id,
+          status: 'DELIVERED',
+          mediaReady: true,
+          timestamp: Date.now()
+        });
+      }
+      broadcastState();
+      chrome.runtime.sendMessage({
+        type: 'CHAT_MEDIA_READY',
+        transferId: msg.transferId,
+        msgId: matchedMsg?.id || null,
+        peerTag: matchedPeer
+      }).catch(() => {});
     } else if (msg.type === 'OFFSCREEN_DOWNLOAD_READY') {
       triggerChromeDownload(msg.transferId, msg.blobUrl, msg.fileName).then(() => {
         setTimeout(() => {
@@ -2231,6 +2675,217 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       startOutgoingTransfer(msg.transferId, msg.targetTag, msg.fileMeta);
       sendResponse({ ok: true });
       return true;
+
+    case 'SEND_CHAT_MESSAGE': {
+      const targetTag = normalizeTag(msg.targetTag || msg.peerTag);
+      if (!targetTag) {
+        sendResponse({ ok: false, error: 'Destinatário inválido.' });
+        return true;
+      }
+
+      // Assegura que o remetente sempre possua uma tag P2P ativa
+      if (!state.myTag) {
+        const defaultSuffix = (state.nodeId || crypto.randomUUID()).replace(/[^a-z0-9]/gi, '').slice(0, 5).toLowerCase();
+        state.myTag = `@user_${defaultSuffix}`;
+        chrome.storage.local.set({ myTag: state.myTag });
+        touchSelfInRegistry();
+      }
+
+      if (!state.chatMessages || typeof state.chatMessages !== 'object') {
+        state.chatMessages = {};
+      }
+      if (!Array.isArray(state.chatMessages[targetTag])) {
+        state.chatMessages[targetTag] = [];
+      }
+
+      const rawMsg = msg.message || msg || {};
+      const msgId = rawMsg.id || msg.id || `cmsg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const mediaObj = msg.media || rawMsg.media || null;
+      const transferId = mediaObj?.transferId || rawMsg.transferId || msg.transferId || null;
+      const fileMeta = mediaObj
+        ? { fileName: mediaObj.fileName || mediaObj.name, fileSize: mediaObj.fileSize || mediaObj.size, fileType: mediaObj.fileType || mediaObj.type }
+        : (rawMsg.fileMeta || msg.fileMeta || null);
+      const hasMedia = Boolean(transferId && (fileMeta || mediaObj));
+      const msgType = rawMsg.msgType || rawMsg.type || msg.type || (hasMedia ? 'file' : 'text');
+      const isForwarded = Boolean(rawMsg.forwarded || rawMsg.isForwarded || msg.forwarded || msg.isForwarded);
+      const voiceDur = Number(mediaObj?.duration || rawMsg.voiceDuration || 0);
+      const waveformData = mediaObj?.waveform || rawMsg.waveform || null;
+
+      const isSelfChat = targetTag === normalizeTag(state.myTag);
+
+      const chatMsg = {
+        id: msgId,
+        from: state.myTag,
+        to: targetTag,
+        senderTag: state.myTag,
+        peerTag: targetTag,
+        direction: 'outgoing',
+        msgType,
+        type: msgType,
+        text: rawMsg.text ?? msg.text ?? '',
+        timestamp: rawMsg.timestamp || msg.timestamp || Date.now(),
+        status: isSelfChat ? 'DELIVERED' : 'SENT',
+        forwarded: isForwarded,
+        isForwarded,
+        forwardedFrom: rawMsg.forwardedFrom || null,
+        replyTo: rawMsg.replyTo || null,
+        reactions: rawMsg.reactions || {},
+        transferId,
+        media: mediaObj || (hasMedia ? { ...fileMeta, transferId, duration: voiceDur, waveform: waveformData } : null),
+        fileMeta,
+        voiceDuration: voiceDur,
+        waveform: waveformData,
+        mediaProgress: hasMedia && !isSelfChat ? 0 : 100,
+        mediaStatus: hasMedia ? (isSelfChat ? 'READY' : 'SENDING') : 'NONE'
+      };
+
+      state.chatMessages[targetTag].push(chatMsg);
+      state.chatMessages[targetTag].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      if (state.chatMessages[targetTag].length > 500) {
+        state.chatMessages[targetTag] = state.chatMessages[targetTag].slice(-500);
+      }
+
+      chrome.storage.local.set({ chatMessages: state.chatMessages });
+
+      if (isSelfChat) {
+        broadcastState();
+        sendResponse({ ok: true, message: chatMsg, state });
+        return true;
+      }
+
+      if (meshEngine.initialized) {
+        try {
+          meshEngine.recordChatMessage(msgId, chatMsg);
+          // Armazena no DTN Store and Forward como salvaguarda até receber o CHAT_ACK de entrega
+          meshEngine.stageOfflineChatBundle(targetTag, {
+            ...chatMsg,
+            senderTag: state.myTag
+          }).catch(() => {});
+        } catch (err) {
+          console.warn('[SEND_CHAT_MESSAGE] Falha não-fatal no meshEngine:', err);
+        }
+      }
+
+      sendSignal(targetTag, chatMsg.transferId || msgId, 'CHAT_MESSAGE', {
+        ...chatMsg,
+        senderTag: state.myTag,
+        roster: Object.values(state.peerRegistry)
+      });
+
+      if (hasMedia) {
+        startChatMediaTransfer(chatMsg.transferId, targetTag, chatMsg.fileMeta, msgId);
+      } else {
+        broadcastState();
+      }
+
+      sendResponse({ ok: true, message: chatMsg, state });
+      return true;
+    }
+
+    case 'MARK_CHAT_READ': {
+      const peerTag = normalizeTag(msg.peerTag);
+      if (peerTag) {
+        if (!state.chatUnreadCounts) state.chatUnreadCounts = {};
+        state.chatUnreadCounts[peerTag] = 0;
+        const thread = state.chatMessages?.[peerTag];
+        if (Array.isArray(thread)) {
+          for (const m of thread) {
+            if (m.direction === 'incoming') {
+              m.status = 'READ';
+            }
+          }
+        }
+        chrome.storage.local.set({ chatMessages: state.chatMessages, chatUnreadCounts: state.chatUnreadCounts });
+        updateBadgeForStagedFiles();
+        sendSignal(peerTag, `read-${Date.now()}`, 'CHAT_READ', {
+          readerTag: state.myTag,
+          timestamp: Date.now()
+        });
+        broadcastState();
+      }
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'SEND_CHAT_TYPING': {
+      const peerTag = normalizeTag(msg.peerTag);
+      if (peerTag) {
+        sendSignal(peerTag, `typing-${Date.now()}`, 'CHAT_TYPING', {
+          status: msg.isTyping ? (msg.typingType || msg.status || 'typing') : 'idle',
+          timestamp: Date.now()
+        });
+      }
+      sendResponse({ ok: true });
+      return true;
+    }
+
+    case 'SEND_CHAT_REACTION': {
+      const peerTag = normalizeTag(msg.peerTag);
+      const msgId = msg.msgId || msg.messageId;
+      const thread = peerTag ? state.chatMessages?.[peerTag] : null;
+      if (Array.isArray(thread) && msgId) {
+        const targetMsg = thread.find((m) => m.id === msgId);
+        if (targetMsg) {
+          if (!targetMsg.reactions || typeof targetMsg.reactions !== 'object') {
+            targetMsg.reactions = {};
+          }
+          const myKey = state.myTag || '@eu';
+          const nextEmoji = targetMsg.reactions[myKey] === msg.emoji ? null : (msg.emoji || null);
+          if (nextEmoji) {
+            targetMsg.reactions[myKey] = nextEmoji;
+          } else {
+            delete targetMsg.reactions[myKey];
+          }
+          chrome.storage.local.set({ chatMessages: state.chatMessages });
+          sendSignal(peerTag, msgId, 'CHAT_REACTION', {
+            msgId,
+            emoji: nextEmoji,
+            timestamp: Date.now()
+          });
+          broadcastState();
+        }
+      }
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'DELETE_CHAT_MESSAGES': {
+      const peerTag = normalizeTag(msg.peerTag);
+      const idsSet = new Set(Array.isArray(msg.messageIds) ? msg.messageIds : []);
+      if (peerTag && Array.isArray(state.chatMessages?.[peerTag]) && idsSet.size > 0) {
+        state.chatMessages[peerTag] = state.chatMessages[peerTag].filter((m) => !idsSet.has(m.id));
+        chrome.storage.local.set({ chatMessages: state.chatMessages });
+        broadcastState();
+      }
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'CLEAR_CHAT_CONVERSATION': {
+      const peerTag = normalizeTag(msg.peerTag);
+      if (peerTag) {
+        if (state.chatMessages) state.chatMessages[peerTag] = [];
+        if (state.chatUnreadCounts) state.chatUnreadCounts[peerTag] = 0;
+        chrome.storage.local.set({ chatMessages: state.chatMessages, chatUnreadCounts: state.chatUnreadCounts });
+        updateBadgeForStagedFiles();
+        broadcastState();
+      }
+      sendResponse({ ok: true, state });
+      return true;
+    }
+
+    case 'DOWNLOAD_CHAT_MEDIA': {
+      ensureOffscreenDocument().then(() => {
+        safeSendMessage({
+          target: 'offscreen',
+          action: 'OFFSCREEN_DOWNLOAD_CHAT_MEDIA',
+          transferId: msg.transferId,
+          fileName: msg.fileName || 'midia_pulseshare'
+        });
+      });
+      sendResponse({ ok: true });
+      return true;
+    }
 
     case 'ADD_STAGED_TUNNEL_FILES': {
       const incoming = Array.isArray(msg.files) ? msg.files : [];
@@ -2600,11 +3255,21 @@ async function initializeServiceWorker() {
     'meshRelayEnabled',
     'relayBandwidthLimitKbps',
     'relayedBytesTotal',
-    'turnConfig'
+    'turnConfig',
+    'chatMessages',
+    'chatUnreadCounts'
   ]);
 
   if (stored.turnConfig) {
     state.turnConfig = stored.turnConfig;
+  }
+
+  if (stored.chatMessages && typeof stored.chatMessages === 'object') {
+    state.chatMessages = stored.chatMessages;
+  }
+
+  if (stored.chatUnreadCounts && typeof stored.chatUnreadCounts === 'object') {
+    state.chatUnreadCounts = stored.chatUnreadCounts;
   }
 
   if (Array.isArray(stored.stagedTunnelFiles)) {
@@ -2632,7 +3297,9 @@ async function initializeServiceWorker() {
   if (stored.myTag) {
     state.myTag = stored.myTag;
   } else {
-    state.myTag = '';
+    const defaultSuffix = (state.nodeId || crypto.randomUUID()).replace(/[^a-z0-9]/gi, '').slice(0, 5).toLowerCase();
+    state.myTag = `@user_${defaultSuffix}`;
+    await chrome.storage.local.set({ myTag: state.myTag });
   }
 
   if (typeof stored.autoAccept === 'boolean') {

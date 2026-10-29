@@ -396,6 +396,47 @@ function base64ToUint8Array(base64) {
   return bytes;
 }
 
+async function storeReceivedChatMediaBlob(transferId, blob, fileName, fileType) {
+  const effectiveType = fileType || blob.type || 'application/octet-stream';
+  const effectiveName = fileName || 'midia_chat';
+  let fileObj;
+  try {
+    fileObj = new File([blob], effectiveName, { type: effectiveType });
+  } catch {
+    fileObj = blob;
+  }
+  inMemoryFiles.set(transferId, fileObj);
+  try {
+    const db = await openDatabase();
+    await new Promise((resolve) => {
+      const tx = db.transaction(FILE_STORE, 'readwrite');
+      tx.objectStore(FILE_STORE).put(fileObj, transferId);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+    });
+  } catch {}
+  try {
+    fileBridgeChannel.postMessage({
+      type: 'STAGE_FILE_MEMORY',
+      transferId,
+      file: fileObj
+    });
+  } catch {}
+  sendToBackground({
+    type: 'OFFSCREEN_CHAT_MEDIA_READY',
+    transferId,
+    fileName: effectiveName,
+    fileType: effectiveType,
+    fileSize: fileObj.size || blob.size || 0
+  });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== 'offscreen') return false;
 
@@ -411,6 +452,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.action === 'REVOKE_BLOB_URL' && msg.blobUrl) {
     URL.revokeObjectURL(msg.blobUrl);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (msg.action === 'OFFSCREEN_DOWNLOAD_CHAT_MEDIA' && msg.transferId) {
+    getStagedFile(msg.transferId, msg.transferId).then((file) => {
+      if (file) {
+        const blobUrl = URL.createObjectURL(file);
+        sendToBackground({
+          type: 'OFFSCREEN_DOWNLOAD_READY',
+          transferId: msg.transferId,
+          blobUrl,
+          fileName: msg.fileName || file.name || 'arquivo_chat'
+        });
+      }
+    });
     sendResponse({ ok: true });
     return false;
   }
@@ -641,7 +698,7 @@ async function startMeshRelayStream({
       fileCompleted: true
     });
 
-    if (!keepStaged) {
+    if (!keepStaged && !String(fileKey || '').startsWith('chatmedia-')) {
       await deleteStagedFile(fileKey);
     }
   } catch (err) {
@@ -689,6 +746,10 @@ function finalizeIncomingRelaySession(transferId, session) {
   });
 
   const blob = new Blob(orderedChunks, { type: session.fileType });
+  if (String(transferId || '').startsWith('chatmedia-')) {
+    storeReceivedChatMediaBlob(transferId, blob, session.fileName, session.fileType);
+    return;
+  }
   const blobUrl = URL.createObjectURL(blob);
   sendToBackground({
     type: 'OFFSCREEN_DOWNLOAD_READY',
@@ -1125,7 +1186,7 @@ async function startSenderWebRTC(
         fileCompleted: true
       });
 
-      if (!keepStaged) {
+      if (!keepStaged && !String(fileKey || '').startsWith('chatmedia-')) {
         await deleteStagedFile(fileKey);
       }
     } catch (err) {
@@ -1287,6 +1348,14 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
           } catch {}
           const blob = new Blob(chunks, { type: fileType });
           chunks.length = 0; // Libera memória imediatamente
+          if (String(transferId || '').startsWith('chatmedia-')) {
+            storeReceivedChatMediaBlob(transferId, blob, fileName, fileType);
+            setTimeout(() => {
+              pc.close();
+              peerSessions.delete(transferId);
+            }, 1000);
+            return;
+          }
           const blobUrl = URL.createObjectURL(blob);
           sendToBackground({
             type: 'OFFSCREEN_DOWNLOAD_READY',

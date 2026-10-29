@@ -192,3 +192,55 @@ O **PulseShare** integra um motor descentralizado completo (`pulseshare-mesh-eng
 - **Double Ratchet Algorithm (Signal Protocol End-to-End Encryption)**:
   - Criptografia de ponta a ponta intransponível com **Forward Secrecy** (o vazamento de chaves atuais não compromete mensagens passadas) e **Post-Compromise Security / Break-in Recovery** (o sistema se auto-recupera de comprometimentos no próximo salto DH).
   - Cadeia de chaves KDF raiz, cadeia KDF simétrica de envio/recebimento HMAC-SHA-256 e saltos de chave pública ECDH a cada resposta.
+
+---
+
+## 💬 Chat P2P & Mensageiro Estilo WhatsApp na Rede Mesh
+
+O **PulseShare** inclui um sistema completo de mensageria instantânea descentralizado estilo WhatsApp integrado à malha P2P, permitindo que os nós da rede conversem em tempo real sem qualquer servidor central:
+
+1. **Conversas 1-on-1 em Tempo Real entre `@usuarios`**:
+   - Sinalização direta via WebSockets + WebRTC DataChannels ou Mesh Relay com failover automático.
+   - **Confirmações de Leitura (Ticks estilo WhatsApp)**:
+     - `🕒` Enviando para a malha P2P.
+     - `✓` Enviada e propagada na rede.
+     - `✓✓` Entregue no nó de destino.
+     - `✓✓` (Verde/Azul) Lida pelo destinatário.
+   - **Indicadores de Digitação em Tempo Real**: exibe `"digitando..."` e `"🎤 gravando áudio..."` no cabeçalho e na lista de conversas.
+   - **Resiliência Offline DTN (Store-and-Forward)**: se o nó de destino estiver temporariamente offline, as mensagens e mídias ficam armazenadas de forma segura em custódia criptografada e são entregues automaticamente assim que o nó se reconectar.
+
+2. **Gravação e Envio de Mensagens de Voz pelo Microfone**:
+   - Gravação nativa pelo microfone usando a API `navigator.mediaDevices.getUserMedia` + `MediaRecorder` (`audio/webm;codecs=opus`).
+   - Análise espectral em tempo real com a **Web Audio API** (`AnalyserNode`), animando ondas sonoras dinâmicas durante a fala e gerando o mapa de amplitude da mensagem.
+   - **Player de Áudio e Voz Estilo WhatsApp**:
+     - Botão Play / Pause (`▶` / `⏸`).
+     - Barras de onda sonora (*waveform*) interativas: clique em qualquer barra para avançar ou retroceder a reprodução.
+     - Duração total e cronômetro regressivo/progressivo em tempo real.
+     - **Alternador de Velocidade de Reprodução**: alterne entre `1x`, `1.5x` e `2x` com um toque.
+
+3. **Visualização Inline de Fotos, Vídeos, Áudios e Arquivos**:
+   - **Imagens**: miniaturas responsivas diretamente na bolha da conversa. Clique na imagem para abrir o **Lightbox em Tela Cheia** com zoom, visualização em alta resolução, atalho para download e encaminhamento.
+   - **Vídeos**: player de vídeo inline com controles nativos de play, pause, volume e tela cheia.
+   - **Arquivos & Documentos**: cards elegantes com identificação visual por extensão (`PDF`, `ZIP`, `DOCX`, etc.), exibição de tamanho formatado e botão de download instantâneo.
+   - **Drag and Drop**: arraste arquivos e mídias diretamente para a janela da conversa para anexar e enviar.
+
+4. **Sistema de Encaminhamento P2P de Mensagens (`Encaminhamento`)**:
+   - Selecione uma ou múltiplas mensagens (texto, fotos, vídeos, áudios, voz ou arquivos).
+   - Abra o **Modal de Encaminhamento P2P**:
+     - Filtre e selecione um ou mais nós (`@usuarios`) da rede descentralizada.
+     - Permite incluir nós recém-descobertos ou digitar `@usuario` manualmente.
+     - Campo opcional para adicionar comentários ao encaminhamento.
+   - O sistema replica as mensagens e transfere as mídias na malha P2P para todos os destinatários selecionados simultaneamente.
+   - Mensagens encaminhadas exibem o selo identificador `↪ Encaminhada`.
+
+5. **Emoticons, Emojis & Reações**:
+   - Seletor de emojis categorizado integrado ao compositor:
+     - 🕒 *Recentes e Populares*
+     - 😀 *Rostos e Emoções*
+     - 👋 *Gestos e Pessoas*
+     - ❤️ *Corações e Símbolos*
+     - 🍕 *Natureza e Comida*
+     - 🚀 *Objetos e Tecnologia*
+   - **Jumbo Emojis**: mensagens contendo apenas 1 a 3 emojis são renderizadas em tamanho gigante.
+   - **Reações Rápidas**: reaja instantaneamente a qualquer mensagem com emojis (`❤️`, `👍`, etc.) exibidos na base da bolha.
+
