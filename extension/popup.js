@@ -5131,7 +5131,9 @@ function downloadChatMedia(transferId, fileName) {
       a.remove();
       URL.revokeObjectURL(url);
     }, 1000);
+    showToast(`Baixando ${fileName || 'arquivo'}...`, 'info');
   } else {
+    showToast(`Solicitando download de ${fileName || 'arquivo'}...`, 'info');
     chrome.runtime.sendMessage({ action: 'DOWNLOAD_CHAT_MEDIA', transferId, fileName });
   }
 }
@@ -5374,13 +5376,16 @@ function stopAndSendVoiceRecording() {
       const transferId = `chatmedia-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       activeSessionFiles.set(transferId, audioBlob);
+      saveStagedFile(transferId, audioBlob);
       if (fileBridgeChannel) {
         fileBridgeChannel.postMessage({
+          type: 'STAGE_FILE_MEMORY',
           action: 'STAGE_FILE_MEMORY',
           transferId,
           fileName,
           fileSize: audioBlob.size,
           fileType: mime,
+          file: audioBlob,
           blob: audioBlob
         });
       }
@@ -5533,14 +5538,17 @@ async function sendChatMessage() {
     for (const att of attachments) {
       const transferId = `chatmedia-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       activeSessionFiles.set(transferId, att.fileObj);
+      saveStagedFile(transferId, att.fileObj);
 
       if (fileBridgeChannel) {
         fileBridgeChannel.postMessage({
+          type: 'STAGE_FILE_MEMORY',
           action: 'STAGE_FILE_MEMORY',
           transferId,
           fileName: att.name,
           fileSize: att.size,
           fileType: att.fileObj.type,
+          file: att.fileObj,
           blob: att.fileObj
         });
       }
@@ -6026,13 +6034,16 @@ async function executeForwardMessages() {
 
         if (originalBlob) {
           activeSessionFiles.set(newTransferId, originalBlob);
+          saveStagedFile(newTransferId, originalBlob);
           if (fileBridgeChannel) {
             fileBridgeChannel.postMessage({
+              type: 'STAGE_FILE_MEMORY',
               action: 'STAGE_FILE_MEMORY',
               transferId: newTransferId,
               fileName: msg.media.fileName,
               fileSize: originalBlob.size,
               fileType: msg.media.fileType || originalBlob.type,
+              file: originalBlob,
               blob: originalBlob
             });
           }

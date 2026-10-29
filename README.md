@@ -244,3 +244,35 @@ O **PulseShare** inclui um sistema completo de mensageria instantânea descentra
    - **Jumbo Emojis**: mensagens contendo apenas 1 a 3 emojis são renderizadas em tamanho gigante.
    - **Reações Rápidas**: reaja instantaneamente a qualquer mensagem com emojis (`❤️`, `👍`, etc.) exibidos na base da bolha.
 
+---
+
+## 📱 Aplicativo Android Nativo — PulseShare (`PulseShare.apk`)
+
+O **PulseShare** conta agora com um aplicativo Android 100% nativo empacotado e compilado em `PulseShare.apk`, permitindo que smartphones e tablets participem plenamente da malha P2P descentralizada com integração de sistema operacional de baixo nível:
+
+### 🌟 Funcionalidades Nativas no Android
+1. **Instalação Direta (`PulseShare.apk`)**:
+   - Binário Android otimizado e assinado (2.1 MB) pronto para instalação em qualquer dispositivo com Android 7.0+ (API 24 até API 36).
+2. **Integração com o Menu de Compartilhamento do Android (`ACTION_SEND` e `ACTION_SEND_MULTIPLE`)**:
+   - Compartilhe fotos da Galeria, arquivos do gerenciador ou textos de qualquer aplicativo diretamente para o PulseShare.
+3. **Seletor de Arquivos Nativo (Storage Access Framework - SAF)**:
+   - Suporte a seleção de múltiplos arquivos de qualquer formato ou tamanho via explorador nativo do sistema.
+4. **Download Direto para a Pasta Pública `Download/PulseShare/`**:
+   - Os arquivos recebidos via WebRTC DataChannel são gravados em streaming contínuo diretamente no armazenamento do dispositivo, sem limites de memória RAM.
+   - Atualização automática do **MediaScanner** do Android para exibição imediata em players e galerias.
+5. **Notificações do Sistema com Abertura em 1 Toque**:
+   - Notificações nativas de conclusão de download com ação direta para abrir o arquivo no app padrão (`FileProvider`).
+6. **Keep-Alive em Segundo Plano (Foreground Service)**:
+   - WakeLock e WifiLock dedicados que impedem o Android de suspender a CPU ou desconectar o rádio Wi-Fi durante transferências pesadas de arquivos grandes.
+7. **Participação Completa na Malha Mesh P2P**:
+   - Sinalização multi-broker MQTT sobre WebSockets (`wss://broker.hivemq.com:8884/mqtt`, `wss://broker.emqx.io:8084/mqtt`, `wss://test.mosquitto.org:8081/mqtt`).
+   - Conexões ponto a ponto WebRTC DataChannel (diretas e multi-hop relay).
+   - Chat P2P com criptografia de ponta a ponta.
+   - Criação e gerenciamento de Links Públicos WebRTC com compartilhamento direto para WhatsApp e Telegram.
+
+### 🔨 Compilação do APK a partir do Código Fonte:
+```bash
+cd android
+./gradlew assembleRelease
+# O APK gerado estará em: android/app/build/outputs/apk/release/app-release.apk
+```

@@ -79,17 +79,19 @@ const fileBridgeChannel = new BroadcastChannel('pulseshare_file_bridge');
 fileBridgeChannel.onmessage = async (event) => {
   const data = event.data;
   if (!data) return;
-  if (data.type === 'STAGE_FILE_MEMORY' && data.transferId && data.file) {
-    inMemoryFiles.set(data.transferId, data.file);
+  const isStage = data.type === 'STAGE_FILE_MEMORY' || data.action === 'STAGE_FILE_MEMORY';
+  const fileObj = data.file || data.blob;
+  if (isStage && data.transferId && fileObj) {
+    inMemoryFiles.set(data.transferId, fileObj);
     const waiters = pendingFileWaiters.get(data.transferId);
     if (waiters) {
       pendingFileWaiters.delete(data.transferId);
-      waiters.forEach((fn) => fn(data.file));
+      waiters.forEach((fn) => fn(fileObj));
     }
     try {
       const db = await openDatabase();
       const tx = db.transaction(FILE_STORE, 'readwrite');
-      tx.objectStore(FILE_STORE).put(data.file, data.transferId);
+      tx.objectStore(FILE_STORE).put(fileObj, data.transferId);
       tx.oncomplete = () => db.close();
       tx.onerror = () => db.close();
     } catch {}
@@ -465,6 +467,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           transferId: msg.transferId,
           blobUrl,
           fileName: msg.fileName || file.name || 'arquivo_chat'
+        });
+      } else {
+        sendToBackground({
+          type: 'OFFSCREEN_CHAT_MEDIA_NOT_FOUND',
+          transferId: msg.transferId,
+          fileName: msg.fileName
         });
       }
     });
@@ -1350,6 +1358,17 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
           chunks.length = 0; // Libera memória imediatamente
           if (String(transferId || '').startsWith('chatmedia-')) {
             storeReceivedChatMediaBlob(transferId, blob, fileName, fileType);
+            const isAudioOrVoice = fileType && (fileType.startsWith('audio/') || fileType.includes('ogg') || fileType.includes('webm'));
+            const isSmallImage = fileType && fileType.startsWith('image/') && blob.size < 5 * 1024 * 1024;
+            if (!isAudioOrVoice && !isSmallImage) {
+              const blobUrl = URL.createObjectURL(blob);
+              sendToBackground({
+                type: 'OFFSCREEN_DOWNLOAD_READY',
+                transferId,
+                blobUrl,
+                fileName
+              });
+            }
             setTimeout(() => {
               pc.close();
               peerSessions.delete(transferId);

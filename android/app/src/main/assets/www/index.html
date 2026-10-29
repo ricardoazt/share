@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>PulseShare Android</title>
+  <link rel="stylesheet" href="tailwind.css" />
+  <style>
+    /* Safe-area padding e estilo do app nativo */
+    :root {
+      --sat: env(safe-area-inset-top, 0px);
+      --sab: env(safe-area-inset-bottom, 0px);
+    }
+    body {
+      background-color: #020617;
+      color: #f8fafc;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding-top: var(--sat);
+      padding-bottom: var(--sab);
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      overflow-x: hidden;
+    }
+    .custom-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+    .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+    
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.92); }
+    }
+    .pulse-dot { animation: pulse-slow 2s infinite ease-in-out; }
+
+    .glow-orange {
+      box-shadow: 0 0 15px rgba(249, 115, 22, 0.25);
+    }
+    .glow-indigo {
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
+    }
+  </style>
+</head>
+<body class="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden relative">
+
+  <!-- CABEÇALHO NATIVO SUPERIOR -->
+  <header class="px-4 py-3 bg-slate-900/95 border-b border-slate-800/80 flex items-center justify-between shrink-0 z-30 shadow-md">
+    <div class="flex items-center gap-2.5">
+      <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-orange-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-orange-500/20">
+        <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
+        </svg>
+      </div>
+      <div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-sm font-black tracking-wide text-white">PulseShare</span>
+          <span id="header-mesh-dot" class="w-2 h-2 rounded-full bg-amber-400 pulse-dot" title="Sincronizando malha..."></span>
+        </div>
+        <span id="header-user-tag" class="text-[11px] font-mono text-orange-400 font-bold block leading-none">@conectando...</span>
+      </div>
+    </div>
+
+    <!-- BOTÕES DO TOPO (Status e Configurações) -->
+    <div class="flex items-center gap-2">
+      <span id="header-status-badge" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700/80">
+        Conectando...
+      </span>
+      <button id="btn-open-settings" type="button" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ÁREA PRINCIPAL COM SCROLL E CONTEÚDO DAS ABAS -->
+  <main class="flex-1 overflow-y-auto custom-scroll relative">
+
+    <!-- ===================================================================== -->
+    <!-- ABA 1: INÍCIO (DASHBOARD) -->
+    <!-- ===================================================================== -->
+    <section id="view-home" class="p-4 space-y-4">
+      
+      <!-- Card do Meu Usuário -->
+      <div class="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 shadow-xl relative overflow-hidden">
+        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-orange-500/10 blur-2xl pointer-events-none"></div>
+        <div class="flex items-start justify-between">
+          <div>
+            <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Identidade na Malha</span>
+            <div class="flex items-center gap-2 mt-0.5">
+              <h2 id="home-tag-display" class="text-xl font-black text-white tracking-tight">@usuario</h2>
+              <span id="home-status-pill" class="text-[9px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">ONLINE</span>
+            </div>
+          </div>
+          <button id="btn-edit-tag" type="button" class="text-xs text-orange-400 hover:text-orange-300 font-bold px-2 py-1 rounded-lg bg-orange-500/10 border border-orange-500/20 active:scale-95">
+            Alterar
+          </button>
+        </div>
+
+        <div class="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+          <span class="text-slate-400">Hash de Registro:</span>
+          <span id="home-reghash-display" class="font-mono text-indigo-300 font-medium">0x000000000000</span>
+        </div>
+      </div>
+
+      <!-- Ações Rápidas -->
+      <div class="space-y-2">
+        <span class="text-xs font-bold uppercase tracking-wider text-slate-400 px-1">Ações Rápidas</span>
+        
+        <div class="grid grid-cols-2 gap-2.5">
+          <!-- Ação: Enviar P2P -->
+          <button id="btn-action-send-p2p" type="button" class="p-3.5 rounded-2xl bg-gradient-to-b from-indigo-900/40 to-slate-900 border border-indigo-500/30 text-left hover:border-indigo-500 transition-all active:scale-98 glow-indigo flex flex-col justify-between h-28">
+            <div class="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+              </svg>
+            </div>
+            <div>
+              <span class="font-bold text-sm text-white block">Enviar para @peer</span>
+              <span class="text-[10px] text-slate-400">P2P direto sem links</span>
+            </div>
+          </button>
+
+          <!-- Ação: Criar Link Público -->
+          <button id="btn-action-create-link" type="button" class="p-3.5 rounded-2xl bg-gradient-to-b from-orange-900/40 to-slate-900 border border-orange-500/30 text-left hover:border-orange-500 transition-all active:scale-98 glow-orange flex flex-col justify-between h-28">
+            <div class="w-8 h-8 rounded-xl bg-orange-500/20 text-orange-400 flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+              </svg>
+            </div>
+            <div>
+              <span class="font-bold text-sm text-white block">Gerar Link WebRTC</span>
+              <span class="text-[10px] text-slate-400">Compartilhe no WhatsApp</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Ação: Baixar via Link -->
+        <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2">
+          <input id="input-open-link" type="url" placeholder="Colar link PulseShare para baixar..." class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 font-mono outline-none focus:border-orange-500" />
+          <button id="btn-open-link-go" type="button" class="px-3.5 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shrink-0 active:scale-95 shadow-md shadow-orange-600/30">
+            Baixar
+          </button>
+        </div>
+      </div>
+
+      <!-- Resumo da Malha Descentralizada -->
+      <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-white flex items-center gap-2">
+            <span>🌐 Status da Malha Mesh</span>
+          </span>
+          <span id="home-peers-count-badge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-indigo-300 border border-slate-700">0 peers online</span>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span class="text-[10px] text-slate-400 block">Sinalização</span>
+            <span id="stat-brokers-count" class="text-xs font-bold text-emerald-400 font-mono mt-0.5 block">3 Brokers</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span class="text-[10px] text-slate-400 block">Roteamento</span>
+            <span id="stat-relay-mode" class="text-xs font-bold text-indigo-400 font-mono mt-0.5 block">Relay Ativo</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span class="text-[10px] text-slate-400 block">Transferências</span>
+            <span id="stat-transfers-count" class="text-xs font-bold text-orange-400 font-mono mt-0.5 block">0 ativas</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 2: CHAT P2P -->
+    <!-- ===================================================================== -->
+    <section id="view-chat" class="hidden h-full flex flex-col p-4 space-y-3">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
+          <span>💬 Conversas Criptografadas E2EE</span>
+        </h3>
+        <select id="chat-peer-select" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded-lg px-2 py-1 outline-none">
+          <option value="">Selecione um usuário...</option>
+        </select>
+      </div>
+
+      <!-- Janela de Mensagens -->
+      <div id="chat-messages-container" class="flex-1 overflow-y-auto custom-scroll space-y-2 p-3 rounded-2xl bg-slate-900/60 border border-slate-800 min-h-[300px]">
+        <div class="h-full flex flex-col items-center justify-center text-center text-slate-500 py-12">
+          <svg class="w-10 h-10 mb-2 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+          </svg>
+          <p class="text-xs">Selecione um usuário acima para conversar ponto a ponto com criptografia de ponta a ponta.</p>
+        </div>
+      </div>
+
+      <!-- Barra de Envio de Chat -->
+      <div class="flex items-center gap-2 pt-1">
+        <button id="btn-chat-attach" type="button" title="Anexar arquivo" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all active:scale-95 border border-slate-700">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.37l-10.94 10.94a1.5 1.5 0 01-2.122-2.122l7.693-7.693" />
+          </svg>
+        </button>
+        <input id="input-chat-text" type="text" placeholder="Digite uma mensagem segura..." class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500" />
+        <button id="btn-chat-send" type="button" class="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all active:scale-95 shadow-md shadow-indigo-600/30">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+          </svg>
+        </button>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 3: TRANSFERÊNCIAS -->
+    <!-- ===================================================================== -->
+    <section id="view-transfers" class="hidden p-4 space-y-3">
+      <div class="flex items-center justify-between pb-1 border-b border-slate-800">
+        <div class="flex items-center gap-2">
+          <button id="tab-transfers-active" type="button" class="text-xs font-bold text-orange-400 border-b-2 border-orange-500 pb-1 px-1">Ativas</button>
+          <button id="tab-transfers-history" type="button" class="text-xs font-medium text-slate-400 hover:text-white pb-1 px-1">Histórico</button>
+        </div>
+        <button id="btn-clear-completed-transfers" type="button" class="text-[10px] text-slate-400 hover:text-rose-400">Limpar concluídas</button>
+      </div>
+
+      <!-- Lista de Cards de Transferência -->
+      <div id="transfers-list-container" class="space-y-3">
+        <div class="py-16 text-center text-slate-500 space-y-2">
+          <svg class="w-10 h-10 mx-auto opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+          </svg>
+          <p class="text-xs">Nenhuma transferência em andamento no momento.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 4: LINKS PÚBLICOS -->
+    <!-- ===================================================================== -->
+    <section id="view-shares" class="hidden p-4 space-y-3">
+      <div class="flex items-center justify-between pb-1 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-white">🔗 Meus Links Públicos Ativos</h3>
+        <button id="btn-new-share-link" type="button" class="text-xs font-bold text-orange-400 bg-orange-500/10 border border-orange-500/30 px-2.5 py-1 rounded-lg active:scale-95">
+          + Criar Link
+        </button>
+      </div>
+
+      <div id="shares-list-container" class="space-y-3">
+        <div class="py-16 text-center text-slate-500 space-y-2">
+          <svg class="w-10 h-10 mx-auto opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+          </svg>
+          <p class="text-xs">Nenhum link público ativo gerado por este dispositivo.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 5: USUÁRIOS / MALHA MESH -->
+    <!-- ===================================================================== -->
+    <section id="view-mesh" class="hidden p-4 space-y-3">
+      <div class="flex items-center justify-between pb-1 border-b border-slate-800">
+        <div>
+          <h3 class="text-sm font-bold text-white">👥 Usuários Conectados</h3>
+          <span class="text-[10px] text-slate-400">Catálogo descentralizado da rede P2P</span>
+        </div>
+        <span id="mesh-peers-online-badge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+          0 Online
+        </span>
+      </div>
+
+      <!-- Campo de Busca de Usuários -->
+      <div>
+        <input id="input-search-peers" type="text" placeholder="Buscar por @usuario..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500" />
+      </div>
+
+      <!-- Lista de Usuários Conhecidos -->
+      <div id="mesh-peers-container" class="space-y-2.5">
+        <!-- Renderizado dinamicamente -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- BARRA DE NAVEGAÇÃO INFERIOR NATIVA (5 ABAS) -->
+  <!-- ===================================================================== -->
+  <nav class="grid grid-cols-5 bg-slate-900/95 border-t border-slate-800/80 shrink-0 select-none pb-1 z-30 shadow-lg">
+    <button id="nav-home" type="button" class="nav-tab active py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-bold text-orange-400">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+      </svg>
+      <span>Início</span>
+    </button>
+
+    <button id="nav-chat" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+      <div class="relative">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+        </svg>
+        <span id="badge-chat-unread" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-indigo-500 text-white font-mono">0</span>
+      </div>
+      <span>Chat</span>
+    </button>
+
+    <button id="nav-transfers" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+      <div class="relative">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+        </svg>
+        <span id="badge-transfers-count" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-sky-500 text-slate-950 font-mono">0</span>
+      </div>
+      <span>Envios</span>
+    </button>
+
+    <button id="nav-shares" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+      <div class="relative">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+        </svg>
+      </div>
+      <span>Links</span>
+    </button>
+
+    <button id="nav-mesh" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+      <div class="relative">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+        </svg>
+      </div>
+      <span>Usuários</span>
+    </button>
+  </nav>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: ENVIAR ARQUIVOS (DIRETO OU VIA LINK) -->
+  <!-- ===================================================================== -->
+  <div id="modal-send" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 id="modal-send-title" class="text-sm font-bold text-white flex items-center gap-2">
+          <span>📤 Enviar Arquivos P2P</span>
+        </h3>
+        <button id="btn-close-send-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Modo de Envio (Direto vs Link Público) -->
+      <div class="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+        <button id="btn-mode-p2p" type="button" class="py-2 text-xs font-bold rounded-lg bg-indigo-600 text-white transition-all">Para @usuário</button>
+        <button id="btn-mode-link" type="button" class="py-2 text-xs font-medium text-slate-400 hover:text-white rounded-lg transition-all">Link Público</button>
+      </div>
+
+      <!-- Destinatário (quando no modo P2P) -->
+      <div id="field-target-user" class="space-y-1">
+        <label class="text-[11px] font-semibold text-slate-300">Destinatário:</label>
+        <div class="flex gap-2">
+          <input id="input-target-user" type="text" placeholder="@nome_do_usuario" class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500" />
+          <button id="btn-pick-peer" type="button" class="px-3 py-2 bg-slate-800 text-xs text-slate-200 rounded-xl border border-slate-700">Lista</button>
+        </div>
+      </div>
+
+      <!-- Configurações de Link Público (quando no modo Link) -->
+      <div id="field-link-options" class="hidden space-y-2">
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-[10px] text-slate-400 block mb-1">Expira em:</label>
+            <select id="select-link-expiration" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-slate-200 outline-none">
+              <option value="900000">15 Minutos</option>
+              <option value="1800000" selected>30 Minutos</option>
+              <option value="3600000">1 Hora</option>
+              <option value="21600000">6 Horas</option>
+              <option value="86400000">24 Horas</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] text-slate-400 block mb-1">Senha (Opcional):</label>
+            <input id="input-link-password" type="text" placeholder="Sem senha" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Seletor de Arquivos Nativo do Android -->
+      <div class="space-y-2">
+        <label class="text-[11px] font-semibold text-slate-300">Arquivos Anexados:</label>
+        
+        <div class="p-4 rounded-2xl border-2 border-dashed border-slate-700 bg-slate-950/60 text-center space-y-2">
+          <button id="btn-pick-files-native" type="button" class="px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shadow-md shadow-orange-600/30 active:scale-95">
+            + Selecionar do Celular
+          </button>
+          <p class="text-[10px] text-slate-400">Fotos, vídeos, PDFs, documentos de qualquer tamanho</p>
+        </div>
+
+        <!-- Lista de Arquivos Selecionados -->
+        <div id="selected-files-list" class="space-y-1.5 max-h-36 overflow-y-auto custom-scroll">
+          <!-- preenchido dinamicamente -->
+        </div>
+      </div>
+
+      <!-- Compactação .ZIP Opcional -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-white">Compactar em arquivo .ZIP</span>
+          <span class="text-[10px] text-slate-400">Empacota múltiplos arquivos via fflate</span>
+        </div>
+        <input id="toggle-zip" type="checkbox" class="w-4 h-4 accent-orange-500 cursor-pointer" />
+      </div>
+
+      <!-- Botão de Confirmação -->
+      <button id="btn-confirm-send" type="button" class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-orange-600 to-indigo-600 hover:from-orange-500 hover:to-indigo-500 text-white font-bold text-sm shadow-xl active:scale-98">
+        Confirmar & Iniciar Envio
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: CONFIGURAÇÕES -->
+  <!-- ===================================================================== -->
+  <div id="modal-settings" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>⚙️ Configurações do PulseShare</span>
+        </h3>
+        <button id="btn-close-settings-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Alteração de Tag -->
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-white">Meu Nome de Usuário (@tag)</label>
+        <div class="flex gap-2">
+          <input id="setting-my-tag" type="text" placeholder="@meu_usuario" class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none" />
+          <button id="btn-save-tag" type="button" class="px-3.5 py-2 bg-orange-600 text-white text-xs font-bold rounded-xl active:scale-95">Salvar</button>
+        </div>
+        <p class="text-[10px] text-slate-400">Validado contra o catálogo descentralizado de identidades.</p>
+      </div>
+
+      <!-- Recebimento Automático -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+        <div>
+          <span class="text-xs font-semibold text-white block">Recebimento Automático</span>
+          <span class="text-[10px] text-slate-400">Salva arquivos recebidos na pasta Downloads sem confirmação</span>
+        </div>
+        <input id="setting-auto-accept" type="checkbox" checked class="w-4 h-4 accent-emerald-500 cursor-pointer" />
+      </div>
+
+      <!-- Roteamento Mesh Relay -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-semibold text-white block">Servir como Nó de Rota na Malha</span>
+            <span class="text-[10px] text-slate-400">Intermedeia conexões P2P bloqueadas por firewall</span>
+          </div>
+          <input id="setting-mesh-relay" type="checkbox" checked class="w-4 h-4 accent-indigo-500 cursor-pointer" />
+        </div>
+        <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between">
+          <span class="text-[10px] text-slate-400">Banda Reservada:</span>
+          <select id="setting-relay-bandwidth" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded-lg px-2 py-1 outline-none">
+            <option value="256">256 KB/s</option>
+            <option value="512">512 KB/s</option>
+            <option value="1024">1 MB/s</option>
+            <option value="2048" selected>2 MB/s (Padrão)</option>
+            <option value="5120">5 MB/s</option>
+            <option value="0">Ilimitada</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Servidor TURN (Bypass de Firewall) -->
+      <div class="space-y-1.5 p-3 rounded-xl bg-slate-950 border border-slate-800">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-white">Servidor TURN / Relay</span>
+          <button id="btn-clear-turn" type="button" class="text-[10px] text-slate-400 hover:text-rose-400">Limpar</button>
+        </div>
+        <input id="setting-turn-url" type="text" placeholder="turn:global.relay.metered.ca:443" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
+        <div class="grid grid-cols-2 gap-2">
+          <input id="setting-turn-user" type="text" placeholder="Usuário" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
+          <input id="setting-turn-pass" type="password" placeholder="Senha" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
+        </div>
+      </div>
+
+      <!-- Informações da Versão e Autoria -->
+      <div class="pt-2 border-t border-slate-800 text-center text-[10px] text-slate-500">
+        <p>PulseShare Android v1.0.0 — 100% Serverless P2P WebRTC</p>
+        <p>Desenvolvido para transferência ultrarrápida ponto a ponto.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCRIPTS BÁSICOS E MOTOR DA MALHA -->
+  <script src="pulseshare-mesh-engine.js"></script>
+  <script src="fflate.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

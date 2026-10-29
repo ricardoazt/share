@@ -2616,6 +2616,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         msgId: matchedMsg?.id || null,
         peerTag: matchedPeer
       }).catch(() => {});
+    } else if (msg.type === 'OFFSCREEN_CHAT_MEDIA_NOT_FOUND') {
+      const t = state.transfers[msg.transferId];
+      if (t && t.direction === 'incoming') {
+        t.status = 'CONNECTING';
+        broadcastState();
+        sendSignal(t.peerTag, msg.transferId, 'FILE_ACCEPT', {
+          isChatMedia: true,
+          roster: Object.values(state.peerRegistry)
+        });
+      }
     } else if (msg.type === 'OFFSCREEN_DOWNLOAD_READY') {
       triggerChromeDownload(msg.transferId, msg.blobUrl, msg.fileName).then(() => {
         setTimeout(() => {
@@ -2875,12 +2885,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     case 'DOWNLOAD_CHAT_MEDIA': {
+      let t = state.transfers[msg.transferId];
+      if (!t && state.chatMessages) {
+        for (const [pTag, thread] of Object.entries(state.chatMessages)) {
+          if (!Array.isArray(thread)) continue;
+          const found = thread.find((m) => m.transferId === msg.transferId || m.media?.transferId === msg.transferId);
+          if (found) {
+            t = {
+              id: msg.transferId,
+              direction: 'incoming',
+              isChatMedia: true,
+              chatPeerTag: pTag,
+              chatMsgId: found.id,
+              peerTag: pTag,
+              routeType: 'DIRECT',
+              relayTag: null,
+              fileName: msg.fileName || found.fileMeta?.name || found.media?.fileName || 'midia_chat',
+              fileSize: found.fileMeta?.size || found.media?.fileSize || 0,
+              fileType: found.fileMeta?.type || found.media?.fileType || 'application/octet-stream',
+              progress: 0,
+              transferredBytes: 0,
+              speedBps: 0,
+              status: 'CONNECTING',
+              updatedAt: Date.now()
+            };
+            state.transfers[msg.transferId] = t;
+            break;
+          }
+        }
+      }
+      if (t && t.direction === 'incoming') {
+        t.status = 'CONNECTING';
+        broadcastState();
+        sendSignal(t.peerTag, msg.transferId, 'FILE_ACCEPT', {
+          isChatMedia: true,
+          roster: Object.values(state.peerRegistry)
+        });
+      }
       ensureOffscreenDocument().then(() => {
         safeSendMessage({
           target: 'offscreen',
           action: 'OFFSCREEN_DOWNLOAD_CHAT_MEDIA',
           transferId: msg.transferId,
-          fileName: msg.fileName || 'midia_pulseshare'
+          fileName: msg.fileName || t?.fileName || 'midia_pulseshare'
         });
       });
       sendResponse({ ok: true });
