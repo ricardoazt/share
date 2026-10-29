@@ -10,12 +10,16 @@
  *    após 30 segundos durante transferências de vídeos grandes.
  */
 
+importScripts('pulseshare-mesh-engine.js');
+
 const PUBLIC_WSS_BROKERS = [
   'wss://broker.emqx.io:8084/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
   'wss://test.mosquitto.org:8081/mqtt'
 ];
 const MESH_TOPIC = 'pulseshare/v2/p2p_mesh_global';
+
+const meshEngine = new PulseShareMeshEngine();
 
 const state = {
   connected: false,
@@ -34,7 +38,9 @@ const state = {
   meshRelayEnabled: true,
   relayBandwidthLimitKbps: 2048,
   relayedBytesTotal: 0,
-  activeRelayedRoutes: 0
+  activeRelayedRoutes: 0,
+  meshEngineSummary: null,
+  turnConfig: null
 };
 
 const publicP2PShares = new Map();
@@ -43,6 +49,19 @@ const seenPacketIds = new Set();
 const activeRelaySessions = new Map(); // transferId -> session
 const routeFallbackTimers = new Map(); // transferId -> timer
 const pendingProbes = new Map(); // probeId -> resolveFn
+
+if (chrome.storage && chrome.storage.onChanged) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.turnConfig) {
+      state.turnConfig = changes.turnConfig.newValue || null;
+      safeSendMessage({
+        target: 'offscreen',
+        action: 'OFFSCREEN_SET_TURN_CONFIG',
+        turnConfig: state.turnConfig
+      });
+    }
+  });
+}
 
 function normalizeTag(raw) {
   let tag = (raw || '').trim().toLowerCase();
@@ -159,6 +178,12 @@ async function handleRegisterUser(tagInput) {
   };
 
   await chrome.storage.local.set({ peerRegistry: state.peerRegistry });
+
+  if (meshEngine.initialized) {
+    meshEngine.myTag = requestedTag;
+    if (meshEngine.reticulum) meshEngine.reticulum.nodeTag = requestedTag;
+    if (meshEngine.aodv) meshEngine.aodv.myTag = requestedTag;
+  }
 
   // Propagação descentralizada para toda a rede (MQTT + WebRTC DataChannels)
   broadcastToMesh({
@@ -294,18 +319,77 @@ async function ensureExtensionPopupOpen(queryString = '') {
   await openOrFocusAppWindow(queryString);
 }
 
-// Monitor periódico de expiração de túneis temporários Cloudflare
+// Monitor periódico de expiração e limites de downloads de túneis temporários
 setInterval(() => {
   const now = Date.now();
   let changed = false;
   for (const [id, t] of Object.entries(state.transfers)) {
-    if (t.direction === 'tunnel' && t.status === 'TUNNEL_READY' && t.expiresAt && now >= t.expiresAt) {
-      t.status = 'EXPIRED';
-      t.updatedAt = now;
-      if (t.shareId) publicP2PShares.delete(t.shareId);
-      changed = true;
-      if (fileBridgeChannel) {
-        fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId: t.shareId || id });
+    if (t.direction === 'tunnel') {
+      const maxDl = Number(t.maxDownloads || 0);
+      const dlCount = Number(t.completedDownloads || t.completedPacks || 0);
+      const isLimitReached = maxDl > 0 && dlCount >= maxDl;
+      const isExpired = t.expiresAt && now >= t.expiresAt;
+
+      if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED' || t.status === 'TRANSFERRING') {
+        if (isLimitReached) {
+          t.status = 'COMPLETED';
+          t.inProgress = false;
+          t.updatedAt = now;
+          if (t.shareId) {
+            publicP2PShares.delete(t.shareId);
+            broadcastToMesh({
+              meshType: 'DIRECT_SIGNAL',
+              signalType: 'PACK_INFO_RESPONSE',
+              transferId: t.shareId,
+              payload: {
+                ok: false,
+                error: 'DOWNLOAD_LIMIT_REACHED',
+                message: 'O limite de downloads deste link foi atingido.'
+              }
+            });
+          }
+          if (fileBridgeChannel) {
+            fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId: t.shareId || id });
+          }
+          ensureOffscreenDocument().then(() => {
+            safeSendMessage({
+              target: 'offscreen',
+              action: 'OFFSCREEN_CONTROL',
+              subAction: 'CANCEL',
+              transferId: id
+            });
+          });
+          changed = true;
+        } else if (isExpired) {
+          t.status = 'EXPIRED';
+          t.inProgress = false;
+          t.updatedAt = now;
+          if (t.shareId) {
+            publicP2PShares.delete(t.shareId);
+            broadcastToMesh({
+              meshType: 'DIRECT_SIGNAL',
+              signalType: 'PACK_INFO_RESPONSE',
+              transferId: t.shareId,
+              payload: {
+                ok: false,
+                error: 'EXPIRED',
+                message: 'Este túnel temporário expirou.'
+              }
+            });
+          }
+          if (fileBridgeChannel) {
+            fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId: t.shareId || id });
+          }
+          ensureOffscreenDocument().then(() => {
+            safeSendMessage({
+              target: 'offscreen',
+              action: 'OFFSCREEN_CONTROL',
+              subAction: 'CANCEL',
+              transferId: id
+            });
+          });
+          changed = true;
+        }
       }
     }
   }
@@ -463,27 +547,49 @@ function buildMqttPublishPacket(topic, jsonObj) {
   return packet;
 }
 
-function parseMqttIncomingPackets(arrayBuffer) {
-  const buf = new Uint8Array(arrayBuffer);
+function parseMqttIncomingPackets(arrayBuffer, ws = null) {
+  const incoming = new Uint8Array(arrayBuffer);
+  let buf;
+  if (ws && ws._rxBuffer && ws._rxBuffer.length > 0) {
+    buf = new Uint8Array(ws._rxBuffer.length + incoming.length);
+    buf.set(ws._rxBuffer, 0);
+    buf.set(incoming, ws._rxBuffer.length);
+  } else {
+    buf = incoming;
+  }
+
   const messages = [];
   let pos = 0;
 
   while (pos < buf.length) {
+    const packetStart = pos;
     const firstByte = buf[pos++];
     const packetType = firstByte & 0xf0;
 
     let multiplier = 1;
     let remainingLen = 0;
     let encodedByte;
+    let incompleteHeader = false;
     do {
-      if (pos >= buf.length) return messages;
+      if (pos >= buf.length) {
+        incompleteHeader = true;
+        break;
+      }
       encodedByte = buf[pos++];
       remainingLen += (encodedByte & 127) * multiplier;
       multiplier *= 128;
     } while ((encodedByte & 128) !== 0);
 
+    if (incompleteHeader) {
+      pos = packetStart;
+      break;
+    }
+
     const packetEnd = pos + remainingLen;
-    if (packetEnd > buf.length) break;
+    if (packetEnd > buf.length) {
+      pos = packetStart;
+      break;
+    }
 
     if (packetType === 0x20) {
       messages.push({ mqttEvent: 'CONNACK' });
@@ -493,13 +599,24 @@ function parseMqttIncomingPackets(arrayBuffer) {
       cursor += 2 + topicLen;
       const qos = (firstByte >> 1) & 0x03;
       if (qos > 0) cursor += 2;
-      const payloadStr = new TextDecoder().decode(buf.subarray(cursor, packetEnd));
-      try {
-        messages.push({ mqttEvent: 'PUBLISH', data: JSON.parse(payloadStr) });
-      } catch {}
+      if (cursor <= packetEnd) {
+        const payloadStr = new TextDecoder().decode(buf.subarray(cursor, packetEnd));
+        try {
+          messages.push({ mqttEvent: 'PUBLISH', data: JSON.parse(payloadStr) });
+        } catch {}
+      }
     }
 
     pos = packetEnd;
+  }
+
+  if (ws) {
+    if (pos < buf.length) {
+      // Limite de segurança de 2MB para evitar acúmulo indefinido em caso de frame corrompido
+      ws._rxBuffer = buf.length - pos <= 2 * 1024 * 1024 ? buf.slice(pos) : new Uint8Array(0);
+    } else {
+      ws._rxBuffer = new Uint8Array(0);
+    }
   }
 
   return messages;
@@ -564,6 +681,7 @@ function connectSingleBroker(brokerUrl) {
     ws = new WebSocket(brokerUrl, 'mqtt');
     ws.binaryType = 'arraybuffer';
     ws._mqttConnected = false;
+    ws._rxBuffer = new Uint8Array(0);
     brokerSockets.set(brokerUrl, ws);
   } catch {
     setTimeout(() => connectSingleBroker(brokerUrl), 4000);
@@ -571,13 +689,14 @@ function connectSingleBroker(brokerUrl) {
   }
 
   ws.onopen = () => {
+    ws._rxBuffer = new Uint8Array(0);
     const clientId = `ps_${state.nodeId.slice(0, 8)}_${Math.floor(1000 + Math.random() * 8999)}`;
     ws.send(buildMqttConnectPacket(clientId));
   };
 
   ws.onmessage = (event) => {
     if (!(event.data instanceof ArrayBuffer)) return;
-    const packets = parseMqttIncomingPackets(event.data);
+    const packets = parseMqttIncomingPackets(event.data, ws);
 
     for (const pkt of packets) {
       if (pkt.mqttEvent === 'CONNACK') {
@@ -593,6 +712,7 @@ function connectSingleBroker(brokerUrl) {
 
   ws.onclose = () => {
     ws._mqttConnected = false;
+    ws._rxBuffer = new Uint8Array(0);
     brokerSockets.delete(brokerUrl);
     updateConnectionFlag();
     setTimeout(() => connectSingleBroker(brokerUrl), 3500);
@@ -845,12 +965,46 @@ async function tryFailoverToMeshRelay(transferId, targetTag, fileMeta, triedRela
   const t = state.transfers[transferId];
   if (!t || t.status === 'COMPLETED' || t.status === 'CANCELLED') return;
 
+  const normMeta = {
+    name: fileMeta?.name || fileMeta?.fileName || t.fileName || 'arquivo',
+    size: fileMeta?.size ?? fileMeta?.fileSize ?? t.fileSize ?? 0,
+    type: fileMeta?.type || fileMeta?.fileType || t.fileType || 'application/octet-stream',
+    ...pickBatchMeta(fileMeta || t)
+  };
+
   const tried = triedRelaysSet || new Set(t.triedRelays || []);
   const bestRelay = findBestRelayNode(state.myTag, targetTag, tried);
 
   if (!bestRelay) {
+    if (t.status === 'CONNECTING' || t.status === 'TRANSFERRING') {
+      updateTransfer(transferId, {
+        routeType: 'MESH_RELAY',
+        relayTag: targetTag,
+        routeDescription: 'Transmitindo via túnel mesh (fallback CGNAT/Firewall)...',
+        status: 'TRANSFERRING'
+      });
+      await ensureOffscreenDocument();
+      safeSendMessage({
+        target: 'offscreen',
+        action: 'START_MESH_RELAY_STREAM',
+        transferId,
+        relayTag: targetTag,
+        targetTag,
+        directToTarget: true,
+        fileKey: transferId,
+        fallbackKey: transferId
+      });
+      return;
+    }
+    sendSignal(targetTag, transferId, 'FILE_OFFER', {
+      fileName: normMeta.name,
+      fileSize: normMeta.size,
+      fileType: normMeta.type,
+      ...pickBatchMeta(normMeta),
+      roster: Object.values(state.peerRegistry)
+    });
     updateTransfer(transferId, {
-      routeDescription: 'Conexão direta indisponível e sem nós de rota online'
+      routeDescription: 'Aguardando aceitação do destinatário na malha P2P...'
     });
     return;
   }
@@ -868,12 +1022,7 @@ async function tryFailoverToMeshRelay(transferId, targetTag, fileMeta, triedRela
   sendSignal(bestRelay.tag, transferId, 'MESH_RELAY_REQUEST', {
     targetTag,
     senderTag: state.myTag,
-    fileMeta: {
-      name: fileMeta.name,
-      size: fileMeta.size,
-      type: fileMeta.type,
-      ...pickBatchMeta(fileMeta)
-    },
+    fileMeta: normMeta,
     triedRelays: Array.from(tried)
   });
 
@@ -884,7 +1033,7 @@ async function tryFailoverToMeshRelay(transferId, targetTag, fileMeta, triedRela
     routeFallbackTimers.delete(transferId);
     const curr = state.transfers[transferId];
     if (curr && curr.status === 'CONNECTING' && curr.routeType === 'MESH_RELAY' && curr.relayTag === bestRelay.tag) {
-      tryFailoverToMeshRelay(transferId, targetTag, fileMeta, tried);
+      tryFailoverToMeshRelay(transferId, targetTag, normMeta, tried);
     }
   }, 6000);
   routeFallbackTimers.set(transferId, relayTimeout);
@@ -957,6 +1106,15 @@ async function handleMeshPacket(packet) {
     if (seenPacketIds.size > 2000) {
       const first = seenPacketIds.values().next().value;
       seenPacketIds.delete(first);
+    }
+  }
+
+  // Alimenta o motor descentralizado P2P (Kademlia, AODV, Reticulum, Yggdrasil, CRDT, DTN, libp2p)
+  if (meshEngine.initialized) {
+    meshEngine.handleIncomingMeshPacket(packet, packet.senderTag);
+    if (packet.senderNodeId && packet.senderTag) {
+      meshEngine.kademlia.updateNode(packet.senderNodeId, { tag: packet.senderTag, lastSeen: Date.now() });
+      meshEngine.crdt.add(packet.senderTag, { tag: packet.senderTag, nodeId: packet.senderNodeId, lastSeen: Date.now() });
     }
   }
 
@@ -1086,7 +1244,19 @@ async function handleMeshPacket(packet) {
     }
 
     case 'DIRECT_SIGNAL': {
-      if (packet.to !== state.myTag) return;
+      const toNorm = packet.to ? normalizeTag(packet.to) : '';
+      const myNorm = state.myTag ? normalizeTag(state.myTag) : '';
+      const shareId = packet.payload?.shareId;
+      const isMyShare = Boolean(
+        (shareId &&
+          (publicP2PShares.has(shareId) ||
+            state.transfers[shareId] ||
+            Object.values(state.transfers).some((t) => t.shareId === shareId))) ||
+          (typeof packet.transferId === 'string' &&
+            Array.from(publicP2PShares.keys()).some((sid) => packet.transferId.startsWith(sid)))
+      );
+
+      if (packet.to !== state.myTag && (!toNorm || toNorm !== myNorm) && !isMyShare) return;
 
       if (packet.senderTag && !packet.senderTag.startsWith('@link_')) {
         mergeRemoteRoster([
@@ -1117,11 +1287,32 @@ async function handleMeshPacket(packet) {
 // Envia mensagem sem gerar "Uncaught (in promise) Error: Could not establish
 // connection. Receiving end does not exist." quando o popup está fechado ou o
 // offscreen document ainda não está pronto.
-function safeSendMessage(message) {
+function safeSendMessage(message, retries = 6) {
   try {
-    return chrome.runtime.sendMessage(message).catch((err) => {
-      console.warn('[PulseShare] Mensagem sem destinatário:', message?.action || message?.type, err?.message || err);
-    });
+    return chrome.runtime
+      .sendMessage(message)
+      .then((res) => {
+        if (message?.target === 'offscreen' && (!res || !res.ok) && retries > 0) {
+          return new Promise((resolve) => {
+            setTimeout(async () => {
+              await ensureOffscreenDocument();
+              resolve(safeSendMessage(message, retries - 1));
+            }, 150);
+          });
+        }
+        return res;
+      })
+      .catch((err) => {
+        if (message?.target === 'offscreen' && retries > 0) {
+          return new Promise((resolve) => {
+            setTimeout(async () => {
+              await ensureOffscreenDocument();
+              resolve(safeSendMessage(message, retries - 1));
+            }, 150);
+          });
+        }
+        console.warn('[PulseShare] Mensagem sem destinatário:', message?.action || message?.type, err?.message || err);
+      });
   } catch (err) {
     console.warn('[PulseShare] Falha ao enviar mensagem:', err?.message || err);
     return Promise.resolve();
@@ -1129,10 +1320,14 @@ function safeSendMessage(message) {
 }
 
 function broadcastState() {
+  if (meshEngine.initialized) {
+    state.meshEngineSummary = meshEngine.getStatusSummary();
+  }
   chrome.storage.local.set({
     transfers: state.transfers,
     peerRegistry: state.peerRegistry,
-    deletedTags: state.deletedTags || {}
+    deletedTags: state.deletedTags || {},
+    meshEngineSummary: state.meshEngineSummary
   });
   chrome.runtime.sendMessage({ type: 'STATE_UPDATED', action: 'STATE_UPDATED', state }).catch(() => {});
 }
@@ -1188,10 +1383,39 @@ function updateTransfer(transferId, patch) {
         mergedPatch.downloads = (existing.downloads || 0) + 1;
         mergedPatch.completedDownloads = (existing.completedDownloads || 0) + 1;
       }
-      mergedPatch.status = existing.direction === 'tunnel' ? 'TUNNEL_READY' : 'COMPLETED';
+      const maxDl = Number(existing.maxDownloads || 0);
+      const currentDownloads = mergedPatch.completedDownloads !== undefined ? mergedPatch.completedDownloads : (existing.completedDownloads || 0);
+      const isLimitReached = maxDl > 0 && currentDownloads >= maxDl;
+
+      mergedPatch.status = (existing.direction === 'tunnel' && !isLimitReached) ? 'TUNNEL_READY' : 'COMPLETED';
       mergedPatch.inProgress = false;
       mergedPatch.progress = 100;
       mergedPatch.transferredBytes = totalPackBytes;
+
+      if (isLimitReached && existing.shareId) {
+        publicP2PShares.delete(existing.shareId);
+        if (fileBridgeChannel) {
+          fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId: existing.shareId });
+        }
+        ensureOffscreenDocument().then(() => {
+          safeSendMessage({
+            target: 'offscreen',
+            action: 'OFFSCREEN_CONTROL',
+            subAction: 'CANCEL',
+            transferId: existing.id
+          });
+        });
+        broadcastToMesh({
+          meshType: 'DIRECT_SIGNAL',
+          signalType: 'PACK_INFO_RESPONSE',
+          transferId: existing.shareId,
+          payload: {
+            ok: false,
+            error: 'DOWNLOAD_LIMIT_REACHED',
+            message: 'O limite de downloads deste link foi atingido.'
+          }
+        });
+      }
     } else {
       mergedPatch.status = patch.status === 'PAUSED' ? 'PAUSED' : 'TRANSFERRING';
       mergedPatch.inProgress = true;
@@ -1202,10 +1426,41 @@ function updateTransfer(transferId, patch) {
     }
     // Quando a transferência de um link de arquivo único for concluída
     if (patch.fileCompleted || patch.progress === 100 || (existing.inProgress && (patch.status === 'TUNNEL_READY' || patch.status === 'COMPLETED'))) {
-      if (existing.inProgress) {
+      if (existing.inProgress && patch.completedDownloads === undefined) {
         mergedPatch.downloads = (existing.downloads || 0) + 1;
         mergedPatch.completedDownloads = (existing.completedDownloads || 0) + 1;
         mergedPatch.inProgress = false;
+      }
+      const maxDl = Number(existing.maxDownloads || 0);
+      const currentDownloads = mergedPatch.completedDownloads !== undefined
+        ? mergedPatch.completedDownloads
+        : (existing.completedDownloads || 0);
+      if (maxDl > 0 && currentDownloads >= maxDl) {
+        mergedPatch.status = 'COMPLETED';
+        if (existing.shareId) {
+          publicP2PShares.delete(existing.shareId);
+          if (fileBridgeChannel) {
+            fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId: existing.shareId });
+          }
+          ensureOffscreenDocument().then(() => {
+            safeSendMessage({
+              target: 'offscreen',
+              action: 'OFFSCREEN_CONTROL',
+              subAction: 'CANCEL',
+              transferId: existing.id
+            });
+          });
+          broadcastToMesh({
+            meshType: 'DIRECT_SIGNAL',
+            signalType: 'PACK_INFO_RESPONSE',
+            transferId: existing.shareId,
+            payload: {
+              ok: false,
+              error: 'DOWNLOAD_LIMIT_REACHED',
+              message: 'O limite de downloads deste link foi atingido.'
+            }
+          });
+        }
       }
     }
     if (patch.status === 'CANCELLED' || patch.status === 'ERROR' || patch.status === 'EXPIRED') {
@@ -1347,6 +1602,18 @@ async function handleIncomingSignal(msg) {
       return;
     }
 
+    if (
+      transfer.status === 'COMPLETED' ||
+      (transfer.maxDownloads > 0 && (transfer.completedDownloads || 0) >= transfer.maxDownloads)
+    ) {
+      sendSignal(from, transferId || shareId, 'PACK_INFO_RESPONSE', {
+        ok: false,
+        error: 'DOWNLOAD_LIMIT_REACHED',
+        message: 'O limite de downloads deste link foi atingido.'
+      });
+      return;
+    }
+
     if (transfer.status === 'PAUSED') {
       sendSignal(from, transferId || shareId, 'PACK_INFO_RESPONSE', {
         ok: false,
@@ -1390,19 +1657,59 @@ async function handleIncomingSignal(msg) {
     if (shareRecord) {
       const parentTransfer = state.transfers[shareRecord.transferId];
       if (parentTransfer) {
+        const shouldIncrement = Boolean(parentTransfer.inProgress) || (parentTransfer.completedDownloads || 0) === 0;
+        const newCompleted = shouldIncrement
+          ? (parentTransfer.completedDownloads || 0) + 1
+          : (parentTransfer.completedDownloads || 0);
+        const newDownloads = shouldIncrement
+          ? (parentTransfer.downloads || 0) + 1
+          : (parentTransfer.downloads || 0);
+        const maxDl = Number(parentTransfer.maxDownloads || 0);
+        const isLimitReached = maxDl > 0 && newCompleted >= maxDl;
+
         updateTransfer(shareRecord.transferId, {
-          downloads: (parentTransfer.downloads || 0) + 1,
-          completedDownloads: (parentTransfer.completedDownloads || 0) + 1,
+          downloads: newDownloads,
+          completedDownloads: newCompleted,
           inProgress: false,
           progress: 100,
+          status: isLimitReached ? 'COMPLETED' : 'TUNNEL_READY',
           transferredBytes: parentTransfer.totalSize || parentTransfer.fileSize || parentTransfer.transferredBytes
         });
+
+        if (isLimitReached) {
+          publicP2PShares.delete(shareId);
+          if (fileBridgeChannel) {
+            fileBridgeChannel.postMessage({ type: 'DELETE_PACK_MEMORY', shareId });
+          }
+          ensureOffscreenDocument().then(() => {
+            safeSendMessage({
+              target: 'offscreen',
+              action: 'OFFSCREEN_CONTROL',
+              subAction: 'CANCEL',
+              transferId: parentTransfer.id
+            });
+          });
+          broadcastToMesh({
+            meshType: 'DIRECT_SIGNAL',
+            signalType: 'PACK_INFO_RESPONSE',
+            transferId: shareId,
+            payload: {
+              ok: false,
+              error: 'DOWNLOAD_LIMIT_REACHED',
+              message: 'O limite de downloads deste link foi atingido.'
+            }
+          });
+        }
       }
     }
     return;
   }
 
-  if (signalType === 'PACK_FILE_PULL' || signalType === 'PUBLIC_LINK_PULL') {
+  if (
+    signalType === 'PACK_FILE_PULL' ||
+    signalType === 'PUBLIC_LINK_PULL' ||
+    signalType === 'TUNNEL_RELAY_PULL'
+  ) {
     const shareId = payload?.shareId;
     const fileId = payload?.fileId || 'f-0';
     let shareRecord = publicP2PShares.get(shareId);
@@ -1425,7 +1732,7 @@ async function handleIncomingSignal(msg) {
     }
 
     if (!shareRecord) {
-      sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel não encontrado' });
+      sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Túnel não encontrado' });
       return;
     }
 
@@ -1435,15 +1742,22 @@ async function handleIncomingSignal(msg) {
         parentTransfer.status === 'EXPIRED' ||
         (parentTransfer.expiresAt && Date.now() >= parentTransfer.expiresAt)
       ) {
-        sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel expirado' });
+        sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Túnel expirado' });
+        return;
+      }
+      if (
+        parentTransfer.status === 'COMPLETED' ||
+        (parentTransfer.maxDownloads > 0 && (parentTransfer.completedDownloads || 0) >= parentTransfer.maxDownloads)
+      ) {
+        sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Limite de downloads atingido' });
         return;
       }
       if (parentTransfer.status === 'PAUSED') {
-        sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel pausado pelo remetente' });
+        sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Túnel pausado pelo remetente' });
         return;
       }
       if (parentTransfer.status === 'CANCELLED') {
-        sendSignal(from, transferId, 'FILE_REJECT', { error: 'Túnel cancelado pelo remetente' });
+        sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Túnel cancelado pelo remetente' });
         return;
       }
 
@@ -1469,6 +1783,23 @@ async function handleIncomingSignal(msg) {
       };
 
     await ensureOffscreenDocument();
+    if (signalType === 'TUNNEL_RELAY_PULL') {
+      safeSendMessage({
+        target: 'offscreen',
+        action: 'START_MESH_RELAY_STREAM',
+        transferId,
+        uiTransferId: shareRecord.transferId,
+        relayTag: from,
+        targetTag: from,
+        directToTarget: true,
+        fileId,
+        fileKey: `${shareId}:${fileId}`,
+        fallbackKey: shareRecord.transferId,
+        keepStaged: true
+      });
+      return;
+    }
+
     safeSendMessage({
       target: 'offscreen',
       action: 'OFFSCREEN_SIGNAL',
@@ -1478,6 +1809,7 @@ async function handleIncomingSignal(msg) {
       fileKey: `${shareId}:${fileId}`,
       fallbackKey: shareRecord.transferId,
       keepStaged: true,
+      turnConfig: state.turnConfig,
       signalType: 'FILE_ACCEPT',
       payload: {
         fileMeta: targetFile
@@ -1692,6 +2024,20 @@ async function handleIncomingSignal(msg) {
       });
       return;
     }
+
+    const handshakeFallback = setTimeout(() => {
+      routeFallbackTimers.delete(transferId);
+      const curr = state.transfers[transferId];
+      if (
+        curr &&
+        curr.routeType === 'DIRECT' &&
+        (curr.status === 'CONNECTING' || curr.status === 'AWAITING_ACCEPT') &&
+        (curr.transferredBytes || 0) === 0
+      ) {
+        tryFailoverToMeshRelay(transferId, from || curr.peerTag, curr);
+      }
+    }, 5000);
+    routeFallbackTimers.set(transferId, handshakeFallback);
   }
 
   if (signalType === 'TRANSFER_REJECT') {
@@ -1711,6 +2057,7 @@ async function handleIncomingSignal(msg) {
     action: 'OFFSCREEN_SIGNAL',
     from,
     transferId,
+    turnConfig: state.turnConfig,
     signalType,
     payload,
     roster: Object.values(state.peerRegistry),
@@ -1758,7 +2105,10 @@ function triggerChromeDownload(transferId, url, fileName) {
 // ============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.source === 'offscreen') {
-    if (msg.type === 'OFFSCREEN_SEND_SIGNAL') {
+    if (msg.type === 'OFFSCREEN_GET_TURN_CONFIG') {
+      sendResponse({ ok: true, turnConfig: state.turnConfig });
+      return true;
+    } else if (msg.type === 'OFFSCREEN_SEND_SIGNAL') {
       sendSignal(msg.to, msg.transferId, msg.signalType, msg.payload);
     } else if (msg.type === 'OFFSCREEN_PROGRESS') {
       updateTransfer(msg.transferId, msg.patch);
@@ -1768,22 +2118,59 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const t = state.transfers[msg.transferId];
       if (t && t.routeType === 'DIRECT') {
         tryFailoverToMeshRelay(msg.transferId, msg.targetTag || t.peerTag, t);
+      } else if (msg.uiTransferId && msg.uiTransferId !== msg.transferId && msg.targetTag) {
+        const parentT = state.transfers[msg.uiTransferId];
+        if (parentT && parentT.direction === 'tunnel') {
+          const shareId = parentT.shareId || '';
+          const matchFile = (parentT.files || []).find((f) => msg.transferId.includes(`_${f.fileId}_`));
+          const fileId = matchFile ? matchFile.fileId : 'f-0';
+          safeSendMessage({
+            target: 'offscreen',
+            action: 'START_MESH_RELAY_STREAM',
+            transferId: msg.transferId,
+            uiTransferId: msg.uiTransferId,
+            relayTag: msg.targetTag,
+            targetTag: msg.targetTag,
+            directToTarget: true,
+            fileId,
+            fileKey: `${shareId}:${fileId}`,
+            fallbackKey: msg.uiTransferId,
+            keepStaged: true
+          });
+        }
       }
     } else if (msg.type === 'OFFSCREEN_RELAY_CHUNK') {
-      sendSignal(msg.relayTag, msg.transferId, 'MESH_RELAY_DATA', {
-        chunkSeq: msg.chunkSeq,
-        totalChunks: msg.totalChunks,
-        chunkBase64: msg.chunkBase64,
-        isEof: msg.isEof,
-        totalBytes: msg.totalBytes
-      });
-      const rawBytes = Math.round((msg.chunkBase64?.length || 0) * 0.75);
-      const t = state.transfers[msg.transferId];
-      if (t) {
-        t.transferredBytes = (t.transferredBytes || 0) + rawBytes;
-        t.progress = msg.totalBytes > 0 ? Math.min(100, Math.round((t.transferredBytes / msg.totalBytes) * 100)) : 50;
-        t.updatedAt = Date.now();
-        broadcastState();
+      if (msg.directToTarget || msg.relayTag === msg.targetTag) {
+        sendSignal(msg.targetTag || msg.relayTag, msg.transferId, 'MESH_RELAY_CHUNK', {
+          from: state.myTag,
+          transferId: msg.transferId,
+          relayTag: state.myTag,
+          fileId: msg.fileId,
+          chunkSeq: msg.chunkSeq,
+          totalChunks: msg.totalChunks,
+          chunkBase64: msg.chunkBase64,
+          isEof: msg.isEof,
+          totalBytes: msg.totalBytes,
+          fileMeta: msg.fileMeta
+        });
+      } else {
+        sendSignal(msg.relayTag, msg.transferId, 'MESH_RELAY_DATA', {
+          chunkSeq: msg.chunkSeq,
+          totalChunks: msg.totalChunks,
+          chunkBase64: msg.chunkBase64,
+          isEof: msg.isEof,
+          totalBytes: msg.totalBytes
+        });
+      }
+      if (!msg.uiTransferId) {
+        const rawBytes = Math.round((msg.chunkBase64?.length || 0) * 0.75);
+        const t = state.transfers[msg.transferId];
+        if (t) {
+          t.transferredBytes = (t.transferredBytes || 0) + rawBytes;
+          t.progress = msg.totalBytes > 0 ? Math.min(100, Math.round((t.transferredBytes / msg.totalBytes) * 100)) : 50;
+          t.updatedAt = Date.now();
+          broadcastState();
+        }
       }
     } else if (msg.type === 'OFFSCREEN_DOWNLOAD_READY') {
       triggerChromeDownload(msg.transferId, msg.blobUrl, msg.fileName).then(() => {
@@ -1803,7 +2190,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ensureOffscreenDocument();
       connectPublicMesh();
       announcePresenceToMesh();
+      if (meshEngine.initialized) {
+        state.meshEngineSummary = meshEngine.getStatusSummary();
+      }
       sendResponse({ state });
+      return true;
+
+    case 'GET_MESH_ENGINE_SUMMARY':
+      sendResponse({ summary: meshEngine.initialized ? meshEngine.getStatusSummary() : null });
       return true;
 
     case 'ENSURE_OFFSCREEN':
@@ -1960,9 +2354,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const t = state.transfers[msg.transferId];
       if (t) {
         t.status = 'CANCELLED';
+        t.inProgress = false;
         t.updatedAt = Date.now();
         if (t.shareId) {
           publicP2PShares.delete(t.shareId);
+          broadcastToMesh({
+            meshType: 'DIRECT_SIGNAL',
+            signalType: 'PACK_INFO_RESPONSE',
+            transferId: t.shareId,
+            payload: {
+              ok: false,
+              error: 'CANCELLED',
+              message: 'O compartilhamento foi encerrado pelo remetente.'
+            }
+          });
         }
         broadcastState();
         ensureOffscreenDocument().then(() => {
@@ -2118,7 +2523,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const transferId = msg.transferId;
       const t = state.transfers[transferId];
       if (t) {
-        if (t.shareId) publicP2PShares.delete(t.shareId);
+        if (t.shareId) {
+          publicP2PShares.delete(t.shareId);
+          broadcastToMesh({
+            meshType: 'DIRECT_SIGNAL',
+            signalType: 'PACK_INFO_RESPONSE',
+            transferId: t.shareId,
+            payload: {
+              ok: false,
+              error: 'CANCELLED',
+              message: 'O compartilhamento foi encerrado pelo remetente.'
+            }
+          });
+        }
+        ensureOffscreenDocument().then(() => {
+          safeSendMessage({
+            target: 'offscreen',
+            action: 'OFFSCREEN_CONTROL',
+            subAction: 'CANCEL',
+            transferId
+          });
+        });
         if (fileBridgeChannel) {
           fileBridgeChannel.postMessage({
             type: 'DELETE_PACK_MEMORY',
@@ -2174,8 +2599,13 @@ async function initializeServiceWorker() {
     'transfers',
     'meshRelayEnabled',
     'relayBandwidthLimitKbps',
-    'relayedBytesTotal'
+    'relayedBytesTotal',
+    'turnConfig'
   ]);
+
+  if (stored.turnConfig) {
+    state.turnConfig = stored.turnConfig;
+  }
 
   if (Array.isArray(stored.stagedTunnelFiles)) {
     state.stagedTunnelFiles = stored.stagedTunnelFiles;
@@ -2235,9 +2665,61 @@ async function initializeServiceWorker() {
 
   if (stored.transfers && typeof stored.transfers === 'object') {
     state.transfers = stored.transfers;
+    for (const [id, t] of Object.entries(state.transfers)) {
+      if (t && t.direction === 'tunnel' && t.shareId) {
+        if (t.status === 'TRANSFERRING') {
+          t.status = 'TUNNEL_READY';
+          t.inProgress = false;
+          t.progress = 0;
+          t.transferredBytes = 0;
+          t.speedBps = 0;
+        }
+        if (t.status === 'TUNNEL_READY' || t.status === 'PAUSED') {
+          publicP2PShares.set(t.shareId, {
+            shareId: t.shareId,
+            transferId: id,
+            packName: t.packName || t.fileName,
+            fileName: t.fileName,
+            files: t.files,
+            totalSize: t.totalSize || t.fileSize,
+            fileSize: t.fileSize,
+            fileType: t.fileType || 'application/octet-stream',
+            hasPassword: t.hasPassword,
+            passwordSalt: t.passwordSalt,
+            passwordHash: t.passwordHash,
+            expiresAt: t.expiresAt
+          });
+        }
+      }
+    }
+  }
+
+  // Inicializa o motor descentralizado completo (9 subsistemas)
+  try {
+    await meshEngine.init({
+      nodeId: state.nodeId,
+      myTag: state.myTag,
+      onPacketToSend: (targetTag, pkt) => {
+        if (targetTag) {
+          sendSignal(targetTag, pkt.transferId || crypto.randomUUID(), pkt.type, pkt);
+        } else {
+          broadcastToMesh(pkt);
+        }
+      }
+    });
+    state.meshEngineSummary = meshEngine.getStatusSummary();
+  } catch (err) {
+    console.warn('[PulseShare] Falha ao inicializar meshEngine:', err);
   }
 
   await ensureOffscreenDocument();
+  if (state.turnConfig) {
+    safeSendMessage({
+      target: 'offscreen',
+      action: 'OFFSCREEN_SET_TURN_CONFIG',
+      turnConfig: state.turnConfig
+    });
+  }
   touchSelfInRegistry();
   connectPublicMesh();
   announcePresenceToMesh();

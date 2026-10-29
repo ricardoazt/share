@@ -149,3 +149,46 @@ O portal de download do destinatário (`index.html`) é servido diretamente pelo
   - **Abrir no Navegador (↗)**: abre o portal web diretamente no seu próprio navegador para pré-visualização.
   - **Pausar / Retomar**: congela ou retoma o envio do arquivo via canal de dados WebRTC.
   - **Encerrar / Cancelar (✕)**: fecha as conexões, cancela os downloads ativos e descarta os arquivos do cache.
+
+---
+
+## 🛡️ Stack de Tecnologias Avançadas de Rede, Roteamento & Criptografia P2P
+
+O **PulseShare** integra um motor descentralizado completo (`pulseshare-mesh-engine.js`), combinando 9 tecnologias de ponta para comunicação, topologia e segurança ponto a ponto serverless:
+
+### 1. Frameworks de Rede e Roteamento P2P
+- **libp2p**:
+  - **Circuit Relay v2**: Permite que dispositivos em redes restritivas alcancem destinos utilizando nós voluntários como pontes com reserva de saltos padronizada (`HOP_RESERVE`), quotas de tempo/banda e endereçamento Multiaddr (`/p2p/QmRelay/p2p-circuit/p2p/QmTarget`).
+  - **Gossipsub v1.1**: Pub/sub baseado em malha inteligente com controle de graus ($D, D_{low}, D_{high}$), mensagens `GRAFT`/`PRUNE`, fofoca de metadados (`IHAVE`/`IWANT`) e pontuação de nós (*peer scoring*), evitando inundações de tráfego redundante.
+- **Reticulum Network Stack (RNS)**:
+  - Endereçamento criptográfico por **Destination Hash de 16 bytes** (`rns://...`), gerado via SHA-256 da chave de identidade do nó.
+  - Pacotes `ANNOUNCE` assinados digitalmente com curva P-256 e **Dynamic Path Table** que atualiza automaticamente o melhor caminho e métrica de qualidade.
+- **Yggdrasil Network Overlay**:
+  - Criação de endereço **IPv6 overlay criptográfico** (`0200::...`) derivado da chave pública do dispositivo.
+  - Mapeamento da topologia em **árvore de abrangência (Spanning Tree)** com coordenadas hierárquicas e algoritmo de **Roteamento Guloso (Greedy Tree Metric)** para alcançar qualquer nó pela menor distância topológica.
+
+### 2. Algoritmos de Descoberta e Topologia
+- **Kademlia DHT (Distributed Hash Table)**:
+  - Espaço de endereçamento de **256 bits** por nó com métrica matemática **XOR** ($d(x, y) = x \oplus y$).
+  - Organização em **k-buckets** ($k=8$) com ordenação por último sinal e substituição por inatividade.
+  - Descoberta iterativa dos nós mais próximos matematicamente a qualquer hash de destino ou recurso.
+- **AODV (Ad hoc On-Demand Distance Vector)**:
+  - Roteamento reativo que estabelece caminhos sob demanda apenas quando há mensagens a enviar.
+  - Mensagens padronizadas `AODV_RREQ` (Route Request), `AODV_RREP` (Route Reply) e `AODV_RERR` (Route Error).
+  - Números de sequência crescentes para garantia matemática de rotas livres de loops (*loop-free*).
+
+### 3. Sincronização e Resiliência (Delay-Tolerant Networking)
+- **CRDTs (Conflict-free Replicated Data Types)**:
+  - **LWW-Element-Set (Last-Write-Wins Set)**: Conjunto replicado sem conflitos com relógios lógicos de Lamport e desempate determinístico por NodeId, garantindo que o catálogo de usuários convirja identicamente em todos os nós, mesmo com pacotes fora de ordem.
+  - **Causal Message Log**: Registro ordenado imutável de mensagens e transferências com rastreamento causal.
+- **Store and Forward (Delay-Tolerant Networking - DTN / RFC 5050 & RFC 9171)**:
+  - Nós intermediários armazenam pacotes e metadados de transferência em cache persistente local (IndexedDB) com TTL configurável.
+  - Se a rota for temporariamente interrompida ou o nó de destino estiver offline, os pacotes permanecem sob custódia e são encaminhados opportunisticamente assim que uma rota viável for restabelecida.
+
+### 4. Criptografia para Roteamento Descentralizado
+- **Onion Routing (Criptografia em Camadas - Tor / Sphinx style)**:
+  - Empacotamento esférico em múltiplas camadas usando pares efêmeros ECDH (P-256) e criptografia simétrica autenticada AES-256-GCM.
+  - Cada nó intermediário só decifra a sua própria camada externa, obtendo apenas o próximo salto (`nextHop`) e a camada interna cifrada, sem jamais conseguir ler o conteúdo do arquivo ou identificar a origem e o destino final.
+- **Double Ratchet Algorithm (Signal Protocol End-to-End Encryption)**:
+  - Criptografia de ponta a ponta intransponível com **Forward Secrecy** (o vazamento de chaves atuais não compromete mensagens passadas) e **Post-Compromise Security / Break-in Recovery** (o sistema se auto-recupera de comprometimentos no próximo salto DH).
+  - Cadeia de chaves KDF raiz, cadeia KDF simétrica de envio/recebimento HMAC-SHA-256 e saltos de chave pública ECDH a cada resposta.

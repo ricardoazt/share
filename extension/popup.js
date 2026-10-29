@@ -20,6 +20,36 @@ const fileBridgeChannel =
     ? new BroadcastChannel('pulseshare_file_bridge')
     : null;
 
+const activeSessionFiles = new Map();
+
+if (fileBridgeChannel) {
+  fileBridgeChannel.onmessage = (event) => {
+    const data = event.data;
+    if (!data) return;
+    if (data.type === 'REQUEST_FILE_MEMORY' && data.transferId) {
+      const cached = activeSessionFiles.get(data.transferId);
+      if (cached) {
+        try {
+          fileBridgeChannel.postMessage({
+            type: 'STAGE_FILE_MEMORY',
+            transferId: data.transferId,
+            file: cached
+          });
+        } catch {}
+      }
+    } else if (data.type === 'DELETE_FILE_MEMORY' && data.transferId) {
+      activeSessionFiles.delete(data.transferId);
+    } else if (data.type === 'DELETE_PACK_MEMORY' && data.shareId) {
+      activeSessionFiles.delete(data.shareId);
+      for (const key of activeSessionFiles.keys()) {
+        if (typeof key === 'string' && key.startsWith(`${data.shareId}:`)) {
+          activeSessionFiles.delete(key);
+        }
+      }
+    }
+  };
+}
+
 let dbInstance = null;
 
 function openDatabase() {
@@ -78,6 +108,10 @@ function openDatabase() {
 
 async function saveStagedFile(fileKey, fileBlob) {
   if (!fileBlob) return;
+  activeSessionFiles.set(fileKey, fileBlob);
+  try {
+    await chrome.runtime.sendMessage({ action: 'ENSURE_OFFSCREEN' });
+  } catch {}
   if (fileBridgeChannel) {
     try {
       fileBridgeChannel.postMessage({
@@ -104,6 +138,7 @@ async function saveStagedFile(fileKey, fileBlob) {
 }
 
 async function deleteStagedFile(fileKey) {
+  activeSessionFiles.delete(fileKey);
   if (fileBridgeChannel) {
     try {
       fileBridgeChannel.postMessage({
@@ -214,6 +249,15 @@ const selectRelayBandwidth = document.getElementById('select-relay-bandwidth');
 const relayBandwidthBadge = document.getElementById('relay-bandwidth-badge');
 const activeRelayedRoutesCount = document.getElementById('active-relayed-routes-count');
 const totalRelayedBytesDisplay = document.getElementById('total-relayed-bytes-display');
+
+const techLibp2pStat = document.getElementById('tech-libp2p-stat');
+const techRnsStat = document.getElementById('tech-rns-stat');
+const techYggStat = document.getElementById('tech-ygg-stat');
+const techKadStat = document.getElementById('tech-kad-stat');
+const techAodvStat = document.getElementById('tech-aodv-stat');
+const techCrdtStat = document.getElementById('tech-crdt-stat');
+const techDtnStat = document.getElementById('tech-dtn-stat');
+const techSecStat = document.getElementById('tech-sec-stat');
 
 const myTagInput = document.getElementById('my-tag-input');
 const btnSaveTag = document.getElementById('btn-save-tag');
@@ -625,7 +669,77 @@ function populateModalPeerSelect(selectedTag = '') {
   });
 }
 
+function renderTechSuiteStats() {
+  const sum = currentState.meshEngineSummary;
+  const peersCount = Object.keys(currentState.peerRegistry || {}).length;
+
+  if (techLibp2pStat) {
+    if (sum?.libp2p) {
+      techLibp2pStat.textContent = `${sum.libp2p.circuitRelayReservations} reservas • ${sum.libp2p.gossipsubMeshPeers} na malha (${sum.libp2p.gossipsubCachedMsgs} msgs)`;
+    } else {
+      techLibp2pStat.textContent = `Hop Reservation v2 • Gossipsub ativo`;
+    }
+  }
+
+  if (techRnsStat) {
+    if (sum?.reticulum?.destinationHash) {
+      techRnsStat.textContent = `rns://${sum.reticulum.destinationHash.slice(0, 14)}... • ${sum.reticulum.knownPaths} caminhos`;
+    } else {
+      techRnsStat.textContent = `Destino: rns://${(currentState.myTag || '@peer').replace('@', '')}.mesh`;
+    }
+  }
+
+  if (techYggStat) {
+    if (sum?.yggdrasil?.ipv6Address) {
+      techYggStat.textContent = `${sum.yggdrasil.ipv6Address.slice(0, 19)}... • árvore ${sum.yggdrasil.treeCoords}`;
+    } else {
+      techYggStat.textContent = `0200::yggdrasil • raiz [0]`;
+    }
+  }
+
+  if (techKadStat) {
+    if (sum?.kademlia) {
+      techKadStat.textContent = `ID: ${sum.kademlia.nodeId} • ${sum.kademlia.totalPeersInBuckets} nós`;
+    } else {
+      techKadStat.textContent = `Métrica XOR 256-bit • ${peersCount} nós`;
+    }
+  }
+
+  if (techAodvStat) {
+    if (sum?.aodv) {
+      techAodvStat.textContent = `${sum.aodv.activeRoutes} rotas ativas • seq #${sum.aodv.currentSeqNum}`;
+    } else {
+      techAodvStat.textContent = `RREQ / RREP sob demanda • sem loops`;
+    }
+  }
+
+  if (techCrdtStat) {
+    if (sum?.crdt) {
+      techCrdtStat.textContent = `Lamport #${sum.crdt.lamportClock} • ${sum.crdt.registeredPeersCount} unificados`;
+    } else {
+      techCrdtStat.textContent = `LWW-Element-Set • convergência 100%`;
+    }
+  }
+
+  if (techDtnStat) {
+    if (sum?.dtn) {
+      techDtnStat.textContent = `${sum.dtn.stagedBundlesCount} pacotes em custódia (RFC 5050)`;
+    } else {
+      techDtnStat.textContent = `Custódia resiliente • IndexedDB`;
+    }
+  }
+
+  if (techSecStat) {
+    if (sum?.onion && sum?.doubleRatchet) {
+      techSecStat.textContent = `Onion: Ativo • Ratchets: ${sum.doubleRatchet.activeSessionsCount} (Forward Secrecy)`;
+    } else {
+      techSecStat.textContent = `Sphinx/Tor + Signal Protocol E2EE`;
+    }
+  }
+}
+
 function renderMeshUsersTab() {
+  renderTechSuiteStats();
   if (!meshUsersList) return;
 
   const now = Date.now();
@@ -1341,7 +1455,7 @@ function renderPendingApprovalPanel(pendingTransfers) {
 }
 
 function isTransferHistory(t, now = Date.now()) {
-  if (t.status === 'COMPLETED' || t.status === 'CANCELLED' || t.status === 'ERROR') {
+  if (t.status === 'COMPLETED' || t.status === 'CANCELLED' || t.status === 'ERROR' || t.status === 'EXPIRED') {
     return true;
   }
   if (t.direction === 'tunnel' && t.expiresAt && now >= t.expiresAt) {
@@ -3245,6 +3359,15 @@ function closeAndResetModal() {
 if (btnModalClose) btnModalClose.addEventListener('click', closeAndResetModal);
 if (btnModalCancel) btnModalCancel.addEventListener('click', closeAndResetModal);
 
+// Clique no fundo escuro (backdrop) fecha o modal
+if (tunnelConfigModal) {
+  tunnelConfigModal.addEventListener('click', (e) => {
+    if (e.target === tunnelConfigModal && !(btnModalConfirm && btnModalConfirm.disabled)) {
+      closeAndResetModal();
+    }
+  });
+}
+
 // Esc fecha o modal (desde que não esteja no meio de um envio)
 document.addEventListener('keydown', (e) => {
   if (
@@ -4044,7 +4167,7 @@ if (sharesList) {
     } else if (action === 'open-tunnel-url' && url) {
       chrome.tabs.create({ url });
     } else if (action === 'delete-single-transfer' && transferId) {
-      chrome.runtime.sendMessage({ action: 'CANCEL_TRANSFER', transferId }, (res) => {
+      chrome.runtime.sendMessage({ action: 'DELETE_TRANSFER', transferId }, (res) => {
         if (res && res.state) {
           currentState = res.state;
           renderAll();

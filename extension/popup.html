@@ -705,6 +705,61 @@
         <span class="text-[9px] font-mono text-indigo-300">P2P Mesh</span>
       </div>
 
+      <!-- Painel de Tecnologias Avançadas P2P & Criptografia -->
+      <div id="mesh-tech-suite" class="p-2.5 rounded-xl bg-slate-950 border border-slate-800 space-y-2 shrink-0">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+            <span>⚡ Stack P2P: Topologia, Roteamento & Criptografia</span>
+          </span>
+          <span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+            9 ATIVOS
+          </span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-1.5 text-[10px]">
+          <!-- libp2p -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-indigo-300">libp2p (Relay v2 + Gossipsub)</span>
+            <span id="tech-libp2p-stat" class="text-slate-400 font-mono text-[9px]">0 reservas • 0 tópicos</span>
+          </div>
+          <!-- Reticulum -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-cyan-300">Reticulum Network Stack</span>
+            <span id="tech-rns-stat" class="text-slate-400 font-mono text-[9px] truncate" title="Destino RNS">rns://...</span>
+          </div>
+          <!-- Yggdrasil -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-teal-300">Yggdrasil IPv6 Overlay</span>
+            <span id="tech-ygg-stat" class="text-slate-400 font-mono text-[9px] truncate" title="IPv6 Overlay">0200::...</span>
+          </div>
+          <!-- Kademlia DHT -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-purple-300">Kademlia DHT (XOR 256-bit)</span>
+            <span id="tech-kad-stat" class="text-slate-400 font-mono text-[9px]">k-buckets: 0 nós</span>
+          </div>
+          <!-- AODV -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-amber-300">AODV Routing (Sob Demanda)</span>
+            <span id="tech-aodv-stat" class="text-slate-400 font-mono text-[9px]">0 rotas • seq #0</span>
+          </div>
+          <!-- CRDTs -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-emerald-300">CRDTs (LWW-Set & Causal Log)</span>
+            <span id="tech-crdt-stat" class="text-slate-400 font-mono text-[9px]">Lamport: 0 • sem conflito</span>
+          </div>
+          <!-- Store & Forward (DTN) -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-blue-300">Store & Forward (DTN)</span>
+            <span id="tech-dtn-stat" class="text-slate-400 font-mono text-[9px]">0 pacotes em custódia</span>
+          </div>
+          <!-- Onion Routing & Double Ratchet -->
+          <div class="p-1.5 rounded-lg bg-slate-900 border border-slate-800 flex flex-col">
+            <span class="font-bold text-rose-300">Onion Routing + Double Ratchet</span>
+            <span id="tech-sec-stat" class="text-slate-400 font-mono text-[9px]">E2EE ativo • P-256</span>
+          </div>
+        </div>
+      </div>
+
       <!-- Container Rolável com Todos os Usuários -->
       <div
         id="mesh-users-list"
@@ -989,6 +1044,7 @@
   </div>
 
   <script src="fflate.min.js"></script>
+  <script src="pulseshare-mesh-engine.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

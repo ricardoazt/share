@@ -65,7 +65,7 @@ const searchParams = new URLSearchParams(searchStr);
 
 const shareId = hashParams.get('share') || searchParams.get('share') || '';
 const rawOwner = hashParams.get('owner') || searchParams.get('owner') || '';
-const ownerTag = rawOwner ? decodeURIComponent(rawOwner) : '';
+let ownerTag = rawOwner ? decodeURIComponent(rawOwner) : '';
 const expParam = hashParams.get('exp') || searchParams.get('exp') || '';
 
 const visitorNodeId = crypto.randomUUID();
@@ -101,6 +101,7 @@ shareBadge.textContent = shareId ? `#${shareId}` : '#inválido';
 let packData = null;
 let unlocked = false;
 let countdownTimer = null;
+let packInfoRetryTimer = null;
 let brokerSockets = [];
 const seenPacketIds = new Set();
 
@@ -221,7 +222,7 @@ function updateOverallProgress() {
       shareId,
       totalFiles: packData.files.length,
       totalBytes: totalPackBytes
-    }, ownerTag, transferId);
+    }, ownerTag, shareId);
   }
 }
 
@@ -283,21 +284,23 @@ function buildMqttPublishPacket(topic, jsonObj) {
 }
 
 function broadcastSignal(signalType, payload, toTag = ownerTag, transferId = shareId) {
+  const pktId = crypto.randomUUID();
   const pkt = {
     meshType: 'DIRECT_SIGNAL',
     to: toTag,
     transferId,
     signalType,
     payload,
-    packetId: crypto.randomUUID(),
+    pktId,
+    packetId: pktId,
     senderNodeId: visitorNodeId,
     senderTag: visitorTag,
     timestamp: Date.now()
   };
-  seenPacketIds.add(pkt.packetId);
+  seenPacketIds.add(pktId);
   const raw = buildMqttPublishPacket(MESH_TOPIC, pkt);
   brokerSockets.forEach((ws) => {
-    if (ws.readyState === WebSocket.OPEN) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
       try { ws.send(raw); } catch {}
     }
   });
@@ -315,77 +318,152 @@ if (localChannel) {
   };
 }
 
-function connectBrokers() {
-  if (!shareId || !ownerTag) {
-    showAlert('Link de compartilhamento incompleto. Parâmetros share ou owner ausentes no link.');
+function connectSingleBroker(url, idx) {
+  const prev = brokerSockets[idx];
+  if (prev && (prev.readyState === WebSocket.OPEN || prev.readyState === WebSocket.CONNECTING)) {
     return;
   }
 
-  PUBLIC_WSS_BROKERS.forEach((url, idx) => {
-    let ws;
+  let ws;
+  try {
+    ws = new WebSocket(url, 'mqtt');
+    ws.binaryType = 'arraybuffer';
+    brokerSockets[idx] = ws;
+  } catch {
+    setTimeout(() => connectSingleBroker(url, idx), 5000);
+    return;
+  }
+
+  let pingInterval = null;
+  let rxBuffer = new Uint8Array(0);
+
+  ws.onopen = () => {
+    rxBuffer = new Uint8Array(0);
+    const randSuffix = Math.floor(100 + Math.random() * 900);
+    const clientId = `ps_web_${visitorNodeId.slice(0, 6)}_${idx}_${randSuffix}`;
+    const connectBody = [
+      ...encodeUTF8String('MQTT'),
+      0x04,
+      0x02,
+      0x00,
+      0x3c,
+      ...encodeUTF8String(clientId)
+    ];
     try {
-      ws = new WebSocket(url, 'mqtt');
-      ws.binaryType = 'arraybuffer';
-      brokerSockets.push(ws);
-    } catch {
-      return;
+      ws.send(new Uint8Array([0x10, ...encodeRemainingLength(connectBody.length), ...connectBody]));
+    } catch {}
+
+    pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(new Uint8Array([0xc0, 0x00])); } catch {}
+      }
+    }, 15000);
+  };
+
+  ws.onmessage = (ev) => {
+    if (!(ev.data instanceof ArrayBuffer)) return;
+    const incoming = new Uint8Array(ev.data);
+    let u;
+    if (rxBuffer.length > 0) {
+      u = new Uint8Array(rxBuffer.length + incoming.length);
+      u.set(rxBuffer, 0);
+      u.set(incoming, rxBuffer.length);
+    } else {
+      u = incoming;
     }
 
-    ws.onopen = () => {
-      const clientId = `ps_web_${visitorNodeId.slice(0, 6)}_${idx}`;
-      const connectBody = [
-        ...encodeUTF8String('MQTT'),
-        0x04,
-        0x02,
-        0x00,
-        0x3c,
-        ...encodeUTF8String(clientId)
-      ];
-      ws.send(new Uint8Array([0x10, ...encodeRemainingLength(connectBody.length), ...connectBody]));
-    };
+    let p = 0;
+    while (p < u.length) {
+      const packetStart = p;
+      const fb = u[p++];
+      const pt = fb & 0xf0;
+      let m = 1, rl = 0, eb;
+      let incomplete = false;
+      do {
+        if (p >= u.length) {
+          incomplete = true;
+          break;
+        }
+        eb = u[p++];
+        rl += (eb & 127) * m;
+        m *= 128;
+      } while (eb & 128);
 
-    ws.onmessage = (ev) => {
-      if (!(ev.data instanceof ArrayBuffer)) return;
-      const u = new Uint8Array(ev.data);
-      let p = 0;
-      while (p < u.length) {
-        const fb = u[p++];
-        const pt = fb & 0xf0;
-        let m = 1, rl = 0, eb;
-        do {
-          eb = u[p++];
-          rl += (eb & 127) * m;
-          m *= 128;
-        } while (eb & 128);
-        const pe = p + rl;
+      if (incomplete) {
+        p = packetStart;
+        break;
+      }
 
-        if (pt === 0x20) {
-          // CONNACK: Inscreve no tópico global
-          const subBody = [0x00, 0x01, ...encodeUTF8String(MESH_TOPIC), 0x00];
+      const pe = p + rl;
+      if (pe > u.length) {
+        p = packetStart;
+        break;
+      }
+
+      if (pt === 0x20) {
+        // CONNACK: Inscreve no tópico global
+        const subBody = [0x00, 0x01, ...encodeUTF8String(MESH_TOPIC), 0x00];
+        try {
           ws.send(new Uint8Array([0x82, ...encodeRemainingLength(subBody.length), ...subBody]));
+        } catch {}
+        if (!packData) {
           statusDot.className = 'dot green';
           statusHeader.textContent = 'Conectado à Malha P2P (3 brokers)';
-          requestPackInfo();
-        } else if (pt === 0x30) {
-          // PUBLISH
-          let c = p;
-          const tl = (u[c] << 8) | u[c + 1];
-          c += 2 + tl;
-          if (((fb >> 1) & 0x03) > 0) c += 2;
+        }
+        requestPackInfo();
+      } else if (pt === 0x90) {
+        // SUBACK: inscrição confirmada pelo broker
+        requestPackInfo();
+      } else if (pt === 0x30) {
+        // PUBLISH
+        let c = p;
+        const tl = (u[c] << 8) | u[c + 1];
+        c += 2 + tl;
+        if (((fb >> 1) & 0x03) > 0) c += 2;
+        if (c <= pe) {
           try {
             const str = new TextDecoder().decode(u.subarray(c, pe));
             const pkt = JSON.parse(str);
             handleIncomingPacket(pkt);
           } catch {}
         }
-        p = pe;
       }
-    };
+      p = pe;
+    }
 
-    ws.onclose = () => {
-      setTimeout(connectBrokers, 4000);
-    };
+    if (p < u.length) {
+      rxBuffer = u.length - p <= 2 * 1024 * 1024 ? u.slice(p) : new Uint8Array(0);
+    } else {
+      rxBuffer = new Uint8Array(0);
+    }
+  };
+
+  ws.onclose = () => {
+    rxBuffer = new Uint8Array(0);
+    if (pingInterval) clearInterval(pingInterval);
+    setTimeout(() => connectSingleBroker(url, idx), 4000);
+  };
+}
+
+function connectBrokers() {
+  if (!shareId || !ownerTag) {
+    showAlert('Link de compartilhamento incompleto. Parâmetros share ou owner ausentes no link.');
+    return;
+  }
+
+  requestPackInfo();
+  PUBLIC_WSS_BROKERS.forEach((url, idx) => {
+    connectSingleBroker(url, idx);
   });
+
+  clearInterval(packInfoRetryTimer);
+  packInfoRetryTimer = setInterval(() => {
+    if (!packData) {
+      requestPackInfo();
+    } else {
+      clearInterval(packInfoRetryTimer);
+    }
+  }, 2500);
 }
 
 function showAlert(msg) {
@@ -403,16 +481,28 @@ function requestPackInfo() {
   broadcastSignal('PACK_INFO_REQUEST', { shareId });
 }
 
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
 // ============================================================================
 // Manipulação de Pacotes Recebidos
 // ============================================================================
 function handleIncomingPacket(pkt) {
   if (!pkt || pkt.senderNodeId === visitorNodeId) return;
-  if (pkt.packetId) {
-    if (seenPacketIds.has(pkt.packetId)) return;
-    seenPacketIds.add(pkt.packetId);
+  const pktId = pkt.pktId || pkt.packetId;
+  if (pktId) {
+    if (seenPacketIds.has(pktId)) return;
+    seenPacketIds.add(pktId);
   }
-  if (pkt.meshType !== 'DIRECT_SIGNAL' || pkt.to !== visitorTag) return;
+  if (pkt.meshType !== 'DIRECT_SIGNAL') return;
+  if (pkt.to && pkt.to !== visitorTag && pkt.transferId !== shareId) return;
 
   const { signalType, payload, transferId } = pkt;
 
@@ -422,12 +512,17 @@ function handleIncomingPacket(pkt) {
   }
 
   if (signalType === 'FILE_REJECT') {
-    const fileId = payload?.fileId;
-    if (fileId && activeDownloads.has(fileId)) {
-      const dl = activeDownloads.get(fileId);
-      updateFileUI(fileId, { status: 'Erro: ' + (payload.error || 'Rejeitado pelo remetente') });
-      dl.pc.close();
-      activeDownloads.delete(fileId);
+    const dl = (payload?.fileId && activeDownloads.get(payload.fileId)) || findDownloadByTransferId(transferId);
+    if (dl) {
+      clearDownloadTimers(dl);
+      updateFileUI(dl.fileId, { status: 'Erro: ' + (payload?.error || 'Rejeitado pelo remetente') });
+      try { dl.pc?.close(); } catch {}
+      activeDownloads.delete(dl.fileId);
+      const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
+      if (btnDl) {
+        btnDl.disabled = false;
+        btnDl.textContent = '⬇ Tentar Novamente';
+      }
     }
     return;
   }
@@ -445,6 +540,99 @@ function handleIncomingPacket(pkt) {
       dl.pendingCandidates = dl.pendingCandidates || [];
       dl.pendingCandidates.push(payload.candidate);
     }
+    return;
+  }
+
+  if (signalType === 'MESH_RELAY_CHUNK' && payload) {
+    const dl = findDownloadByTransferId(transferId) || (payload.fileId ? activeDownloads.get(payload.fileId) : null);
+    if (!dl || dl.cancelled || dl.completed) return;
+
+    if (dl.pullRetryTimer) {
+      clearTimeout(dl.pullRetryTimer);
+      dl.pullRetryTimer = null;
+    }
+    if (dl.webrtcFallbackTimer) {
+      clearTimeout(dl.webrtcFallbackTimer);
+      dl.webrtcFallbackTimer = null;
+    }
+    if (dl.relayRetryTimer) {
+      clearInterval(dl.relayRetryTimer);
+      dl.relayRetryTimer = null;
+    }
+
+    dl.usingRelay = true;
+    if (dl.pc) {
+      try { dl.pc.close(); } catch {}
+      dl.pc = null;
+    }
+
+    if (typeof payload.totalChunks === 'number' && payload.totalChunks > 0) {
+      dl.totalChunks = Math.max(dl.totalChunks || 0, payload.totalChunks);
+    }
+
+    if (typeof payload.chunkSeq === 'number') {
+      if (dl.seenSeqs.has(payload.chunkSeq)) return;
+      dl.seenSeqs.add(payload.chunkSeq);
+    }
+
+    if (payload.totalBytes && !dl.fileSize) {
+      dl.fileSize = payload.totalBytes;
+    }
+
+    if (payload.chunkBase64) {
+      const chunkBytes = base64ToUint8Array(payload.chunkBase64);
+      if (typeof payload.chunkSeq === 'number') {
+        dl.chunksBySeq.set(payload.chunkSeq, chunkBytes);
+      } else {
+        dl.chunks.push(chunkBytes);
+      }
+      dl.receivedBytes += chunkBytes.byteLength;
+    }
+
+    if (payload.isEof) {
+      dl.eofSeen = true;
+    }
+
+    const allChunksArrived =
+      (dl.totalChunks > 0 && dl.chunksBySeq.size >= dl.totalChunks) ||
+      (dl.eofSeen && dl.fileSize > 0 && dl.receivedBytes >= dl.fileSize) ||
+      (dl.eofSeen && dl.totalChunks === 0);
+
+    const now = Date.now();
+    if (now - dl.lastReport >= 100 || allChunksArrived || payload.isEof) {
+      const elapsed = Math.max(0.1, (now - dl.startTime) / 1000);
+      const speedBps = Math.round(dl.receivedBytes / elapsed);
+      const pct = dl.fileSize > 0
+        ? Math.min(allChunksArrived ? 100 : 99, Math.round((dl.receivedBytes / dl.fileSize) * 100))
+        : (allChunksArrived ? 100 : 50);
+
+      fileProgressMap.set(dl.fileId, {
+        receivedBytes: dl.receivedBytes,
+        speedBps,
+        pct,
+        totalBytes: dl.fileSize
+      });
+      updateFileUI(dl.fileId, {
+        status: dl.paused ? 'Pausado' : 'Recebendo dados (Túnel Mesh)...',
+        pct,
+        speedBps,
+        receivedBytes: dl.receivedBytes,
+        totalBytes: dl.fileSize
+      });
+      updateOverallProgress();
+      dl.lastReport = now;
+    }
+
+    if (allChunksArrived) {
+      finishDownload(dl);
+    } else if (dl.eofSeen && !dl.eofWaitTimer) {
+      dl.eofWaitTimer = setTimeout(() => {
+        dl.eofWaitTimer = null;
+        if (!dl.completed && !dl.cancelled) {
+          finishDownload(dl);
+        }
+      }, 1500);
+    }
   }
 }
 
@@ -456,11 +644,14 @@ function findDownloadByTransferId(transferId) {
 }
 
 function onPackInfoResponse(payload) {
+  clearInterval(packInfoRetryTimer);
   if (!payload.ok) {
     if (payload.error === 'EXPIRED') {
       showAlert('⏳ Este link temporário expirou. O tempo limite definido pelo remetente foi atingido.');
     } else if (payload.error === 'CANCELLED') {
       showAlert('✕ O remetente encerrou este compartilhamento.');
+    } else if (payload.error === 'DOWNLOAD_LIMIT_REACHED') {
+      showAlert('🎯 O limite de downloads deste link foi atingido.');
     } else if (payload.error === 'PAUSED') {
       showAlert('⏸ O remetente pausou o link temporariamente. Aguarde a retomada.');
     } else {
@@ -471,6 +662,9 @@ function onPackInfoResponse(payload) {
     return;
   }
 
+  if (payload.ownerTag) {
+    ownerTag = payload.ownerTag;
+  }
   packData = payload;
   statusDot.className = 'dot green';
   statusHeader.textContent = '🟢 Remetente Online (P2P Pronto)';
@@ -754,6 +948,7 @@ btnDownloadAll.addEventListener('click', async () => {
       const a = document.createElement('a');
       a.href = blobUrl;
       a.download = finalZipName;
+      a.addEventListener('click', (e) => e.stopPropagation());
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -783,6 +978,47 @@ btnDownloadAll.addEventListener('click', async () => {
   }, 3000);
 });
 
+function clearDownloadTimers(dl) {
+  if (!dl) return;
+  if (dl.pullRetryTimer) {
+    clearTimeout(dl.pullRetryTimer);
+    dl.pullRetryTimer = null;
+  }
+  if (dl.webrtcFallbackTimer) {
+    clearTimeout(dl.webrtcFallbackTimer);
+    dl.webrtcFallbackTimer = null;
+  }
+  if (dl.relayRetryTimer) {
+    clearInterval(dl.relayRetryTimer);
+    dl.relayRetryTimer = null;
+  }
+  if (dl.eofWaitTimer) {
+    clearTimeout(dl.eofWaitTimer);
+    dl.eofWaitTimer = null;
+  }
+}
+
+function triggerMeshRelayFallback(dl) {
+  if (!dl || dl.cancelled || dl.completed || dl.usingRelay || dl.receivedBytes > 0) return;
+  dl.usingRelay = true;
+  clearDownloadTimers(dl);
+  if (dl.pc) {
+    try { dl.pc.close(); } catch {}
+    dl.pc = null;
+  }
+  updateFileUI(dl.fileId, { status: 'Conectando via Túnel Mesh (CGNAT/Firewall)...' });
+  broadcastSignal('TUNNEL_RELAY_PULL', { shareId, fileId: dl.fileId }, ownerTag, dl.transferId);
+
+  dl.relayRetryTimer = setInterval(() => {
+    if (dl.cancelled || dl.completed || dl.receivedBytes > 0) {
+      clearInterval(dl.relayRetryTimer);
+      dl.relayRetryTimer = null;
+      return;
+    }
+    broadcastSignal('TUNNEL_RELAY_PULL', { shareId, fileId: dl.fileId }, ownerTag, dl.transferId);
+  }, 2500);
+}
+
 function startFileDownload(fileId, onCompleteCallback, returnBufferOnly = false) {
   const file = (packData.files || []).find((f) => f.fileId === fileId);
   if (!file) return;
@@ -806,11 +1042,22 @@ function startFileDownload(fileId, onCompleteCallback, returnBufferOnly = false)
     pc: null,
     channel: null,
     chunks: [],
+    chunksBySeq: new Map(),
+    seenSeqs: new Set(),
+    totalChunks: 0,
+    eofSeen: false,
+    eofWaitTimer: null,
     receivedBytes: 0,
     startTime: Date.now(),
     lastReport: Date.now(),
     paused: false,
     cancelled: false,
+    completed: false,
+    usingRelay: false,
+    offerReceived: false,
+    pullRetryTimer: null,
+    webrtcFallbackTimer: null,
+    relayRetryTimer: null,
     pendingCandidates: [],
     returnBufferOnly,
     onComplete: onCompleteCallback
@@ -818,11 +1065,52 @@ function startFileDownload(fileId, onCompleteCallback, returnBufferOnly = false)
 
   activeDownloads.set(fileId, downloadRecord);
   broadcastSignal('PACK_FILE_PULL', { shareId, fileId }, ownerTag, transferId);
+
+  downloadRecord.pullRetryTimer = setTimeout(() => {
+    if (!downloadRecord.cancelled && !downloadRecord.completed && !downloadRecord.offerReceived && !downloadRecord.usingRelay) {
+      broadcastSignal('PACK_FILE_PULL', { shareId, fileId }, ownerTag, transferId);
+    }
+  }, 2000);
+
+  downloadRecord.webrtcFallbackTimer = setTimeout(() => {
+    if (!downloadRecord.cancelled && !downloadRecord.completed && downloadRecord.receivedBytes === 0) {
+      const chOpen = downloadRecord.channel && downloadRecord.channel.readyState === 'open';
+      if (!chOpen) {
+        triggerMeshRelayFallback(downloadRecord);
+      }
+    }
+  }, 3500);
+}
+
+function waitForIceGathering(pc, timeoutMs = 800) {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pc.removeEventListener('icegatheringstatechange', checkState);
+      resolve();
+    }, timeoutMs);
+
+    function checkState() {
+      if (pc.iceGatheringState === 'complete') {
+        clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', checkState);
+        resolve();
+      }
+    }
+
+    pc.addEventListener('icegatheringstatechange', checkState);
+  });
 }
 
 async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) {
   const dl = findDownloadByTransferId(transferId);
-  if (!dl) return;
+  if (!dl || dl.cancelled || dl.completed || dl.usingRelay) return;
+
+  dl.offerReceived = true;
+  if (dl.pullRetryTimer) {
+    clearTimeout(dl.pullRetryTimer);
+    dl.pullRetryTimer = null;
+  }
 
   if (dl.pc) {
     try { dl.pc.close(); } catch {}
@@ -834,14 +1122,39 @@ async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) 
   const pc = new RTCPeerConnection({ iceServers: effectiveIceServers, iceCandidatePoolSize: 4 });
   dl.pc = pc;
 
+  let answerSent = false;
+  const localCandidates = [];
+
   pc.onicecandidate = (e) => {
     if (e.candidate) {
-      broadcastSignal(
-        'ICE_CANDIDATE',
-        { candidate: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate },
-        ownerTag,
-        transferId
-      );
+      const candidateObj = e.candidate.toJSON
+        ? e.candidate.toJSON()
+        : {
+            candidate: e.candidate.candidate,
+            sdpMid: e.candidate.sdpMid,
+            sdpMLineIndex: e.candidate.sdpMLineIndex,
+            usernameFragment: e.candidate.usernameFragment
+          };
+      if (answerSent) {
+        broadcastSignal('ICE_CANDIDATE', { candidate: candidateObj }, ownerTag, transferId);
+      } else {
+        localCandidates.push(candidateObj);
+      }
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') {
+      clearDownloadTimers(dl);
+      updateFileUI(dl.fileId, { status: 'Conectado! Iniciando transferência...' });
+    } else if (pc.connectionState === 'failed') {
+      triggerMeshRelayFallback(dl);
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    if (pc.iceConnectionState === 'failed') {
+      triggerMeshRelayFallback(dl);
     }
   };
 
@@ -850,12 +1163,23 @@ async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) 
     dl.channel = channel;
     channel.binaryType = 'arraybuffer';
 
+    channel.onopen = () => {
+      clearDownloadTimers(dl);
+      updateFileUI(dl.fileId, { status: 'Túnel P2P conectado! Aguardando dados...' });
+    };
+
     channel.onmessage = (e) => {
-      if (dl.cancelled) return;
+      if (dl.cancelled || dl.completed) return;
+      clearDownloadTimers(dl);
 
       if (typeof e.data === 'string') {
         try {
           const ctrl = JSON.parse(e.data);
+          if (ctrl.type === 'FILE_START') {
+            if (ctrl.fileSize) dl.fileSize = ctrl.fileSize;
+            updateFileUI(dl.fileId, { status: 'Recebendo arquivo...', pct: 0 });
+            return;
+          }
           if (ctrl.type === 'TRANSFER_PAUSED') {
             dl.paused = true;
             updateFileUI(dl.fileId, { status: 'Pausado pelo remetente' });
@@ -866,11 +1190,17 @@ async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) 
             updateFileUI(dl.fileId, { status: 'Recebendo dados...' });
             return;
           }
-          if (ctrl.type === 'TRANSFER_CANCELLED') {
+          if (ctrl.type === 'TRANSFER_CANCELLED' || ctrl.type === 'TRANSFER_ERROR') {
             dl.cancelled = true;
-            updateFileUI(dl.fileId, { status: 'Cancelado pelo remetente' });
+            clearDownloadTimers(dl);
+            updateFileUI(dl.fileId, { status: ctrl.error || 'Cancelado pelo remetente' });
             try { pc.close(); } catch {}
             activeDownloads.delete(dl.fileId);
+            const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
+            if (btnDl) {
+              btnDl.disabled = false;
+              btnDl.textContent = '⬇ Tentar Novamente';
+            }
             return;
           }
           if (ctrl.type === 'EOF') {
@@ -886,7 +1216,7 @@ async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) 
 
       const now = Date.now();
       if (now - dl.lastReport >= 100 || (dl.fileSize > 0 && dl.receivedBytes >= dl.fileSize)) {
-        const elapsed = Math.max(0.1, (now - startTime) / 1000);
+        const elapsed = Math.max(0.1, (now - dl.startTime) / 1000);
         const speedBps = Math.round(dl.receivedBytes / elapsed);
         const pct = dl.fileSize > 0 ? Math.min(99, Math.round((dl.receivedBytes / dl.fileSize) * 100)) : 99;
         fileProgressMap.set(dl.fileId, {
@@ -908,17 +1238,29 @@ async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) 
     };
   };
 
-  await pc.setRemoteDescription(new RTCSessionDescription(sdpOffer));
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(sdpOffer));
 
-  while (dl.pendingCandidates && dl.pendingCandidates.length > 0) {
-    const c = dl.pendingCandidates.shift();
-    try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+    while (dl.pendingCandidates && dl.pendingCandidates.length > 0) {
+      const c = dl.pendingCandidates.shift();
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+    }
+
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    await waitForIceGathering(pc, 600);
+
+    broadcastSignal('WEBRTC_ANSWER', { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } }, ownerTag, transferId);
+    answerSent = true;
+    while (localCandidates.length > 0) {
+      const candidateObj = localCandidates.shift();
+      broadcastSignal('ICE_CANDIDATE', { candidate: candidateObj }, ownerTag, transferId);
+    }
+  } catch (err) {
+    console.warn('WebRTC Offer/Answer error, switching to Mesh Relay:', err);
+    triggerMeshRelayFallback(dl);
   }
-
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-
-  broadcastSignal('WEBRTC_ANSWER', { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } }, ownerTag, transferId);
 }
 
 function togglePauseDownload(fileId) {
@@ -950,6 +1292,7 @@ function cancelDownload(fileId) {
   if (!dl) return;
 
   dl.cancelled = true;
+  clearDownloadTimers(dl);
   try { dl.channel?.send(JSON.stringify({ type: 'REQUEST_CANCEL' })); } catch {}
   try { dl.pc?.close(); } catch {}
 
@@ -964,16 +1307,32 @@ function cancelDownload(fileId) {
 }
 
 function finishDownload(dl) {
+  if (!dl || dl.completed) return;
+  dl.completed = true;
+  clearDownloadTimers(dl);
+
+  let sourceChunks = dl.chunks;
+  if (dl.chunksBySeq && dl.chunksBySeq.size > 0) {
+    const ordered = [];
+    const maxSeq = dl.totalChunks || Math.max(...dl.chunksBySeq.keys());
+    for (let s = 1; s <= maxSeq; s++) {
+      const ch = dl.chunksBySeq.get(s);
+      if (ch) ordered.push(ch);
+    }
+    sourceChunks = ordered;
+  }
+
   let combinedBuffer = null;
   let totalLen = 0;
-  for (const ch of dl.chunks) totalLen += ch.byteLength;
+  for (const ch of sourceChunks) totalLen += ch.byteLength;
   combinedBuffer = new Uint8Array(totalLen);
   let offset = 0;
-  for (const ch of dl.chunks) {
+  for (const ch of sourceChunks) {
     combinedBuffer.set(ch, offset);
     offset += ch.byteLength;
   }
   dl.chunks.length = 0;
+  if (dl.chunksBySeq) dl.chunksBySeq.clear();
 
   if (!dl.returnBufferOnly) {
     const blob = new Blob([combinedBuffer], { type: dl.fileType });
@@ -981,6 +1340,7 @@ function finishDownload(dl) {
     const a = document.createElement('a');
     a.href = blobUrl;
     a.download = dl.fileName;
+    a.addEventListener('click', (e) => e.stopPropagation());
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1002,7 +1362,11 @@ function finishDownload(dl) {
     pct: 100,
     totalBytes: dl.fileSize
   });
-  updateOverallProgress();
+  try {
+    updateOverallProgress();
+  } catch (err) {
+    console.warn('Erro ao atualizar progresso geral:', err);
+  }
 
   const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
   if (btnDl) {
