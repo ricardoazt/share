@@ -10,6 +10,7 @@ import android.os.Looper
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.widget.Toast
+import org.json.JSONObject
 import java.io.File
 
 class PulseShareBridge(
@@ -17,6 +18,18 @@ class PulseShareBridge(
     private val onPickFilesRequested: () -> Unit
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val bleHelper = BluetoothMeshHelper(activity).apply {
+        onMessageReceived = { fromTag, messageJson ->
+            val safeJson = JSONObject.quote(messageJson)
+            val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onBleMessageReceived) { window.PulseShareNativeCallback.onBleMessageReceived('$fromTag', $safeJson); }"
+            activity.evaluateJs(js)
+        }
+        onPeersUpdated = { peersJson ->
+            val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onBlePeersUpdated) { window.PulseShareNativeCallback.onBlePeersUpdated($peersJson); }"
+            activity.evaluateJs(js)
+        }
+    }
 
     @JavascriptInterface
     fun isNativeAndroid(): Boolean = true
@@ -61,6 +74,28 @@ class PulseShareBridge(
     @JavascriptInterface
     fun cancelTransfer(transferId: String) {
         FileHelper.cancelTransfer(transferId)
+    }
+
+    @JavascriptInterface
+    fun getDownloadDirectory(): String {
+        return FileHelper.getDownloadDir(activity).absolutePath
+    }
+
+    @JavascriptInterface
+    fun setDownloadDirectory(folderName: String): String {
+        FileHelper.setCustomDownloadFolder(activity, folderName)
+        return FileHelper.getDownloadDir(activity).absolutePath
+    }
+
+    @JavascriptInterface
+    fun openDownloadFolder() {
+        mainHandler.post {
+            try {
+                FileHelper.openDownloadFolder(activity)
+            } catch (e: Exception) {
+                Toast.makeText(activity, "Não foi possível abrir o diretório", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     @JavascriptInterface
@@ -192,5 +227,35 @@ class PulseShareBridge(
     @JavascriptInterface
     fun stopKeepAlive() {
         PulseShareService.stop(activity)
+    }
+
+    // =========================================================================
+    // BLUETOOTH BLE MESH P2P
+    // =========================================================================
+    @JavascriptInterface
+    fun isBleAvailable(): Boolean = bleHelper.isBleSupported() && bleHelper.isBluetoothEnabled()
+
+    @JavascriptInterface
+    fun startBleMesh(tag: String) {
+        mainHandler.post {
+            bleHelper.startBleMesh(tag)
+        }
+    }
+
+    @JavascriptInterface
+    fun stopBleMesh() {
+        mainHandler.post {
+            bleHelper.stopBleMesh()
+        }
+    }
+
+    @JavascriptInterface
+    fun getNearbyBlePeers(): String {
+        return bleHelper.getDiscoveredPeersJson()
+    }
+
+    @JavascriptInterface
+    fun sendBleMessage(targetTag: String, messageJson: String): Boolean {
+        return bleHelper.sendBleMessage(targetTag, messageJson)
     }
 }

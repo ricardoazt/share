@@ -2,1967 +2,797 @@
 <html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PulseShare — Download de Arquivos P2P (WebRTC Serverless)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>PulseShare Android</title>
+  <link rel="stylesheet" href="tailwind.css" />
   <style>
-    *, ::before, ::after { box-sizing: border-box; margin: 0; padding: 0; border: 0 solid #1e293b; }
-    html, body {
-      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #020617;
+    /* Safe-area padding e estilo do app nativo Edge-to-Edge */
+    :root {
+      --sat: env(safe-area-inset-top, 0px);
+      --sab: env(safe-area-inset-bottom, 0px);
+    }
+    body {
+      background-color: #020617;
       color: #f8fafc;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 16px;
-      -webkit-font-smoothing: antialiased;
-    }
-    .container {
-      width: 100%;
-      max-width: 460px;
-      background: rgba(15, 23, 42, 0.95);
-      border: 1px solid #1e293b;
-      border-radius: 20px;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
-    }
-    .header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px solid #1e293b;
-      padding-bottom: 12px;
-    }
-    .badge-p2p {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #fb923c;
-    }
-    .dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 9999px;
-      background: #fbbf24;
-      animation: pulse 2s infinite;
-    }
-    .dot.green { background: #34d399; }
-    .dot.red { background: #f43f5e; }
-    .share-badge {
-      font-family: monospace;
-      font-size: 10px;
-      padding: 2px 8px;
-      border-radius: 6px;
-      background: #1e293b;
-      color: #cbd5e1;
-      border: 1px solid #334155;
-    }
-    .card-info {
-      background: #020617;
-      border: 1px solid #1e293b;
-      border-radius: 14px;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .card-title {
-      font-size: 15px;
-      font-weight: 700;
-      color: #ffffff;
-      word-break: break-word;
-    }
-    .card-meta {
-      font-size: 12px;
-      color: #94a3b8;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 4px;
-      font-family: monospace;
-    }
-    .exp-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 11px;
-      color: #fde68a;
-      background: rgba(245, 158, 11, 0.15);
-      padding: 2px 8px;
-      border-radius: 9999px;
-      border: 1px solid rgba(245, 158, 11, 0.3);
-    }
-    .btn-all {
-      width: 100%;
-      padding: 12px 16px;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #f97316, #d97706);
-      color: #ffffff;
-      font-weight: 700;
-      font-size: 13px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      box-shadow: 0 10px 15px -3px rgba(249, 115, 22, 0.3);
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .btn-all:hover { opacity: 0.95; transform: translateY(-1px); }
-    .btn-all:active { transform: scale(0.98); }
-    .btn-all:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-
-    /* Seção de Compactação ZIP */
-    .zip-section {
-      background: #090d16;
-      border: 1px solid #1e293b;
-      border-radius: 14px;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .zip-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .zip-title {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      font-weight: 700;
-      color: #cbd5e1;
-    }
-    .zip-toggle-wrap {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      color: #94a3b8;
-      cursor: pointer;
-    }
-    .zip-toggle-wrap input {
-      cursor: pointer;
-      accent-color: #f97316;
-    }
-    .zip-options {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding-top: 8px;
-      border-top: 1px solid #1e293b;
-    }
-    .zip-field {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 11px;
-      color: #94a3b8;
-    }
-    .zip-select, .zip-input {
-      background: #0f172a;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 6px 10px;
-      color: #f1f5f9;
-      font-size: 11px;
-      font-family: inherit;
-      outline: none;
-    }
-    .zip-select:focus, .zip-input:focus {
-      border-color: #f97316;
-    }
-
-    .files-list {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      max-height: 280px;
-      overflow-y: auto;
-      padding-right: 2px;
-    }
-    .files-list::-webkit-scrollbar { width: 4px; }
-    .files-list::-webkit-scrollbar-track { background: transparent; }
-    .files-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
-
-    .overall-prog {
-      background: #090d16;
-      border: 1px solid rgba(249, 115, 22, 0.4);
-      border-radius: 12px;
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      margin-bottom: 12px;
-    }
-    .overall-prog-header, .overall-prog-footer {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 11px;
-      font-family: monospace;
-      color: #94a3b8;
-    }
-    .overall-pct {
-      color: #fb923c;
-      font-weight: 700;
-      font-size: 12px;
-    }
-    .folder-node {
-      background: #090d16;
-      border: 1px solid #1e293b;
-      border-radius: 10px;
-      overflow: hidden;
-      margin-bottom: 8px;
-    }
-    .folder-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 10px;
-      cursor: pointer;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding-top: var(--sat);
+      padding-bottom: var(--sab);
       user-select: none;
-      background: rgba(30, 41, 59, 0.4);
-      transition: background 0.15s ease;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      overflow-x: hidden;
     }
-    .folder-header:hover {
-      background: rgba(30, 41, 59, 0.8);
+    .custom-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+    .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+    
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+    @keyframes pulse-slow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.92); }
     }
-    .folder-children {
-      padding: 6px 6px 6px 14px;
-      border-top: 1px solid rgba(30, 41, 59, 0.6);
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
+    .pulse-dot { animation: pulse-slow 2s infinite ease-in-out; }
+
+    .glow-orange {
+      box-shadow: 0 0 15px rgba(249, 115, 22, 0.25);
+    }
+    .glow-indigo {
+      box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
     }
 
-    .file-item {
-      background: #090d16;
-      border: 1px solid #1e293b;
-      border-radius: 12px;
-      padding: 10px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      transition: border-color 0.15s ease;
+    /* WhatsApp Avatar Sizing & Strict Bounds */
+    #chat-contact-avatar {
+      width: 40px !important;
+      height: 40px !important;
+      min-width: 40px !important;
+      min-height: 40px !important;
+      max-width: 40px !important;
+      max-height: 40px !important;
+      border-radius: 9999px !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
     }
-    .file-item:hover { border-color: rgba(249, 115, 22, 0.4); }
-    .file-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
+    #header-avatar-slot {
+      width: 36px !important;
+      height: 36px !important;
+      min-width: 36px !important;
+      min-height: 36px !important;
+      max-width: 36px !important;
+      max-height: 36px !important;
+      border-radius: 12px !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
     }
-    .file-name-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
+    .chat-avatar {
+      width: 48px !important;
+      height: 48px !important;
+      min-width: 48px !important;
+      min-height: 48px !important;
+      max-width: 48px !important;
+      max-height: 48px !important;
+      border-radius: 16px !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
     }
-    .file-icon {
-      width: 28px;
-      height: 28px;
-      border-radius: 8px;
-      background: rgba(249, 115, 22, 0.15);
-      color: #fb923c;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 14px;
-      flex-shrink: 0;
+    #chat-contact-avatar svg,
+    #header-avatar-slot svg,
+    .chat-avatar svg,
+    .avatar-slot svg {
+      width: 100% !important;
+      height: 100% !important;
+      max-width: 100% !important;
+      max-height: 100% !important;
+      display: block !important;
     }
-    .file-name {
-      font-size: 12px;
-      font-weight: 600;
-      color: #f1f5f9;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .file-size {
-      font-size: 11px;
-      font-family: monospace;
-      color: #94a3b8;
-    }
-    .file-btn {
-      padding: 5px 10px;
-      border-radius: 8px;
-      background: #1e293b;
-      color: #fb923c;
-      border: 1px solid rgba(249, 115, 22, 0.3);
-      font-size: 11px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      white-space: nowrap;
-      flex-shrink: 0;
-      transition: all 0.15s;
-    }
-    .file-btn:hover { background: rgba(249, 115, 22, 0.2); }
-    .file-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* Progress and Controls */
-    .prog-section {
+    /* Edge-to-Edge Full Screen Chat Sliding Transition (WhatsApp Style) */
+    .chat-slide-pane {
+      position: fixed;
+      inset: 0;
+      z-index: 45;
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      padding-top: 4px;
-      border-top: 1px solid #1e293b;
+      background-color: #020617;
+      transform: translateX(100%);
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: transform;
     }
-    .prog-bar-bg {
-      width: 100%;
-      height: 6px;
-      background: #1e293b;
-      border-radius: 9999px;
-      overflow: hidden;
+    .chat-slide-pane.active {
+      transform: translateX(0);
     }
-    .prog-bar-fill {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, #f97316, #fbbf24);
-      transition: width 0.15s ease;
-    }
-    .prog-info {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      font-size: 10px;
-      font-family: monospace;
-      color: #94a3b8;
-    }
-    .prog-controls {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      margin-top: 2px;
-    }
-    .ctrl-btn {
-      padding: 2px 8px;
-      border-radius: 6px;
-      font-size: 10px;
-      font-weight: 700;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    .btn-pause { background: rgba(245, 158, 11, 0.2); color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.4); }
-    .btn-pause:hover { background: rgba(245, 158, 11, 0.35); }
-    .btn-resume { background: rgba(52, 211, 153, 0.2); color: #6ee7b7; border: 1px solid rgba(52, 211, 153, 0.4); }
-    .btn-resume:hover { background: rgba(52, 211, 153, 0.35); }
-    .btn-cancel { background: rgba(244, 63, 94, 0.2); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.4); }
-    .btn-cancel:hover { background: rgba(244, 63, 94, 0.35); }
-
-    .password-card {
-      background: #090d16;
-      border: 1px solid #1e293b;
-      border-radius: 14px;
-      padding: 16px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      text-align: center;
-    }
-    .password-input-wrap {
-      display: flex;
-      width: 100%;
-      gap: 8px;
-    }
-    .password-input {
-      flex: 1;
-      padding: 8px 12px;
-      border-radius: 8px;
-      background: #020617;
-      border: 1px solid #334155;
-      color: #fff;
-      font-size: 13px;
-      outline: none;
-    }
-    .password-input:focus { border-color: #f97316; }
-    .btn-unlock {
-      padding: 8px 16px;
-      border-radius: 8px;
-      background: #f97316;
-      color: #fff;
-      font-weight: 700;
-      font-size: 13px;
-      cursor: pointer;
-    }
-    .alert-card {
-      background: rgba(244, 63, 94, 0.1);
-      border: 1px solid rgba(244, 63, 94, 0.3);
-      border-radius: 12px;
-      padding: 10px 14px;
-      color: #fda4af;
-      font-size: 12px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .footer {
-      font-size: 11px;
-      color: #64748b;
-      text-align: center;
-      line-height: 1.4;
-    }
-    .hidden { display: none !important; }
-    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
-  <script src="fflate.min.js"></script>
-  <script src="pulseshare-mesh-engine.js"></script>
 </head>
-<body>
-  <div class="container">
-    <!-- Cabeçalho -->
-    <div class="header">
-      <div class="badge-p2p">
-        <span id="status-dot" class="dot"></span>
-        <span id="status-header">Conectando à Malha P2P...</span>
+<body class="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden relative">
+
+  <!-- CABEÇALHO NATIVO SUPERIOR -->
+  <header class="px-4 py-2.5 bg-slate-900/95 border-b border-slate-800/80 flex items-center justify-between shrink-0 z-30 shadow-md">
+    <div class="flex items-center gap-2.5 cursor-pointer" id="header-profile-btn" title="Perfil Criptográfico & Chaves">
+      <div id="header-avatar-slot" class="w-8 h-8 rounded-xl overflow-hidden bg-slate-800 border border-slate-700/80 flex items-center justify-center shrink-0">
+        <!-- Avatar SVG ou Identicon do perfil ativo -->
       </div>
-      <span id="share-badge" class="share-badge">#---</span>
+      <div>
+        <div class="flex items-center gap-1.5">
+          <span id="header-profile-name" class="text-sm font-black tracking-wide text-white">PulseShare</span>
+          <span id="header-mesh-dot" class="w-2 h-2 rounded-full bg-amber-400 pulse-dot" title="Sincronizando malha..."></span>
+        </div>
+        <span id="header-user-tag" class="text-[11px] font-mono text-indigo-400 font-bold block leading-none">@conectando...</span>
+      </div>
     </div>
 
-    <!-- Alertas (Erros, Expiração, Cancelamento) -->
-    <div id="alert-card" class="alert-card hidden">
-      <span>⚠️</span>
-      <span id="alert-text">Mensagem de aviso</span>
+    <!-- BOTÕES DO TOPO (Busca Global, Status e Configurações) -->
+    <div class="flex items-center gap-1.5">
+      <button id="btn-header-search" type="button" title="Busca Global de Usuários" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+        </svg>
+      </button>
+
+      <span id="header-status-badge" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700/80">
+        Conectando...
+      </span>
+
+      <button id="btn-open-settings" type="button" title="Configurações" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+      </button>
     </div>
+  </header>
 
-    <!-- Tela de Desbloqueio com Senha (se houver) -->
-    <div id="password-section" class="password-card hidden">
-      <div style="font-size: 28px;">🔑</div>
-      <h2 style="font-size: 15px; font-weight: 700; color: #fff;">Pacote Protegido por Senha</h2>
-      <p style="font-size: 12px; color: #94a3b8;">O remetente definiu uma senha para liberar o download.</p>
-      <div class="password-input-wrap">
-        <input
-          id="password-input"
-          type="password"
-          placeholder="Digite a senha..."
-          class="password-input"
-        />
-        <button id="btn-unlock" type="button" class="btn-unlock">Liberar</button>
-      </div>
-      <span id="password-error" style="font-size: 11px; color: #fb7185;" class="hidden">Senha incorreta.</span>
-    </div>
+  <!-- ÁREA PRINCIPAL COM SCROLL E CONTEÚDO DAS ABAS (CHAT-FIRST POR PADRÃO) -->
+  <main class="flex-1 overflow-hidden relative">
 
-    <!-- Área Principal do Pack (visível quando conectado e desbloqueado) -->
-    <div id="pack-content" class="hidden" style="display: flex; flex-direction: column; gap: 12px;">
-      <!-- Card com Informações do Pack -->
-      <div class="card-info">
-        <h1 id="pack-title" class="card-title">Pacote de Arquivos</h1>
-        <div class="card-meta">
-          <span id="pack-sender">Remetente: @---</span>
-          <span id="pack-summary">0 arquivos • 0 B</span>
-        </div>
-        <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px;">
-          <span id="tunnel-status-text" style="font-size: 11px; color: #34d399; font-weight: 600;">🟢 P2P WebRTC Conectado</span>
-          <span id="exp-badge" class="exp-badge">⏳ Expira em: --:--</span>
-        </div>
-      </div>
-
-      <!-- SEÇÃO DE COMPACTAÇÃO E DOWNLOAD EM .ZIP -->
-      <div class="zip-section">
-        <div class="zip-header">
-          <div class="zip-title">
-            <span>🗜️</span>
-            <span>Opções de Compactação (.ZIP)</span>
+    <!-- ===================================================================== -->
+    <!-- ABA 1: CHAT P2P (CHAT-FIRST & FULL-SCREEN EDGE-TO-EDGE) -->
+    <!-- ===================================================================== -->
+    <section id="view-chat" class="h-full flex-1 min-h-0 flex flex-col relative overflow-hidden">
+      
+      <!-- SUB-PAINEL 1: LISTA DE CONVERSAS (WhatsApp style) -->
+      <div id="chat-list-pane" class="flex-1 flex flex-col min-h-0 h-full overflow-hidden relative">
+        
+        <!-- Barra Superior da Lista: Título e Categorias de Contatos -->
+        <div class="px-4 pt-2.5 pb-2 bg-slate-900/90 border-b border-slate-800/80 shrink-0 space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-black text-white tracking-wide">Conversas</span>
+              <span id="chat-conversations-count" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-indigo-300 border border-slate-700">0</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button id="btn-chat-global-search" type="button" title="Busca Global na Malha" class="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 active:scale-95 transition-all">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                </svg>
+              </button>
+              <button id="btn-chat-qr-sync" type="button" title="Conectar Dispositivo / QR Code" class="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 active:scale-95 transition-all">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+                </svg>
+              </button>
+            </div>
           </div>
-          <label class="zip-toggle-wrap">
-            <span>Empacotar em .ZIP</span>
-            <input id="toggle-zip-mode" type="checkbox" checked />
-          </label>
-        </div>
 
-        <div id="zip-options-panel" class="zip-options">
-          <div class="zip-field">
-            <label for="zip-level">Nível de compressão:</label>
-            <select id="zip-level" class="zip-select">
-              <option value="0">0 - Sem compressão (Store - mais rápido)</option>
-              <option value="1">1 - Mais rápido</option>
-              <option value="6" selected>6 - Normal equilibrado (Recomendado)</option>
-              <option value="9">9 - Máxima compressão</option>
-            </select>
-          </div>
-          <div class="zip-field">
-            <label for="zip-filename">Nome do arquivo compactado:</label>
-            <input id="zip-filename" type="text" class="zip-input" placeholder="Pacote_Compartilhado.zip" />
+          <!-- Filtro de Listas / Categorias (Todas, Favoritos, Família, Trabalho) -->
+          <div id="chat-categories-bar" class="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
+            <button type="button" data-category="Todas" class="category-pill active px-3 py-1 rounded-full text-xs font-bold bg-indigo-600 text-white shrink-0 transition-all">Todas</button>
+            <button type="button" data-category="Favoritos" class="category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all">⭐ Favoritos</button>
+            <button type="button" data-category="Família" class="category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all">🏠 Família</button>
+            <button type="button" data-category="Trabalho" class="category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all">💼 Trabalho</button>
+            <button id="btn-add-category-list" type="button" class="px-2.5 py-1 rounded-full text-xs font-bold bg-slate-800/60 text-slate-400 hover:text-indigo-300 border border-slate-700/60 shrink-0 transition-all">+ Nova Lista</button>
           </div>
         </div>
 
-        <!-- Botão Principal de Download -->
-        <button id="btn-download-all" type="button" class="btn-all">
-          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+        <!-- Lista Rolável de Conversas (Apenas usuários interagidos) -->
+        <div id="chat-conversations-list" class="flex-1 overflow-y-auto custom-scroll divide-y divide-slate-800/60">
+          <!-- preenchido dinamicamente com os cards de conversas -->
+        </div>
+
+        <!-- Botão Flutuante (FAB) para Iniciar Conversa / Buscar -->
+        <button id="btn-fab-new-chat" type="button" class="fixed right-5 bottom-20 z-30 w-14 h-14 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white shadow-xl shadow-indigo-600/40 flex items-center justify-center active:scale-90 transition-transform">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
           </svg>
-          <span id="btn-download-all-text">⬇ Baixar Todos (.ZIP)</span>
         </button>
       </div>
 
-      <!-- Barra de Progresso Geral de Todos os Arquivos -->
-      <div id="overall-prog-section" class="overall-prog hidden">
-        <div class="overall-prog-header">
-          <span id="overall-st">Progresso Geral</span>
-          <span id="overall-pct" class="overall-pct">0%</span>
+      <!-- SUB-PAINEL 2: CONVERSA ATIVA FULL-SCREEN EDGE-TO-EDGE (Desliza ocupando 100% da tela) -->
+      <div id="chat-active-conversation-pane" class="chat-slide-pane">
+        <!-- Barra de Cabeçalho do Contato (WhatsApp style) -->
+        <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0 shadow-md">
+          <div class="flex items-center gap-2 min-w-0 flex-1">
+            <button id="btn-chat-back" type="button" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95 transition-all shrink-0">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+              </svg>
+            </button>
+            <div id="chat-contact-avatar" class="w-9 h-9 min-w-[36px] max-w-[36px] min-h-[36px] max-h-[36px] rounded-full overflow-hidden shrink-0 border border-slate-700/80 bg-slate-800 flex items-center justify-center">
+              <!-- Avatar do contato -->
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5">
+                <h4 id="chat-contact-name" class="text-sm font-bold text-white truncate leading-tight">Contato</h4>
+                <span id="chat-contact-transport-badge" class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">🟢 LAN</span>
+              </div>
+              <span id="chat-contact-tag" class="text-[11px] font-mono text-slate-400 truncate block leading-none mt-0.5">@usuario</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <button id="btn-chat-contact-menu" type="button" class="p-2 rounded-xl text-slate-400 hover:text-white active:scale-95">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" />
+              </svg>
+            </button>
+          </div>
         </div>
-        <div class="prog-bar-bg">
-          <div id="overall-bar" class="prog-bar-fill"></div>
+
+        <!-- Área de Mensagens Full-Screen (Sem caixas ou molduras limitadoras) -->
+        <div id="chat-messages-container" class="flex-1 min-h-0 overflow-y-auto custom-scroll p-4 space-y-2.5 bg-slate-950">
+          <!-- Balões de mensagem injetados dinamicamente -->
         </div>
-        <div class="overall-prog-footer">
-          <span id="overall-bytes">0 B / 0 B</span>
-          <span id="overall-spd">0 B/s</span>
+
+        <!-- Barra Inferior de Entrada (WhatsApp Edge-to-Edge) -->
+        <div id="chat-bottom-input-bar" class="p-2 bg-slate-900 border-t border-slate-800/90 shrink-0 space-y-2">
+          <!-- Pré-visualização de anexos -->
+          <div id="chat-attachment-preview" class="hidden flex flex-wrap gap-2 p-2 bg-slate-950 rounded-xl border border-slate-800 text-xs"></div>
+          
+          <div class="flex items-center gap-2">
+            <button id="btn-chat-attach" type="button" title="Anexar arquivo" class="w-9 h-9 min-w-[36px] rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95 border border-slate-700/80 flex items-center justify-center shrink-0 transition-all">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.37l-10.94 10.94a1.5 1.5 0 01-2.122-2.122l7.693-7.693" />
+              </svg>
+            </button>
+            <input id="input-chat-text" type="text" placeholder="Mensagem segura..." class="flex-1 min-w-0 bg-slate-950 border border-slate-700/80 rounded-full px-4 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors" />
+            <button id="btn-chat-send" type="button" class="w-9 h-9 min-w-[36px] rounded-full bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 shadow-md shadow-indigo-600/40 flex items-center justify-center shrink-0 transition-all">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 2: INÍCIO (DASHBOARD & AÇÕES RÁPIDAS) -->
+    <!-- ===================================================================== -->
+    <section id="view-home" class="hidden p-4 space-y-4">
+      
+      <!-- Card do Meu Usuário -->
+      <div class="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 shadow-xl relative overflow-hidden">
+        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-indigo-500/10 blur-2xl pointer-events-none"></div>
+        <div class="flex items-start justify-between">
+          <div class="flex items-center gap-3">
+            <div id="home-avatar-slot" class="w-12 h-12 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 flex items-center justify-center">
+              <!-- Avatar grande -->
+            </div>
+            <div>
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Identidade Nostr</span>
+              <div class="flex items-center gap-2 mt-0.5">
+                <h2 id="home-tag-display" class="text-lg font-black text-white tracking-tight">@usuario</h2>
+                <span id="home-status-pill" class="text-[9px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">ONLINE</span>
+              </div>
+            </div>
+          </div>
+          <button id="btn-edit-tag" type="button" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 active:scale-95">
+            Perfil
+          </button>
+        </div>
+
+        <div class="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
+          <span class="text-slate-400">Hash de Registro:</span>
+          <span id="home-reghash-display" class="font-mono text-indigo-300 font-medium">0x000000000000</span>
         </div>
       </div>
 
-      <!-- Lista de Arquivos com Opção de Baixar Individualmente -->
-      <div id="files-list" class="files-list">
+      <!-- Ações Rápidas -->
+      <div class="space-y-2">
+        <span class="text-xs font-bold uppercase tracking-wider text-slate-400 px-1">Ações Rápidas</span>
+        
+        <div class="grid grid-cols-2 gap-2.5">
+          <!-- Ação: Enviar P2P -->
+          <button id="btn-action-send-p2p" type="button" class="p-3.5 rounded-2xl bg-gradient-to-b from-indigo-900/40 to-slate-900 border border-indigo-500/30 text-left hover:border-indigo-500 transition-all active:scale-98 glow-indigo flex flex-col justify-between h-28">
+            <div class="w-8 h-8 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+              </svg>
+            </div>
+            <div>
+              <span class="font-bold text-sm text-white block">Enviar para @peer</span>
+              <span class="text-[10px] text-slate-400">P2P direto sem links</span>
+            </div>
+          </button>
+
+          <!-- Ação: Criar Link Público -->
+          <button id="btn-action-create-link" type="button" class="p-3.5 rounded-2xl bg-gradient-to-b from-orange-900/40 to-slate-900 border border-orange-500/30 text-left hover:border-orange-500 transition-all active:scale-98 glow-orange flex flex-col justify-between h-28">
+            <div class="w-8 h-8 rounded-xl bg-orange-500/20 text-orange-400 flex items-center justify-center">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+              </svg>
+            </div>
+            <div>
+              <span class="font-bold text-sm text-white block">Gerar Link WebRTC</span>
+              <span class="text-[10px] text-slate-400">Compartilhe no WhatsApp</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Ação: Baixar via Link -->
+        <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2">
+          <input id="input-open-link" type="url" placeholder="Colar link PulseShare para baixar..." class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 font-mono outline-none focus:border-orange-500" />
+          <button id="btn-open-link-go" type="button" class="px-3.5 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shrink-0 active:scale-95 shadow-md shadow-orange-600/30">
+            Baixar
+          </button>
+        </div>
+      </div>
+
+      <!-- Resumo da Malha Descentralizada -->
+      <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-white flex items-center gap-2">
+            <span>🌐 Status da Rede (LAN + BLE + Mesh)</span>
+          </span>
+          <span id="home-peers-count-badge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-indigo-300 border border-slate-700">0 peers online</span>
+        </div>
+
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span class="text-[10px] text-slate-400 block">Sinalização</span>
+            <span id="stat-brokers-count" class="text-xs font-bold text-emerald-400 font-mono mt-0.5 block">3 Brokers</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span class="text-[10px] text-slate-400 block">Roteamento</span>
+            <span id="stat-relay-mode" class="text-xs font-bold text-indigo-400 font-mono mt-0.5 block">Relay Ativo</span>
+          </div>
+          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+            <span class="text-[10px] text-slate-400 block">Transferências</span>
+            <span id="stat-transfers-count" class="text-xs font-bold text-orange-400 font-mono mt-0.5 block">0 ativas</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 3: TRANSFERÊNCIAS -->
+    <!-- ===================================================================== -->
+    <section id="view-transfers" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <div class="flex items-center gap-3">
+          <button id="tab-transfers-active" type="button" class="text-xs font-bold text-orange-400 border-b-2 border-orange-500 pb-1 px-1">Ativas</button>
+          <button id="tab-transfers-history" type="button" class="text-xs font-medium text-slate-400 hover:text-white pb-1 px-1">Histórico</button>
+        </div>
+        <button id="btn-clear-completed-transfers" type="button" class="text-[10px] text-slate-400 hover:text-rose-400">Limpar Concluídas</button>
+      </div>
+      <div id="transfers-list" class="space-y-2.5">
+        <!-- preenchido dinamicamente -->
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 4: LINKS PÚBLICOS -->
+    <!-- ===================================================================== -->
+    <section id="view-shares" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-white">🔗 Meus Links de Download Ativos</h3>
+        <button id="btn-new-share-link" type="button" class="px-2.5 py-1 rounded-lg bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shadow active:scale-95">+ Novo</button>
+      </div>
+      <div id="shares-list" class="space-y-2.5">
+        <!-- preenchido dinamicamente -->
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 5: USUÁRIOS E DISPOSITIVOS NA MALHA -->
+    <!-- ===================================================================== -->
+    <section id="view-mesh" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <div>
+          <h3 class="text-sm font-bold text-white">🌐 Dispositivos Conectados</h3>
+          <p class="text-[10px] text-slate-400">Rede Local (LAN), Bluetooth (BLE) e Malha P2P</p>
+        </div>
+        <button id="btn-refresh-mesh" type="button" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+          </svg>
+        </button>
+      </div>
+      <div id="mesh-peers-list" class="space-y-2">
+        <!-- preenchido dinamicamente -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- BARRA DE NAVEGAÇÃO INFERIOR NATIVA (5 ABAS - CHAT FIRST) -->
+  <!-- ===================================================================== -->
+  <nav id="app-bottom-nav" class="grid grid-cols-5 bg-slate-900/95 border-t border-slate-800/80 shrink-0 select-none pb-1 z-30 shadow-lg">
+    <!-- 1. CHAT (Primeira aba padrão) -->
+    <button id="nav-chat" type="button" class="nav-tab active py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-bold text-indigo-400 relative">
+      <div class="relative">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+        </svg>
+        <span id="badge-chat-unread" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-indigo-500 text-white font-mono">0</span>
+      </div>
+      <span>Conversas</span>
+    </button>
+
+    <!-- 2. INÍCIO -->
+    <button id="nav-home" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+      </svg>
+      <span>Início</span>
+    </button>
+
+    <!-- 3. ENVIOS -->
+    <button id="nav-transfers" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+      <div class="relative">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+        </svg>
+        <span id="badge-transfers-count" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-sky-500 text-slate-950 font-mono">0</span>
+      </div>
+      <span>Envios</span>
+    </button>
+
+    <!-- 4. LINKS -->
+    <button id="nav-shares" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+      </svg>
+      <span>Links</span>
+    </button>
+
+    <!-- 5. USUÁRIOS -->
+    <button id="nav-mesh" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+      </svg>
+      <span>Usuários</span>
+    </button>
+  </nav>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 1: BUSCA GLOBAL DE USUÁRIOS (LAN / BLE / MESH) -->
+  <!-- ===================================================================== -->
+  <div id="modal-global-search" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🔍 Busca Global de Usuários</span>
+        </h3>
+        <button id="btn-close-global-search" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Campo de Busca -->
+      <div class="relative">
+        <input id="input-global-search" type="text" placeholder="Buscar por @tag, nome ou hash..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 font-mono outline-none focus:border-indigo-500" />
+      </div>
+
+      <!-- Lista de Resultados da Busca -->
+      <div id="global-search-results" class="space-y-2 max-h-72 overflow-y-auto custom-scroll">
         <!-- Renderizado dinamicamente -->
       </div>
     </div>
-
-    <!-- Rodapé Explicativo -->
-    <p class="footer">
-      Transferência 100% direta de navegador para navegador via <strong>WebRTC DataChannel (STUN + TURN)</strong> com roteamento descentralizado e criptografia avançada (<strong>libp2p, Reticulum, Yggdrasil, Kademlia DHT, AODV, CRDTs, DTN Store & Forward, Onion Routing e Double Ratchet E2EE</strong>). Servido pelo GitHub Pages. Nenhum arquivo fica salvo em servidores intermediários.
-    </p>
   </div>
 
-  <script>
-    // ============================================================================
-    // Configurações Globais e Parâmetros da URL
-    // ============================================================================
-    const PUBLIC_WSS_BROKERS = [
-      'wss://broker.emqx.io:8084/mqtt',
-      'wss://broker.hivemq.com:8884/mqtt',
-      'wss://test.mosquitto.org:8081/mqtt'
-    ];
-    const MESH_TOPIC = 'pulseshare/v2/p2p_mesh_global';
-
-    const RTC_CONFIG = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: 'stun:stun.cloudflare.com:3478' }
-      ],
-      iceCandidatePoolSize: 4
-    };
-
-    function getActiveIceServers() {
-      const baseServers = [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        { urls: 'stun:stun.cloudflare.com:3478' }
-      ];
-
-      // Suporte a servidor TURN via parâmetros de URL ou localStorage
-      const urlTurn = hashParams.get('turn') || searchParams.get('turn') || '';
-      const urlUser = hashParams.get('turn_u') || searchParams.get('turn_u') || '';
-      const urlCred = hashParams.get('turn_p') || searchParams.get('turn_p') || '';
-
-      if (urlTurn) {
-        const urls = urlTurn.split(',').map((u) => u.trim()).filter(Boolean);
-        const entry = { urls };
-        if (urlUser) entry.username = urlUser;
-        if (urlCred) entry.credential = urlCred;
-        baseServers.push(entry);
-      } else {
-        try {
-          const saved = JSON.parse(localStorage.getItem('ps_turn_config') || 'null');
-          if (saved && saved.url) {
-            const urls = saved.url.split(',').map((u) => u.trim()).filter(Boolean);
-            const entry = { urls };
-            if (saved.username) entry.username = saved.username;
-            if (saved.credential) entry.credential = saved.credential;
-            baseServers.push(entry);
-          }
-        } catch {}
-      }
-
-      return baseServers;
-    }
-
-    // Lê parâmetros tanto do Hash quanto da Query String
-    const hashStr = window.location.hash ? window.location.hash.replace(/^#/, '') : '';
-    const searchStr = window.location.search ? window.location.search.replace(/^\?/, '') : '';
-    const hashParams = new URLSearchParams(hashStr);
-    const searchParams = new URLSearchParams(searchStr);
-
-    const shareId = hashParams.get('share') || searchParams.get('share') || '';
-    const rawOwner = hashParams.get('owner') || searchParams.get('owner') || '';
-    let ownerTag = rawOwner ? decodeURIComponent(rawOwner) : '';
-    const expParam = hashParams.get('exp') || searchParams.get('exp') || '';
-
-    const visitorNodeId = crypto.randomUUID();
-    const visitorTag = `@link_${visitorNodeId.slice(0, 6)}`;
-
-    const meshEngine = typeof PulseShareMeshEngine !== 'undefined' ? new PulseShareMeshEngine() : null;
-    if (meshEngine) {
-      meshEngine.init({
-        nodeId: visitorNodeId,
-        myTag: visitorTag,
-        onPacketToSend: (targetTag, pkt) => {
-          broadcastSignal(pkt.type || 'MESH_PACKET', pkt, targetTag || ownerTag);
-        }
-      });
-    }
-
-    // Elementos DOM
-    const statusDot = document.getElementById('status-dot');
-    const statusHeader = document.getElementById('status-header');
-    const shareBadge = document.getElementById('share-badge');
-    const alertCard = document.getElementById('alert-card');
-    const alertText = document.getElementById('alert-text');
-    const passwordSection = document.getElementById('password-section');
-    const passwordInput = document.getElementById('password-input');
-    const btnUnlock = document.getElementById('btn-unlock');
-    const passwordError = document.getElementById('password-error');
-    const packContent = document.getElementById('pack-content');
-    const packTitle = document.getElementById('pack-title');
-    const packSender = document.getElementById('pack-sender');
-    const packSummary = document.getElementById('pack-summary');
-    const tunnelStatusText = document.getElementById('tunnel-status-text');
-    const expBadge = document.getElementById('exp-badge');
-
-    const toggleZipMode = document.getElementById('toggle-zip-mode');
-    const zipOptionsPanel = document.getElementById('zip-options-panel');
-    const zipLevelSelect = document.getElementById('zip-level');
-    const zipFilenameInput = document.getElementById('zip-filename');
-    const btnDownloadAll = document.getElementById('btn-download-all');
-    const btnDownloadAllText = document.getElementById('btn-download-all-text');
-    const filesList = document.getElementById('files-list');
-
-    shareBadge.textContent = shareId ? `#${shareId}` : '#inválido';
-
-    let packData = null;
-    let unlocked = false;
-    let countdownTimer = null;
-    let packInfoRetryTimer = null;
-    let brokerSockets = [];
-    const seenPacketIds = new Set();
-
-    // Map de downloads ativos: fileId -> { pc, channel, paused, cancelled, chunks, receivedBytes, totalBytes }
-    const activeDownloads = new Map();
-    const completedFileIds = new Set();
-    const fileProgressMap = new Map();
-    let packCompletionNotified = false;
-    const receiverExpandedFolders = new Set();
-
-    function buildFileTree(files) {
-      const root = {
-        name: '',
-        fullPath: '',
-        folders: new Map(),
-        files: [],
-        totalSize: 0,
-        fileCount: 0
-      };
-
-      if (!Array.isArray(files)) return root;
-
-      for (const f of files) {
-        if (!f) continue;
-        const rawPath = (f.name || '').replace(/\\/g, '/').replace(/^\/+/, '');
-        const parts = rawPath.split('/').filter(Boolean);
-        const size = f.size || 0;
-
-        root.totalSize += size;
-        root.fileCount++;
-
-        if (parts.length <= 1) {
-          root.files.push({
-            ...f,
-            basename: parts[0] || f.name,
-            fullPath: rawPath
-          });
-          continue;
-        }
-
-        let curr = root;
-        let accumulatedPath = '';
-        for (let i = 0; i < parts.length - 1; i++) {
-          const part = parts[i];
-          accumulatedPath = accumulatedPath ? `${accumulatedPath}/${part}` : part;
-          if (!curr.folders.has(part)) {
-            curr.folders.set(part, {
-              name: part,
-              fullPath: accumulatedPath,
-              folders: new Map(),
-              files: [],
-              totalSize: 0,
-              fileCount: 0
-            });
-          }
-          curr = curr.folders.get(part);
-          curr.totalSize += size;
-          curr.fileCount++;
-        }
-
-        const basename = parts[parts.length - 1];
-        curr.files.push({
-          ...f,
-          basename,
-          fullPath: rawPath
-        });
-      }
-
-      return root;
-    }
-
-    function updateOverallProgress() {
-      const overallEl = document.getElementById('overall-prog-section');
-      if (!overallEl || !packData || !packData.files) return;
-
-      const totalPackBytes = packData.totalSize || packData.files.reduce((acc, f) => acc + (f.size || 0), 0);
-      let totalReceived = 0;
-      let totalSpeed = 0;
-
-      for (const f of packData.files) {
-        const info = fileProgressMap.get(f.fileId);
-        if (info) {
-          totalReceived += info.receivedBytes || 0;
-          totalSpeed += info.speedBps || 0;
-        } else if (completedFileIds.has(f.fileId)) {
-          totalReceived += f.size || 0;
-        }
-      }
-
-      const overallPct = totalPackBytes > 0
-        ? Math.min(100, Math.round((totalReceived / totalPackBytes) * 100))
-        : 0;
-
-      overallEl.classList.remove('hidden');
-
-      const stEl = document.getElementById('overall-st');
-      const pctEl = document.getElementById('overall-pct');
-      const barEl = document.getElementById('overall-bar');
-      const bytesEl = document.getElementById('overall-bytes');
-      const spdEl = document.getElementById('overall-spd');
-
-      if (pctEl) pctEl.textContent = `${overallPct}%`;
-      if (barEl) barEl.style.width = `${overallPct}%`;
-      if (bytesEl) bytesEl.textContent = `${formatBytes(totalReceived)} / ${formatBytes(totalPackBytes)}`;
-      if (spdEl) spdEl.textContent = `${formatBytes(totalSpeed)}/s`;
-
-      if (stEl) {
-        if (overallPct >= 100 || completedFileIds.size === packData.files.length) {
-          stEl.textContent = `✓ Todos os ${packData.files.length} arquivos baixados com sucesso!`;
-        } else {
-          stEl.textContent = `Baixando arquivos (${completedFileIds.size}/${packData.files.length} concluídos)`;
-        }
-      }
-
-      if (completedFileIds.size === packData.files.length && !packCompletionNotified) {
-        packCompletionNotified = true;
-        broadcastSignal('PACK_DOWNLOAD_COMPLETE', {
-          shareId,
-          totalFiles: packData.files.length,
-          totalBytes: totalPackBytes
-        }, ownerTag, shareId);
-      }
-    }
-
-    function formatBytes(bytes) {
-      if (!bytes || bytes <= 0) return '0 B';
-      const u = ['B', 'KB', 'MB', 'GB'];
-      const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), 3);
-      return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${u[i]}`;
-    }
-
-    function getFileIcon(fileName) {
-      const ext = (fileName || '').split('.').pop().toLowerCase();
-      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'].includes(ext)) return '🖼️';
-      if (['mp4', 'mkv', 'mov', 'webm', 'avi'].includes(ext)) return '🎬';
-      if (['mp3', 'wav', 'flac', 'aac', 'ogg'].includes(ext)) return '🎵';
-      if (['pdf'].includes(ext)) return '📄';
-      if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '📦';
-      if (['doc', 'docx', 'txt', 'rtf', 'odt'].includes(ext)) return '📝';
-      if (['xls', 'xlsx', 'csv'].includes(ext)) return '📊';
-      if (['js', 'ts', 'py', 'html', 'css', 'json'].includes(ext)) return '💻';
-      return '📁';
-    }
-
-    async function computeSha256(str) {
-      const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
-      return Array.from(new Uint8Array(buf))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-    }
-
-    // ============================================================================
-    // MQTT Signaling Client sobre WebSocket
-    // ============================================================================
-    function encodeRemainingLength(len) {
-      const bytes = [];
-      do {
-        let encoded = len % 128;
-        len = Math.floor(len / 128);
-        if (len > 0) encoded |= 128;
-        bytes.push(encoded);
-      } while (len > 0);
-      return bytes;
-    }
-
-    function encodeUTF8String(str) {
-      const utf8 = new TextEncoder().encode(str);
-      return [(utf8.length >> 8) & 0xff, utf8.length & 0xff, ...utf8];
-    }
-
-    function buildMqttPublishPacket(topic, jsonObj) {
-      const topicBytes = encodeUTF8String(topic);
-      const payloadBytes = new TextEncoder().encode(JSON.stringify(jsonObj));
-      const totalLen = topicBytes.length + payloadBytes.length;
-      const header = [0x30, ...encodeRemainingLength(totalLen), ...topicBytes];
-      const packet = new Uint8Array(header.length + payloadBytes.length);
-      packet.set(header, 0);
-      packet.set(payloadBytes, header.length);
-      return packet;
-    }
-
-    function broadcastSignal(signalType, payload, toTag = ownerTag, transferId = shareId) {
-      const pktId = crypto.randomUUID();
-      const pkt = {
-        meshType: 'DIRECT_SIGNAL',
-        to: toTag,
-        transferId,
-        signalType,
-        payload,
-        pktId,
-        packetId: pktId,
-        senderNodeId: visitorNodeId,
-        senderTag: visitorTag,
-        timestamp: Date.now()
-      };
-      seenPacketIds.add(pktId);
-      const raw = buildMqttPublishPacket(MESH_TOPIC, pkt);
-      brokerSockets.forEach((ws) => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          try { ws.send(raw); } catch {}
-        }
-      });
-      if (localChannel) {
-        try { localChannel.postMessage(pkt); } catch {}
-      }
-    }
-
-    const localChannel = typeof BroadcastChannel !== 'undefined'
-      ? new BroadcastChannel('pulseshare_v2_local_mesh')
-      : null;
-    if (localChannel) {
-      localChannel.onmessage = (e) => {
-        if (e.data) handleIncomingPacket(e.data);
-      };
-    }
-
-    function connectSingleBroker(url, idx) {
-      const prev = brokerSockets[idx];
-      if (prev && (prev.readyState === WebSocket.OPEN || prev.readyState === WebSocket.CONNECTING)) {
-        return;
-      }
-
-      let ws;
-      try {
-        ws = new WebSocket(url, 'mqtt');
-        ws.binaryType = 'arraybuffer';
-        brokerSockets[idx] = ws;
-      } catch {
-        setTimeout(() => connectSingleBroker(url, idx), 5000);
-        return;
-      }
-
-      let pingInterval = null;
-      let rxBuffer = new Uint8Array(0);
-
-      ws.onopen = () => {
-        rxBuffer = new Uint8Array(0);
-        const randSuffix = Math.floor(100 + Math.random() * 900);
-        const clientId = `ps_web_${visitorNodeId.slice(0, 6)}_${idx}_${randSuffix}`;
-        const connectBody = [
-          ...encodeUTF8String('MQTT'),
-          0x04,
-          0x02,
-          0x00,
-          0x3c,
-          ...encodeUTF8String(clientId)
-        ];
-        try {
-          ws.send(new Uint8Array([0x10, ...encodeRemainingLength(connectBody.length), ...connectBody]));
-        } catch {}
-
-        pingInterval = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            try { ws.send(new Uint8Array([0xc0, 0x00])); } catch {}
-          }
-        }, 15000);
-      };
-
-      ws.onmessage = (ev) => {
-        if (!(ev.data instanceof ArrayBuffer)) return;
-        const incoming = new Uint8Array(ev.data);
-        let u;
-        if (rxBuffer.length > 0) {
-          u = new Uint8Array(rxBuffer.length + incoming.length);
-          u.set(rxBuffer, 0);
-          u.set(incoming, rxBuffer.length);
-        } else {
-          u = incoming;
-        }
-
-        let p = 0;
-        while (p < u.length) {
-          const packetStart = p;
-          const fb = u[p++];
-          const pt = fb & 0xf0;
-          let m = 1, rl = 0, eb;
-          let incomplete = false;
-          do {
-            if (p >= u.length) {
-              incomplete = true;
-              break;
-            }
-            eb = u[p++];
-            rl += (eb & 127) * m;
-            m *= 128;
-          } while (eb & 128);
-
-          if (incomplete) {
-            p = packetStart;
-            break;
-          }
-
-          const pe = p + rl;
-          if (pe > u.length) {
-            p = packetStart;
-            break;
-          }
-
-          if (pt === 0x20) {
-            // CONNACK: Inscreve no tópico global
-            const subBody = [0x00, 0x01, ...encodeUTF8String(MESH_TOPIC), 0x00];
-            try {
-              ws.send(new Uint8Array([0x82, ...encodeRemainingLength(subBody.length), ...subBody]));
-            } catch {}
-            if (!packData) {
-              statusDot.className = 'dot green';
-              statusHeader.textContent = 'Conectado à Malha P2P (3 brokers)';
-            }
-            requestPackInfo();
-          } else if (pt === 0x90) {
-            // SUBACK: inscrição confirmada pelo broker, solicita metadados do túnel
-            requestPackInfo();
-          } else if (pt === 0x30) {
-            // PUBLISH
-            let c = p;
-            const tl = (u[c] << 8) | u[c + 1];
-            c += 2 + tl;
-            if (((fb >> 1) & 0x03) > 0) c += 2;
-            if (c <= pe) {
-              try {
-                const str = new TextDecoder().decode(u.subarray(c, pe));
-                const pkt = JSON.parse(str);
-                handleIncomingPacket(pkt);
-              } catch {}
-            }
-          }
-          p = pe;
-        }
-
-        if (p < u.length) {
-          rxBuffer = u.length - p <= 2 * 1024 * 1024 ? u.slice(p) : new Uint8Array(0);
-        } else {
-          rxBuffer = new Uint8Array(0);
-        }
-      };
-
-      ws.onclose = () => {
-        rxBuffer = new Uint8Array(0);
-        if (pingInterval) clearInterval(pingInterval);
-        setTimeout(() => connectSingleBroker(url, idx), 4000);
-      };
-    }
-
-    function connectBrokers() {
-      if (!shareId || !ownerTag) {
-        showAlert('Link de compartilhamento incompleto. Parâmetros share ou owner ausentes no link.');
-        return;
-      }
-
-      requestPackInfo();
-      PUBLIC_WSS_BROKERS.forEach((url, idx) => {
-        connectSingleBroker(url, idx);
-      });
-
-      clearInterval(packInfoRetryTimer);
-      packInfoRetryTimer = setInterval(() => {
-        if (!packData) {
-          requestPackInfo();
-        } else {
-          clearInterval(packInfoRetryTimer);
-        }
-      }, 2500);
-    }
-
-    function showAlert(msg) {
-      alertText.textContent = msg;
-      alertCard.classList.remove('hidden');
-    }
-
-    function hideAlert() {
-      alertCard.classList.add('hidden');
-    }
-
-    function requestPackInfo() {
-      if (packData) return;
-      statusHeader.textContent = `Aguardando remetente (${ownerTag})...`;
-      broadcastSignal('PACK_INFO_REQUEST', { shareId });
-    }
-
-    function base64ToUint8Array(base64) {
-      const binary = atob(base64);
-      const len = binary.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binary.charCodeAt(i);
-      }
-      return bytes;
-    }
-
-    // ============================================================================
-    // Manipulação de Pacotes Recebidos
-    // ============================================================================
-    function handleIncomingPacket(pkt) {
-      if (!pkt || pkt.senderNodeId === visitorNodeId) return;
-      const pktId = pkt.pktId || pkt.packetId;
-      if (pktId) {
-        if (seenPacketIds.has(pktId)) return;
-        seenPacketIds.add(pktId);
-      }
-      if (pkt.meshType !== 'DIRECT_SIGNAL') return;
-      if (pkt.to && pkt.to !== visitorTag && pkt.transferId !== shareId) return;
-
-      const { signalType, payload, transferId } = pkt;
-
-      if (signalType === 'PACK_INFO_RESPONSE') {
-        onPackInfoResponse(payload);
-        return;
-      }
-
-      if (signalType === 'FILE_REJECT') {
-        const dl = (payload?.fileId && activeDownloads.get(payload.fileId)) || findDownloadByTransferId(transferId);
-        if (dl) {
-          clearDownloadTimers(dl);
-          updateFileUI(dl.fileId, { status: 'Erro: ' + (payload?.error || 'Rejeitado pelo remetente') });
-          try { dl.pc?.close(); } catch {}
-          activeDownloads.delete(dl.fileId);
-          const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
-          if (btnDl) {
-            btnDl.disabled = false;
-            btnDl.textContent = '⬇ Tentar Novamente';
-          }
-        }
-        return;
-      }
-
-      if (signalType === 'WEBRTC_OFFER') {
-        handleWebRtcOffer(transferId, payload.sdp, payload.iceServers);
-        return;
-      }
-
-      if (signalType === 'ICE_CANDIDATE' && payload?.candidate) {
-        const dl = findDownloadByTransferId(transferId);
-        if (dl && dl.pc && dl.pc.remoteDescription) {
-          dl.pc.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(() => {});
-        } else if (dl) {
-          dl.pendingCandidates = dl.pendingCandidates || [];
-          dl.pendingCandidates.push(payload.candidate);
-        }
-        return;
-      }
-
-      if (signalType === 'MESH_RELAY_CHUNK' && payload) {
-        const dl = findDownloadByTransferId(transferId) || (payload.fileId ? activeDownloads.get(payload.fileId) : null);
-        if (!dl || dl.cancelled || dl.completed) return;
-
-        if (dl.pullRetryTimer) {
-          clearTimeout(dl.pullRetryTimer);
-          dl.pullRetryTimer = null;
-        }
-        if (dl.webrtcFallbackTimer) {
-          clearTimeout(dl.webrtcFallbackTimer);
-          dl.webrtcFallbackTimer = null;
-        }
-        if (dl.relayRetryTimer) {
-          clearInterval(dl.relayRetryTimer);
-          dl.relayRetryTimer = null;
-        }
-
-        dl.usingRelay = true;
-        if (dl.pc) {
-          try { dl.pc.close(); } catch {}
-          dl.pc = null;
-        }
-
-        if (typeof payload.totalChunks === 'number' && payload.totalChunks > 0) {
-          dl.totalChunks = Math.max(dl.totalChunks || 0, payload.totalChunks);
-        }
-
-        if (typeof payload.chunkSeq === 'number') {
-          if (dl.seenSeqs.has(payload.chunkSeq)) return;
-          dl.seenSeqs.add(payload.chunkSeq);
-        }
-
-        if (payload.totalBytes && !dl.fileSize) {
-          dl.fileSize = payload.totalBytes;
-        }
-
-        if (payload.chunkBase64) {
-          const chunkBytes = base64ToUint8Array(payload.chunkBase64);
-          if (typeof payload.chunkSeq === 'number') {
-            dl.chunksBySeq.set(payload.chunkSeq, chunkBytes);
-          } else {
-            dl.chunks.push(chunkBytes);
-          }
-          dl.receivedBytes += chunkBytes.byteLength;
-        }
-
-        if (payload.isEof) {
-          dl.eofSeen = true;
-        }
-
-        const allChunksArrived =
-          (dl.totalChunks > 0 && dl.chunksBySeq.size >= dl.totalChunks) ||
-          (dl.eofSeen && dl.fileSize > 0 && dl.receivedBytes >= dl.fileSize) ||
-          (dl.eofSeen && dl.totalChunks === 0);
-
-        const now = Date.now();
-        if (now - dl.lastReport >= 100 || allChunksArrived || payload.isEof) {
-          const elapsed = Math.max(0.1, (now - dl.startTime) / 1000);
-          const speedBps = Math.round(dl.receivedBytes / elapsed);
-          const pct = dl.fileSize > 0
-            ? Math.min(allChunksArrived ? 100 : 99, Math.round((dl.receivedBytes / dl.fileSize) * 100))
-            : (allChunksArrived ? 100 : 50);
-
-          fileProgressMap.set(dl.fileId, {
-            receivedBytes: dl.receivedBytes,
-            speedBps,
-            pct,
-            totalBytes: dl.fileSize
-          });
-          updateFileUI(dl.fileId, {
-            status: dl.paused ? 'Pausado' : 'Recebendo dados (Túnel Mesh)...',
-            pct,
-            speedBps,
-            receivedBytes: dl.receivedBytes,
-            totalBytes: dl.fileSize
-          });
-          updateOverallProgress();
-          dl.lastReport = now;
-        }
-
-        if (allChunksArrived) {
-          finishDownload(dl);
-        } else if (dl.eofSeen && !dl.eofWaitTimer) {
-          dl.eofWaitTimer = setTimeout(() => {
-            dl.eofWaitTimer = null;
-            if (!dl.completed && !dl.cancelled) {
-              finishDownload(dl);
-            }
-          }, 1500);
-        }
-      }
-    }
-
-    function findDownloadByTransferId(transferId) {
-      for (const dl of activeDownloads.values()) {
-        if (dl.transferId === transferId) return dl;
-      }
-      return null;
-    }
-
-    function onPackInfoResponse(payload) {
-      clearInterval(packInfoRetryTimer);
-      if (!payload.ok) {
-        if (payload.error === 'EXPIRED') {
-          showAlert('⏳ Este link temporário expirou. O tempo limite definido pelo remetente foi atingido.');
-        } else if (payload.error === 'CANCELLED') {
-          showAlert('✕ O remetente encerrou este compartilhamento.');
-        } else if (payload.error === 'DOWNLOAD_LIMIT_REACHED') {
-          showAlert('🎯 O limite de downloads deste link foi atingido.');
-        } else if (payload.error === 'PAUSED') {
-          showAlert('⏸ O remetente pausou o link temporariamente. Aguarde a retomada.');
-        } else {
-          showAlert(payload.message || 'Compartilhamento não encontrado ou remetente offline.');
-        }
-        statusDot.className = 'dot red';
-        statusHeader.textContent = 'Link Indisponível';
-        return;
-      }
-
-      if (payload.ownerTag) {
-        ownerTag = payload.ownerTag;
-      }
-      packData = payload;
-      statusDot.className = 'dot green';
-      statusHeader.textContent = '🟢 Remetente Online (P2P Pronto)';
-      hideAlert();
-
-      if (packData.hasPassword && !unlocked) {
-        passwordSection.classList.remove('hidden');
-        packContent.classList.add('hidden');
-      } else {
-        showPackUI();
-      }
-    }
-
-    // ============================================================================
-    // Validação de Senha
-    // ============================================================================
-    btnUnlock.addEventListener('click', async () => {
-      const pwd = (passwordInput.value || '').trim();
-      if (!pwd) {
-        passwordError.textContent = 'Digite a senha.';
-        passwordError.classList.remove('hidden');
-        return;
-      }
-
-      if (packData.passwordSalt && packData.passwordHash) {
-        const computed = await computeSha256(pwd + packData.passwordSalt);
-        if (computed === packData.passwordHash) {
-          unlocked = true;
-          passwordSection.classList.add('hidden');
-          passwordError.classList.add('hidden');
-          showPackUI();
-        } else {
-          passwordError.textContent = 'Senha incorreta. Verifique e tente novamente.';
-          passwordError.classList.remove('hidden');
-        }
-      } else {
-        unlocked = true;
-        passwordSection.classList.add('hidden');
-        showPackUI();
-      }
-    });
-
-    passwordInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') btnUnlock.click();
-    });
-
-    // ============================================================================
-    // Renderização do Pack e Opções de Compactação
-    // ============================================================================
-    function showPackUI() {
-      packContent.classList.remove('hidden');
-      packTitle.textContent = packData.packName || 'Pacote de Arquivos';
-      packSender.textContent = `Remetente: ${packData.ownerTag || ownerTag}`;
-      const totalSize = packData.totalSize || (packData.files || []).reduce((acc, f) => acc + (f.size || 0), 0);
-      packSummary.textContent = `${(packData.files || []).length} arquivo(s) • ${formatBytes(totalSize)}`;
-
-      if (zipFilenameInput && !zipFilenameInput.value) {
-        const defaultZip = (packData.packName || 'Pacote_Compartilhado').replace(/\.zip$/i, '') + '.zip';
-        zipFilenameInput.value = defaultZip;
-      }
-
-      updateExpirationCountdown();
-      clearInterval(countdownTimer);
-      countdownTimer = setInterval(updateExpirationCountdown, 1000);
-
-      renderFilesList();
-    }
-
-    function updateExpirationCountdown() {
-      if (!packData || !packData.expiresAt) {
-        expBadge.textContent = '⏳ Sem limite';
-        return;
-      }
-      const remainingSec = Math.max(0, Math.floor((packData.expiresAt - Date.now()) / 1000));
-      if (remainingSec <= 0) {
-        expBadge.textContent = '⏳ Expirado';
-        expBadge.style.color = '#fb7185';
-        showAlert('⏳ O tempo limite deste link acabou. Novos downloads não podem ser iniciados.');
-        btnDownloadAll.disabled = true;
-        return;
-      }
-      const min = Math.floor(remainingSec / 60);
-      const sec = remainingSec % 60;
-      expBadge.textContent = `⏳ Expira em: ${min}m ${sec < 10 ? '0' : ''}${sec}s`;
-    }
-
-    if (toggleZipMode) {
-      toggleZipMode.addEventListener('change', () => {
-        if (toggleZipMode.checked) {
-          zipOptionsPanel.classList.remove('hidden');
-          btnDownloadAllText.textContent = '⬇ Baixar Todos (.ZIP)';
-        } else {
-          zipOptionsPanel.classList.add('hidden');
-          btnDownloadAllText.textContent = '⬇ Baixar Todos os Arquivos';
-        }
-      });
-    }
-
-    function renderFilesList() {
-      filesList.innerHTML = '';
-      const files = packData.files || [];
-      if (files.length === 0) return;
-
-      const tree = buildFileTree(files);
-
-      function renderNode(node, container, depth = 0) {
-        // Render subfolders
-        const sortedFolders = Array.from(node.folders.values()).sort((a, b) => a.name.localeCompare(b.name));
-        for (const folder of sortedFolders) {
-          if (!receiverExpandedFolders.has(folder.fullPath + ':initialized')) {
-            receiverExpandedFolders.add(folder.fullPath + ':initialized');
-            receiverExpandedFolders.add(folder.fullPath);
-          }
-          const isExpanded = receiverExpandedFolders.has(folder.fullPath);
-
-          const folderEl = document.createElement('div');
-          folderEl.className = 'folder-node';
-
-          const headerEl = document.createElement('div');
-          headerEl.className = 'folder-header';
-          headerEl.setAttribute('data-action', 'toggle-folder');
-          headerEl.setAttribute('data-folder-path', folder.fullPath);
-
-          headerEl.innerHTML = `
-            <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
-              <span style="font-size: 10px; font-family: monospace; color: #94a3b8;">${isExpanded ? '▼' : '▶'}</span>
-              <span style="font-size: 14px;">${isExpanded ? '📂' : '📁'}</span>
-              <span style="font-size: 12px; font-weight: 700; color: #f1f5f9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${folder.fullPath}">
-                ${folder.name}/
-              </span>
-              <span style="font-size: 11px; font-family: monospace; color: #94a3b8;">
-                (${folder.fileCount} arq • ${formatBytes(folder.totalSize)})
-              </span>
-            </div>
-          `;
-
-          const childrenEl = document.createElement('div');
-          childrenEl.className = `folder-children ${isExpanded ? '' : 'hidden'}`;
-
-          renderNode(folder, childrenEl, depth + 1);
-
-          folderEl.appendChild(headerEl);
-          folderEl.appendChild(childrenEl);
-          container.appendChild(folderEl);
-        }
-
-        // Render files
-        const sortedFiles = [...node.files].sort((a, b) => (a.basename || a.name).localeCompare(b.basename || b.name));
-        for (const file of sortedFiles) {
-          const card = document.createElement('div');
-          card.className = 'file-item';
-          card.id = `card-${file.fileId}`;
-
-          card.innerHTML = `
-            <div class="file-row">
-              <div class="file-name-wrap">
-                <span class="file-icon">${getFileIcon(file.name)}</span>
-                <div style="display: flex; flex-direction: column; min-width: 0;">
-                  <span class="file-name" title="${file.name}">${file.basename || file.name}</span>
-                  <span class="file-size">${formatBytes(file.size)}</span>
-                </div>
-              </div>
-              <button
-                id="btn-dl-${file.fileId}"
-                type="button"
-                class="file-btn"
-                data-file-id="${file.fileId}"
-              >
-                ⬇ Baixar
-              </button>
-            </div>
-
-            <div id="prog-${file.fileId}" class="prog-section hidden">
-              <div class="prog-bar-bg">
-                <div id="bar-${file.fileId}" class="prog-bar-fill"></div>
-              </div>
-              <div class="prog-info">
-                <span id="st-${file.fileId}">Conectando túnel P2P...</span>
-                <span id="pct-${file.fileId}">0%</span>
-              </div>
-              <div class="prog-info">
-                <span id="bytes-${file.fileId}">0 B / ${formatBytes(file.size)}</span>
-                <span id="spd-${file.fileId}">0 B/s</span>
-              </div>
-              <div class="prog-controls">
-                <button id="btn-pause-${file.fileId}" type="button" class="ctrl-btn btn-pause" data-file-id="${file.fileId}">
-                  ⏸ Pausar
-                </button>
-                <button id="btn-cancel-${file.fileId}" type="button" class="ctrl-btn btn-cancel" data-file-id="${file.fileId}">
-                  ✕ Cancelar
-                </button>
-              </div>
-            </div>
-          `;
-          container.appendChild(card);
-        }
-      }
-
-      renderNode(tree, filesList, 0);
-    }
-
-    // ============================================================================
-    // Download de Arquivos e Compactação em .ZIP (fflate)
-    // ============================================================================
-    filesList.addEventListener('click', (e) => {
-      const toggleHeader = e.target.closest('[data-action="toggle-folder"]');
-      if (toggleHeader) {
-        const folderPath = toggleHeader.getAttribute('data-folder-path');
-        if (folderPath) {
-          if (receiverExpandedFolders.has(folderPath)) {
-            receiverExpandedFolders.delete(folderPath);
-          } else {
-            receiverExpandedFolders.add(folderPath);
-          }
-          renderFilesList();
-        }
-        return;
-      }
-
-      const dlBtn = e.target.closest('button[data-file-id]');
-      if (!dlBtn) return;
-      const fileId = dlBtn.getAttribute('data-file-id');
-
-      if (dlBtn.id.startsWith('btn-dl-')) {
-        startFileDownload(fileId);
-      } else if (dlBtn.id.startsWith('btn-pause-')) {
-        togglePauseDownload(fileId);
-      } else if (dlBtn.id.startsWith('btn-cancel-')) {
-        cancelDownload(fileId);
-      }
-    });
-
-    btnDownloadAll.addEventListener('click', async () => {
-      const files = packData.files || [];
-      if (files.length === 0) return;
-
-      const isZipMode = Boolean(toggleZipMode && toggleZipMode.checked);
-      const compressLevel = zipLevelSelect ? Number(zipLevelSelect.value) : 6;
-      const customZipName = zipFilenameInput ? zipFilenameInput.value.trim() : '';
-
-      btnDownloadAll.disabled = true;
-
-      if (isZipMode) {
-        btnDownloadAllText.textContent = 'Baixando arquivos para compactação...';
-        const zipEntries = {};
-
-        for (let i = 0; i < files.length; i++) {
-          const file = files[i];
-          btnDownloadAllText.textContent = `Baixando ${i + 1}/${files.length}: ${file.name}...`;
-
-          const fileBytes = await new Promise((resolve, reject) => {
-            startFileDownload(file.fileId, (bytes) => {
-              resolve(bytes);
-            }, true);
-          });
-
-          if (fileBytes) {
-            zipEntries[file.name] = [new Uint8Array(fileBytes), { level: compressLevel }];
-          }
-        }
-
-        btnDownloadAllText.textContent = `Compactando em .ZIP (Nível ${compressLevel})...`;
-
-        try {
-          if (typeof fflate === 'undefined' || !fflate.zip) {
-            throw new Error('Biblioteca de compressão fflate não encontrada.');
-          }
-
-          const zippedU8 = await new Promise((resolve, reject) => {
-            fflate.zip(zipEntries, { level: compressLevel }, (err, data) => {
-              if (err) reject(err);
-              else resolve(data);
-            });
-          });
-
-          const defaultName = (packData.packName || 'Pacote_Compartilhado').replace(/\.zip$/i, '') + '.zip';
-          const finalZipName = (customZipName || defaultName).replace(/\.zip$/i, '') + '.zip';
-
-          const blob = new Blob([zippedU8], { type: 'application/zip' });
-          const blobUrl = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = blobUrl;
-          a.download = finalZipName;
-          a.addEventListener('click', (e) => e.stopPropagation());
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-
-          btnDownloadAllText.textContent = '✓ ZIP Baixado com Sucesso!';
-        } catch (err) {
-          console.error('Erro ao gerar ZIP:', err);
-          showAlert(`Falha ao compactar ZIP: ${err.message}`);
-          btnDownloadAllText.textContent = 'Erro ao compactar ZIP';
-        }
-      } else {
-        // Modo individual: baixa cada arquivo separadamente
-        btnDownloadAllText.textContent = 'Baixando arquivos em fila...';
-        for (const file of files) {
-          if (!activeDownloads.has(file.fileId)) {
-            await new Promise((resolve) => {
-              startFileDownload(file.fileId, () => resolve());
-            });
-          }
-        }
-        btnDownloadAllText.textContent = '✓ Todos os downloads finalizados';
-      }
-
-      setTimeout(() => {
-        btnDownloadAll.disabled = false;
-        btnDownloadAllText.textContent = isZipMode ? '⬇ Baixar Todos (.ZIP)' : '⬇ Baixar Todos os Arquivos';
-      }, 3000);
-    });
-
-    function clearDownloadTimers(dl) {
-      if (!dl) return;
-      if (dl.pullRetryTimer) {
-        clearTimeout(dl.pullRetryTimer);
-        dl.pullRetryTimer = null;
-      }
-      if (dl.webrtcFallbackTimer) {
-        clearTimeout(dl.webrtcFallbackTimer);
-        dl.webrtcFallbackTimer = null;
-      }
-      if (dl.relayRetryTimer) {
-        clearInterval(dl.relayRetryTimer);
-        dl.relayRetryTimer = null;
-      }
-      if (dl.eofWaitTimer) {
-        clearTimeout(dl.eofWaitTimer);
-        dl.eofWaitTimer = null;
-      }
-    }
-
-    function triggerMeshRelayFallback(dl) {
-      if (!dl || dl.cancelled || dl.completed || dl.usingRelay || dl.receivedBytes > 0) return;
-      dl.usingRelay = true;
-      clearDownloadTimers(dl);
-      if (dl.pc) {
-        try { dl.pc.close(); } catch {}
-        dl.pc = null;
-      }
-      updateFileUI(dl.fileId, { status: 'Conectando via Túnel Mesh (CGNAT/Firewall)...' });
-      broadcastSignal('TUNNEL_RELAY_PULL', { shareId, fileId: dl.fileId }, ownerTag, dl.transferId);
-
-      dl.relayRetryTimer = setInterval(() => {
-        if (dl.cancelled || dl.completed || dl.receivedBytes > 0) {
-          clearInterval(dl.relayRetryTimer);
-          dl.relayRetryTimer = null;
-          return;
-        }
-        broadcastSignal('TUNNEL_RELAY_PULL', { shareId, fileId: dl.fileId }, ownerTag, dl.transferId);
-      }, 2500);
-    }
-
-    function startFileDownload(fileId, onCompleteCallback, returnBufferOnly = false) {
-      const file = (packData.files || []).find((f) => f.fileId === fileId);
-      if (!file) return;
-
-      const progSection = document.getElementById(`prog-${fileId}`);
-      const btnDl = document.getElementById(`btn-dl-${fileId}`);
-      if (progSection) progSection.classList.remove('hidden');
-      if (btnDl) {
-        btnDl.disabled = true;
-        btnDl.textContent = 'Baixando...';
-      }
-
-      const transferId = `${shareId}_${fileId}_${Math.floor(1000 + Math.random() * 9000)}`;
-
-      const downloadRecord = {
-        fileId,
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: file.type || 'application/octet-stream',
-        transferId,
-        pc: null,
-        channel: null,
-        chunks: [],
-        chunksBySeq: new Map(),
-        seenSeqs: new Set(),
-        totalChunks: 0,
-        eofSeen: false,
-        eofWaitTimer: null,
-        receivedBytes: 0,
-        startTime: Date.now(),
-        lastReport: Date.now(),
-        paused: false,
-        cancelled: false,
-        completed: false,
-        usingRelay: false,
-        offerReceived: false,
-        pullRetryTimer: null,
-        webrtcFallbackTimer: null,
-        relayRetryTimer: null,
-        pendingCandidates: [],
-        returnBufferOnly,
-        onComplete: onCompleteCallback
-      };
-
-      activeDownloads.set(fileId, downloadRecord);
-      broadcastSignal('PACK_FILE_PULL', { shareId, fileId }, ownerTag, transferId);
-
-      downloadRecord.pullRetryTimer = setTimeout(() => {
-        if (!downloadRecord.cancelled && !downloadRecord.completed && !downloadRecord.offerReceived && !downloadRecord.usingRelay) {
-          broadcastSignal('PACK_FILE_PULL', { shareId, fileId }, ownerTag, transferId);
-        }
-      }, 2000);
-
-      downloadRecord.webrtcFallbackTimer = setTimeout(() => {
-        if (!downloadRecord.cancelled && !downloadRecord.completed && downloadRecord.receivedBytes === 0) {
-          const chOpen = downloadRecord.channel && downloadRecord.channel.readyState === 'open';
-          if (!chOpen) {
-            triggerMeshRelayFallback(downloadRecord);
-          }
-        }
-      }, 3500);
-    }
-
-    function waitForIceGathering(pc, timeoutMs = 800) {
-      if (pc.iceGatheringState === 'complete') return Promise.resolve();
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          pc.removeEventListener('icegatheringstatechange', checkState);
-          resolve();
-        }, timeoutMs);
-
-        function checkState() {
-          if (pc.iceGatheringState === 'complete') {
-            clearTimeout(timer);
-            pc.removeEventListener('icegatheringstatechange', checkState);
-            resolve();
-          }
-        }
-
-        pc.addEventListener('icegatheringstatechange', checkState);
-      });
-    }
-
-    async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) {
-      const dl = findDownloadByTransferId(transferId);
-      if (!dl || dl.cancelled || dl.completed || dl.usingRelay) return;
-
-      dl.offerReceived = true;
-      if (dl.pullRetryTimer) {
-        clearTimeout(dl.pullRetryTimer);
-        dl.pullRetryTimer = null;
-      }
-
-      if (dl.pc) {
-        try { dl.pc.close(); } catch {}
-      }
-
-      const effectiveIceServers = (remoteIceServers && Array.isArray(remoteIceServers) && remoteIceServers.length > 0)
-        ? remoteIceServers
-        : getActiveIceServers();
-
-      const pc = new RTCPeerConnection({
-        iceServers: effectiveIceServers,
-        iceCandidatePoolSize: 4
-      });
-      dl.pc = pc;
-
-      let answerSent = false;
-      const localCandidates = [];
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate) {
-          const candidateObj = e.candidate.toJSON
-            ? e.candidate.toJSON()
-            : {
-                candidate: e.candidate.candidate,
-                sdpMid: e.candidate.sdpMid,
-                sdpMLineIndex: e.candidate.sdpMLineIndex,
-                usernameFragment: e.candidate.usernameFragment
-              };
-          if (answerSent) {
-            broadcastSignal('ICE_CANDIDATE', { candidate: candidateObj }, ownerTag, transferId);
-          } else {
-            localCandidates.push(candidateObj);
-          }
-        }
-      };
-
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'connected') {
-          clearDownloadTimers(dl);
-          updateFileUI(dl.fileId, { status: 'Conectado! Iniciando transferência...' });
-        } else if (pc.connectionState === 'failed') {
-          triggerMeshRelayFallback(dl);
-        }
-      };
-
-      pc.oniceconnectionstatechange = () => {
-        if (pc.iceConnectionState === 'failed') {
-          triggerMeshRelayFallback(dl);
-        }
-      };
-
-      pc.ondatachannel = (ev) => {
-        const channel = ev.channel;
-        dl.channel = channel;
-        channel.binaryType = 'arraybuffer';
-
-        channel.onopen = () => {
-          clearDownloadTimers(dl);
-          updateFileUI(dl.fileId, { status: 'Túnel P2P conectado! Aguardando dados...' });
-        };
-
-        channel.onmessage = (e) => {
-          if (dl.cancelled || dl.completed) return;
-          clearDownloadTimers(dl);
-
-          if (typeof e.data === 'string') {
-            try {
-              const ctrl = JSON.parse(e.data);
-              if (ctrl.type === 'FILE_START') {
-                if (ctrl.fileSize) dl.fileSize = ctrl.fileSize;
-                updateFileUI(dl.fileId, { status: 'Recebendo arquivo...', pct: 0 });
-                return;
-              }
-              if (ctrl.type === 'TRANSFER_PAUSED') {
-                dl.paused = true;
-                updateFileUI(dl.fileId, { status: 'Pausado pelo remetente' });
-                return;
-              }
-              if (ctrl.type === 'TRANSFER_RESUMED') {
-                dl.paused = false;
-                updateFileUI(dl.fileId, { status: 'Recebendo dados...' });
-                return;
-              }
-              if (ctrl.type === 'TRANSFER_CANCELLED' || ctrl.type === 'TRANSFER_ERROR') {
-                dl.cancelled = true;
-                clearDownloadTimers(dl);
-                updateFileUI(dl.fileId, { status: ctrl.error || 'Cancelado pelo remetente' });
-                try { pc.close(); } catch {}
-                activeDownloads.delete(dl.fileId);
-                const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
-                if (btnDl) {
-                  btnDl.disabled = false;
-                  btnDl.textContent = '⬇ Tentar Novamente';
-                }
-                return;
-              }
-              if (ctrl.type === 'EOF') {
-                try { channel.send(JSON.stringify({ type: 'RECEIVER_ACK_DONE' })); } catch {}
-                finishDownload(dl);
-              }
-            } catch {}
-            return;
-          }
-
-          dl.chunks.push(new Uint8Array(e.data));
-          dl.receivedBytes += e.data.byteLength;
-
-          const now = Date.now();
-          if (now - dl.lastReport >= 100 || (dl.fileSize > 0 && dl.receivedBytes >= dl.fileSize)) {
-            const elapsed = Math.max(0.1, (now - dl.startTime) / 1000);
-            const speedBps = Math.round(dl.receivedBytes / elapsed);
-            const pct = dl.fileSize > 0 ? Math.min(99, Math.round((dl.receivedBytes / dl.fileSize) * 100)) : 99;
-            fileProgressMap.set(dl.fileId, {
-              receivedBytes: dl.receivedBytes,
-              speedBps,
-              pct,
-              totalBytes: dl.fileSize
-            });
-            updateFileUI(dl.fileId, {
-              status: dl.paused ? 'Pausado' : 'Recebendo dados...',
-              pct,
-              speedBps,
-              receivedBytes: dl.receivedBytes,
-              totalBytes: dl.fileSize
-            });
-            updateOverallProgress();
-            dl.lastReport = now;
-          }
-        };
-      };
-
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdpOffer));
-
-        while (dl.pendingCandidates && dl.pendingCandidates.length > 0) {
-          const c = dl.pendingCandidates.shift();
-          try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
-        }
-
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        // Aguarda 600ms para embutir candidatos STUN no SDP Answer
-        await waitForIceGathering(pc, 600);
-
-        broadcastSignal('WEBRTC_ANSWER', { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } }, ownerTag, transferId);
-        answerSent = true;
-        while (localCandidates.length > 0) {
-          const candidateObj = localCandidates.shift();
-          broadcastSignal('ICE_CANDIDATE', { candidate: candidateObj }, ownerTag, transferId);
-        }
-      } catch (err) {
-        console.warn('WebRTC Offer/Answer error, switching to Mesh Relay:', err);
-        triggerMeshRelayFallback(dl);
-      }
-    }
-
-    function togglePauseDownload(fileId) {
-      const dl = activeDownloads.get(fileId);
-      if (!dl) return;
-
-      const btnPause = document.getElementById(`btn-pause-${fileId}`);
-      if (!dl.paused) {
-        dl.paused = true;
-        if (btnPause) {
-          btnPause.textContent = '▶ Retomar';
-          btnPause.className = 'ctrl-btn btn-resume';
-        }
-        updateFileUI(fileId, { status: 'Pausado' });
-        try { dl.channel?.send(JSON.stringify({ type: 'REQUEST_PAUSE' })); } catch {}
-      } else {
-        dl.paused = false;
-        if (btnPause) {
-          btnPause.textContent = '⏸ Pausar';
-          btnPause.className = 'ctrl-btn btn-pause';
-        }
-        updateFileUI(fileId, { status: 'Recebendo...' });
-        try { dl.channel?.send(JSON.stringify({ type: 'REQUEST_RESUME' })); } catch {}
-      }
-    }
-
-    function cancelDownload(fileId) {
-      const dl = activeDownloads.get(fileId);
-      if (!dl) return;
-
-      dl.cancelled = true;
-      clearDownloadTimers(dl);
-      try { dl.channel?.send(JSON.stringify({ type: 'REQUEST_CANCEL' })); } catch {}
-      try { dl.pc?.close(); } catch {}
-
-      updateFileUI(fileId, { status: 'Download cancelado' });
-      activeDownloads.delete(fileId);
-
-      const btnDl = document.getElementById(`btn-dl-${fileId}`);
-      if (btnDl) {
-        btnDl.disabled = false;
-        btnDl.textContent = '⬇ Tentar Novamente';
-      }
-    }
-
-    function finishDownload(dl) {
-      if (!dl || dl.completed) return;
-      dl.completed = true;
-      clearDownloadTimers(dl);
-
-      let sourceChunks = dl.chunks;
-      if (dl.chunksBySeq && dl.chunksBySeq.size > 0) {
-        const ordered = [];
-        const maxSeq = dl.totalChunks || Math.max(...dl.chunksBySeq.keys());
-        for (let s = 1; s <= maxSeq; s++) {
-          const ch = dl.chunksBySeq.get(s);
-          if (ch) ordered.push(ch);
-        }
-        sourceChunks = ordered;
-      }
-
-      let combinedBuffer = null;
-      let totalLen = 0;
-      for (const ch of sourceChunks) totalLen += ch.byteLength;
-      combinedBuffer = new Uint8Array(totalLen);
-      let offset = 0;
-      for (const ch of sourceChunks) {
-        combinedBuffer.set(ch, offset);
-        offset += ch.byteLength;
-      }
-      dl.chunks.length = 0;
-      if (dl.chunksBySeq) dl.chunksBySeq.clear();
-
-      if (!dl.returnBufferOnly) {
-        const blob = new Blob([combinedBuffer], { type: dl.fileType });
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = dl.fileName;
-        a.addEventListener('click', (e) => e.stopPropagation());
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-      }
-
-      updateFileUI(dl.fileId, {
-        status: 'Download concluído com sucesso!',
-        pct: 100,
-        receivedBytes: dl.fileSize,
-        totalBytes: dl.fileSize,
-        speedBps: 0
-      });
-
-      completedFileIds.add(dl.fileId);
-      fileProgressMap.set(dl.fileId, {
-        receivedBytes: dl.fileSize,
-        speedBps: 0,
-        pct: 100,
-        totalBytes: dl.fileSize
-      });
-      try {
-        updateOverallProgress();
-      } catch (err) {
-        console.warn('Erro ao atualizar progresso geral:', err);
-      }
-
-      const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
-      if (btnDl) {
-        btnDl.textContent = '✓ Salvo';
-        btnDl.disabled = false;
-      }
-
-      setTimeout(() => {
-        try { dl.pc?.close(); } catch {}
-        activeDownloads.delete(dl.fileId);
-        if (typeof dl.onComplete === 'function') {
-          dl.onComplete(combinedBuffer);
-        }
-      }, 500);
-    }
-
-    function updateFileUI(fileId, { status, pct, speedBps, receivedBytes, totalBytes }) {
-      const stEl = document.getElementById(`st-${fileId}`);
-      const pctEl = document.getElementById(`pct-${fileId}`);
-      const barEl = document.getElementById(`bar-${fileId}`);
-      const bytesEl = document.getElementById(`bytes-${fileId}`);
-      const spdEl = document.getElementById(`spd-${fileId}`);
-
-      if (status && stEl) stEl.textContent = status;
-      if (typeof pct === 'number') {
-        if (pctEl) pctEl.textContent = `${pct}%`;
-        if (barEl) barEl.style.width = `${pct}%`;
-      }
-      if (typeof receivedBytes === 'number' && typeof totalBytes === 'number' && bytesEl) {
-        bytesEl.textContent = `${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)}`;
-      }
-      if (typeof speedBps === 'number' && spdEl) {
-        spdEl.textContent = `${formatBytes(speedBps)}/s`;
-      }
-    }
-
-    document.addEventListener('DOMContentLoaded', () => {
-      connectBrokers();
-    });
-  </script>
+  <!-- ===================================================================== -->
+  <!-- MODAL 2: IDENTIDADE CRIPTOGRÁFICA (NOSTR-STYLE 7 PALAVRAS & 2FA & MULTI-PERFIL & QR CODE) -->
+  <!-- ===================================================================== -->
+  <div id="modal-identity-profile" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[92vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🛡️ Identidade Descentralizada & Chaves</span>
+        </h3>
+        <button id="btn-close-identity-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Perfil Ativo -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center gap-3">
+        <div id="identity-avatar-slot" class="w-14 h-14 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0"></div>
+        <div class="flex-1 min-w-0">
+          <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Perfil Ativo</span>
+          <h4 id="identity-name-display" class="text-base font-black text-white truncate">Nome</h4>
+          <span id="identity-tag-display" class="text-xs font-mono text-indigo-400 font-bold block truncate">@usuario_hash</span>
+        </div>
+      </div>
+
+      <!-- 7 Palavras-Chave de Recuperação (Seed Phrase) -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-bold text-white block">7 Palavras de Recuperação (Seed Phrase)</span>
+            <span class="text-[10px] text-slate-400">Guarde para restaurar sua conta em qualquer dispositivo</span>
+          </div>
+          <button id="btn-copy-seed-words" type="button" class="text-xs font-bold text-indigo-400 hover:text-indigo-300 px-2 py-1 bg-indigo-500/10 rounded border border-indigo-500/20 active:scale-95">
+            Copiar
+          </button>
+        </div>
+        <div id="seed-words-chips-grid" class="grid grid-cols-4 gap-1.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-center font-mono text-xs text-white">
+          <!-- chips das 7 palavras -->
+        </div>
+      </div>
+
+      <!-- Proteção 2FA por PIN (AES-256-GCM) -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-bold text-white block">Proteção 2FA com PIN (AES-256-GCM)</span>
+            <span class="text-[10px] text-slate-400">Criptografa suas chaves privadas localmente</span>
+          </div>
+          <input id="toggle-2fa-pin" type="checkbox" class="w-4 h-4 accent-indigo-500 cursor-pointer" />
+        </div>
+        <div id="field-pin-setup" class="hidden flex gap-2 pt-1 border-t border-slate-800/80">
+          <input id="input-2fa-pin" type="password" maxlength="6" placeholder="PIN de 4 a 6 dígitos" class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none" />
+          <button id="btn-save-2fa-pin" type="button" class="px-3.5 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl active:scale-95">Ativar</button>
+        </div>
+      </div>
+
+      <!-- Sincronização de Dispositivos (QR Code) -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <span class="text-xs font-bold text-white block">Sincronização entre Dispositivos</span>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btn-show-my-qr" type="button" class="py-2.5 px-3 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold active:scale-95 transition-all text-center">
+            📱 Meu QR Code
+          </button>
+          <button id="btn-scan-device-qr" type="button" class="py-2.5 px-3 rounded-xl bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 border border-orange-500/30 text-xs font-bold active:scale-95 transition-all text-center">
+            📷 Parear Dispositivo
+          </button>
+        </div>
+        <div id="qr-code-display-area" class="hidden flex flex-col items-center justify-center p-3 bg-white rounded-xl">
+          <!-- SVG QR Code do perfil -->
+        </div>
+      </div>
+
+      <!-- Múltiplos Perfis -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-white block">Múltiplos Perfis</span>
+          <button id="btn-add-new-profile" type="button" class="text-xs font-bold text-emerald-400 hover:text-emerald-300 px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20 active:scale-95">
+            + Criar Perfil
+          </button>
+        </div>
+        <div id="profiles-list-container" class="space-y-1.5 max-h-36 overflow-y-auto custom-scroll">
+          <!-- Lista de perfis salvos -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 3: PAREAR DISPOSITIVO / SCANNER DE QR CODE -->
+  <!-- ===================================================================== -->
+  <div id="modal-qr-pair-scanner" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>📷 Parear com Extensão / Outro Dispositivo</span>
+        </h3>
+        <button id="btn-close-qr-scanner-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Opção 1: Colar Texto de Pareamento -->
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-white">Código de Pareamento (Texto ou QR)</label>
+        <textarea id="input-pairing-payload" rows="3" placeholder="Cole o payload ou escaneie o QR gerado na Extensão..." class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs text-white font-mono outline-none"></textarea>
+        <button id="btn-confirm-import-pairing" type="button" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-orange-600 to-indigo-600 text-white font-bold text-xs shadow active:scale-95">
+          Importar e Parear Sessão
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 4: MENU DE AÇÕES DO CONTATO -->
+  <!-- ===================================================================== -->
+  <div id="modal-contact-menu" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 id="contact-menu-title" class="text-sm font-bold text-white">Opções da Conversa</h3>
+        <button id="btn-close-contact-menu" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-2">
+        <button id="btn-contact-save" type="button" class="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-semibold text-white flex items-center gap-2">
+          <span>👤 Salvar nos Contatos</span>
+        </button>
+        <button id="btn-contact-add-list" type="button" class="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-semibold text-white flex items-center gap-2">
+          <span>🏷️ Adicionar a uma Lista (Favoritos/Família...)</span>
+        </button>
+        <button id="btn-contact-delete-chat" type="button" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold flex items-center gap-2">
+          <span>🗑️ Excluir Conversa</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 5: CRIAR NOVA LISTA DE CONTATOS -->
+  <!-- ===================================================================== -->
+  <div id="modal-add-category-list" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white">Criar Nova Lista de Contatos</h3>
+        <button id="btn-close-add-category" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-2">
+        <input id="input-new-category-name" type="text" placeholder="Ex: Projetos, Academia, Faculdade" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none" />
+        <button id="btn-save-new-category" type="button" class="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow active:scale-95">
+          Salvar Lista
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: ENVIAR ARQUIVOS (DIRETO OU VIA LINK) -->
+  <!-- ===================================================================== -->
+  <div id="modal-send" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 id="modal-send-title" class="text-sm font-bold text-white flex items-center gap-2">
+          <span>📤 Enviar Arquivos P2P</span>
+        </h3>
+        <button id="btn-close-send-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Modo de Envio (Direto vs Link Público) -->
+      <div class="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+        <button id="btn-mode-p2p" type="button" class="py-2 text-xs font-bold rounded-lg bg-indigo-600 text-white transition-all">Para @usuário</button>
+        <button id="btn-mode-link" type="button" class="py-2 text-xs font-medium text-slate-400 hover:text-white rounded-lg transition-all">Link Público</button>
+      </div>
+
+      <!-- Destinatário (quando no modo P2P) -->
+      <div id="field-target-user" class="space-y-1">
+        <label class="text-[11px] font-semibold text-slate-300">Destinatário:</label>
+        <div class="flex gap-2">
+          <input id="input-target-user" type="text" placeholder="@nome_do_usuario" class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500" />
+          <button id="btn-pick-peer" type="button" class="px-3 py-2 bg-slate-800 text-xs text-slate-200 rounded-xl border border-slate-700">Lista</button>
+        </div>
+      </div>
+
+      <!-- Configurações de Link Público (quando no modo Link) -->
+      <div id="field-link-options" class="hidden space-y-2">
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="text-[10px] text-slate-400 block mb-1">Expira em:</label>
+            <select id="select-link-expiration" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-slate-200 outline-none">
+              <option value="900000">15 Minutos</option>
+              <option value="1800000" selected>30 Minutos</option>
+              <option value="3600000">1 Hora</option>
+              <option value="21600000">6 Horas</option>
+              <option value="86400000">24 Horas</option>
+            </select>
+          </div>
+          <div>
+            <label class="text-[10px] text-slate-400 block mb-1">Senha (Opcional):</label>
+            <input id="input-link-password" type="text" placeholder="Sem senha" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Seletor de Arquivos Nativo do Android -->
+      <div class="space-y-2">
+        <label class="text-[11px] font-semibold text-slate-300">Arquivos Anexados:</label>
+        
+        <div class="p-4 rounded-2xl border-2 border-dashed border-slate-700 bg-slate-950/60 text-center space-y-2">
+          <button id="btn-pick-files-native" type="button" class="px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shadow-md shadow-orange-600/30 active:scale-95">
+            + Selecionar do Celular
+          </button>
+          <p class="text-[10px] text-slate-400">Fotos, vídeos, PDFs, documentos de qualquer tamanho</p>
+        </div>
+
+        <!-- Lista de Arquivos Selecionados -->
+        <div id="selected-files-list" class="space-y-1.5 max-h-36 overflow-y-auto custom-scroll">
+          <!-- preenchido dinamicamente -->
+        </div>
+      </div>
+
+      <!-- Compactação .ZIP Opcional -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+        <div class="flex flex-col">
+          <span class="text-xs font-semibold text-white">Compactar em arquivo .ZIP</span>
+          <span class="text-[10px] text-slate-400">Empacota múltiplos arquivos via fflate</span>
+        </div>
+        <input id="toggle-zip" type="checkbox" class="w-4 h-4 accent-orange-500 cursor-pointer" />
+      </div>
+
+      <!-- Botão de Confirmação -->
+      <button id="btn-confirm-send" type="button" class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-orange-600 to-indigo-600 hover:from-orange-500 hover:to-indigo-500 text-white font-bold text-sm shadow-xl active:scale-98">
+        Confirmar & Iniciar Envio
+      </button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: CONFIGURAÇÕES GERAIS -->
+  <!-- ===================================================================== -->
+  <div id="modal-settings" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>⚙️ Configurações do PulseShare</span>
+        </h3>
+        <button id="btn-close-settings-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Download Automático no Chat -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+        <div class="pr-3">
+          <span class="text-xs font-semibold text-white block">Download Automático no Chat</span>
+          <span class="text-[10px] text-slate-400">Desativado por padrão. Quando desativado, você escolhe quando baixar no chat ou em Transferências.</span>
+        </div>
+        <input id="setting-chat-auto-download" type="checkbox" class="w-4 h-4 accent-indigo-500 cursor-pointer shrink-0" />
+      </div>
+
+      <!-- Diretório de Salvamento / Pasta de Downloads -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-semibold text-white block">Diretório para Salvar Arquivos</span>
+            <span class="text-[10px] text-slate-400">Subpasta dentro de Downloads ou Transferências</span>
+          </div>
+          <button id="btn-open-download-dir" type="button" class="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 active:scale-95">
+            📂 Abrir Pasta
+          </button>
+        </div>
+        <div class="flex gap-2">
+          <input id="setting-download-dir" type="text" placeholder="PulseShare" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-orange-500" />
+          <button id="btn-save-download-dir" type="button" class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded-lg active:scale-95 shadow-sm">Salvar</button>
+        </div>
+        <p id="label-download-path-preview" class="text-[10px] font-mono text-slate-400 truncate">Destino: /storage/emulated/0/Download/PulseShare</p>
+      </div>
+
+      <!-- Roteamento Mesh Relay -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-semibold text-white block">Servir como Nó de Rota na Malha</span>
+            <span class="text-[10px] text-slate-400">Intermedeia conexões P2P bloqueadas por firewall</span>
+          </div>
+          <input id="setting-mesh-relay" type="checkbox" checked class="w-4 h-4 accent-indigo-500 cursor-pointer" />
+        </div>
+      </div>
+
+      <!-- Servidor TURN (Bypass de Firewall) -->
+      <div class="space-y-1.5 p-3 rounded-xl bg-slate-950 border border-slate-800">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-white">Servidor TURN / Relay</span>
+          <button id="btn-clear-turn" type="button" class="text-[10px] text-slate-400 hover:text-rose-400">Limpar</button>
+        </div>
+        <input id="setting-turn-url" type="text" placeholder="turn:global.relay.metered.ca:443" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
+        <div class="grid grid-cols-2 gap-2">
+          <input id="setting-turn-user" type="text" placeholder="Usuário" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
+          <input id="setting-turn-pass" type="password" placeholder="Senha" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
+        </div>
+        <button id="btn-save-turn" type="button" class="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 active:scale-95">Salvar Configurações TURN</button>
+      </div>
+
+      <!-- Informações da Versão e Autoria -->
+      <div class="pt-2 border-t border-slate-800 text-center text-[10px] text-slate-500">
+        <p>PulseShare Android v2.0.0 — Chat-First P2P (Nostr Identity + LAN/BLE)</p>
+        <p>Transferência ultrarrápida ponto a ponto sem servidores intermediários.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SCRIPTS BÁSICOS E MOTOR DA MALHA -->
+  <script src="pulseshare-crypto-identity.js"></script>
+  <script src="pulseshare-mesh-engine.js"></script>
+  <script src="fflate.min.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>

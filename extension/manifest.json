@@ -23,7 +23,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["receiver.html", "receiver.js", "tailwind.css", "fflate.min.js", "pulseshare-mesh-engine.js"],
+      "resources": ["receiver.html", "receiver.js", "tailwind.css", "fflate.min.js", "pulseshare-mesh-engine.js", "pulseshare-crypto-identity.js"],
       "matches": ["<all_urls>"]
     }
   ],

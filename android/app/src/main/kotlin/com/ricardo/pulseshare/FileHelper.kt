@@ -28,13 +28,57 @@ object FileHelper {
     private val activeStreams = ConcurrentHashMap<String, FileOutputStream>()
     private val activeFiles = ConcurrentHashMap<String, File>()
 
-    fun getDownloadDir(): File {
+    fun setCustomDownloadFolder(context: Context, folderName: String?) {
+        val prefs = context.getSharedPreferences("pulseshare_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("download_folder", folderName?.trim() ?: "PulseShare").apply()
+    }
+
+    fun getDownloadDir(context: Context? = null): File {
+        val folder = if (context != null) {
+            val prefs = context.getSharedPreferences("pulseshare_prefs", Context.MODE_PRIVATE)
+            prefs.getString("download_folder", "PulseShare")?.trim() ?: "PulseShare"
+        } else {
+            "PulseShare"
+        }
         val publicDownloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        val pulseDir = File(publicDownloads, "PulseShare")
+        val pulseDir = if (folder.isEmpty() || folder == "." ||
+            folder.equals("Downloads", ignoreCase = true) ||
+            folder.equals("Download", ignoreCase = true) ||
+            folder.equals("Transferências", ignoreCase = true) ||
+            folder.equals("Transferencias", ignoreCase = true)
+        ) {
+            publicDownloads
+        } else {
+            File(publicDownloads, folder)
+        }
         if (!pulseDir.exists()) {
             pulseDir.mkdirs()
         }
         return pulseDir
+    }
+
+    fun openDownloadFolder(context: Context) {
+        val dir = getDownloadDir(context)
+        try {
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                dir
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "*/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (e: Exception) {
+            try {
+                val fallback = Intent(android.app.DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallback)
+            } catch (ignored: Exception) {}
+        }
     }
 
     fun getMimeType(fileName: String): String {
@@ -47,10 +91,10 @@ object FileHelper {
     }
 
     /**
-     * Salva um arquivo completo a partir de bytes em Downloads/PulseShare/
+     * Salva um arquivo completo a partir de bytes em Downloads/PulseShare/ ou pasta configurada
      */
     fun saveFileBytes(context: Context, fileName: String, bytes: ByteArray, mimeType: String?): File {
-        val destDir = getDownloadDir()
+        val destDir = getDownloadDir(context)
         var targetFile = File(destDir, fileName)
 
         // Se já existir, gera nome único: ex: arquivo (1).ext
@@ -93,7 +137,7 @@ object FileHelper {
         isLast: Boolean,
         mimeType: String?
     ): File? {
-        val destDir = getDownloadDir()
+        val destDir = getDownloadDir(context)
 
         if (isFirst) {
             // Fecha stream anterior se houver

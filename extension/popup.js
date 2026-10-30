@@ -312,7 +312,7 @@ const countShares = document.getElementById('count-shares');
 const btnNewShareLink = document.getElementById('btn-new-share-link');
 const homeDropZone = document.getElementById('home-drop-zone');
 
-let currentMainTab = 'home'; // 'home' | 'chat' | 'transfers' | 'shares' | 'mesh'
+let currentMainTab = 'chat'; // 'chat' | 'home' | 'transfers' | 'shares' | 'mesh' (Chat-First)
 
 const tabActiveTransfers = document.getElementById('tab-active-transfers');
 const tabUsersMesh = document.getElementById('tab-users-mesh');
@@ -2499,6 +2499,56 @@ if (btnCloseSettings && settingsPanel) {
   });
 }
 
+// Conectar Dispositivo (QR Code Pairing)
+const btnConnectDeviceQr = document.getElementById('btn-connect-device-qr');
+const modalConnectDevice = document.getElementById('modal-connect-device');
+const btnCloseConnectDevice = document.getElementById('btn-close-connect-device');
+const qrContainer = document.getElementById('connect-device-qr-container');
+const inputPairingCodeCopy = document.getElementById('input-pairing-code-copy');
+const btnCopyPairingCode = document.getElementById('btn-copy-pairing-code');
+
+if (btnConnectDeviceQr && modalConnectDevice) {
+  btnConnectDeviceQr.addEventListener('click', async () => {
+    settingsPanel?.classList.add('hidden');
+    modalConnectDevice.classList.remove('hidden');
+
+    let currentTag = myTag || localStorage.getItem('ps_my_tag') || '@web_desktop';
+    let currentSeed = localStorage.getItem('ps_seed_words');
+    if (!currentSeed && typeof PulseShareCrypto !== 'undefined') {
+      currentSeed = PulseShareCrypto.generate7WordMnemonic();
+      localStorage.setItem('ps_seed_words', currentSeed);
+    }
+
+    const payload = JSON.stringify({
+      action: 'pulseshare_pair_v2',
+      name: currentTag.replace(/^@/, '').split('_')[0],
+      seedWords: currentSeed || 'abacate abismo abrigo acacia acento acesso acorde',
+      tag: currentTag,
+      timestamp: Date.now()
+    });
+
+    if (qrContainer && typeof PulseShareCrypto !== 'undefined') {
+      qrContainer.innerHTML = PulseShareCrypto.generateQRCodeSVG(payload, 200);
+    }
+    if (inputPairingCodeCopy) {
+      inputPairingCodeCopy.value = payload;
+    }
+  });
+}
+
+if (btnCloseConnectDevice && modalConnectDevice) {
+  btnCloseConnectDevice.addEventListener('click', () => {
+    modalConnectDevice.classList.add('hidden');
+  });
+}
+
+if (btnCopyPairingCode && inputPairingCodeCopy) {
+  btnCopyPairingCode.addEventListener('click', () => {
+    navigator.clipboard.writeText(inputPairingCodeCopy.value);
+    showNotificationToast('Código de pareamento copiado!');
+  });
+}
+
 if (toggleAutoOpen) {
   toggleAutoOpen.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'TOGGLE_AUTO_OPEN_ON_RECEIVE' }, (res) => {
@@ -4635,15 +4685,18 @@ function renderChatConversationsList() {
   const typingState = currentState.peerTypingState || {};
   const now = Date.now();
 
+  const contacts = (typeof PulseShareCrypto !== 'undefined' && PulseShareCrypto.ProfilesManager) ? PulseShareCrypto.ProfilesManager.getContacts() : {};
+  const transfers = currentState.transfers || [];
   const conversationPeers = new Set();
   Object.keys(allMessages).forEach((tag) => {
     if (tag && tag !== currentState.myTag) conversationPeers.add(normalizeTag(tag));
   });
-
-  Object.values(peerRegistry).forEach((peer) => {
-    if (peer.tag && peer.tag !== currentState.myTag && (peer.status === 'online' || now - (peer.lastSeen || 0) < 45000)) {
-      conversationPeers.add(normalizeTag(peer.tag));
-    }
+  transfers.forEach((t) => {
+    const peerTag = t.senderTag || t.targetTag || t.sender || t.target;
+    if (peerTag && peerTag !== currentState.myTag) conversationPeers.add(normalizeTag(peerTag));
+  });
+  Object.keys(contacts).forEach((tag) => {
+    if (tag && tag !== currentState.myTag) conversationPeers.add(normalizeTag(tag));
   });
 
   const sortedList = Array.from(conversationPeers)

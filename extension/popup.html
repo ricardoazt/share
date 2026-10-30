@@ -236,6 +236,23 @@
           ● 3 Brokers WSS
         </span>
       </div>
+
+      <!-- Sincronização de Dispositivos / Conectar Dispositivo (QR Code) -->
+      <div class="pt-2 border-t border-slate-800/80 space-y-1.5">
+        <button
+          id="btn-connect-device-qr"
+          type="button"
+          class="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-orange-600 to-indigo-600 hover:from-orange-500 hover:to-indigo-500 text-white text-xs font-bold flex items-center justify-center gap-2 cursor-pointer shadow-md transition-all active:scale-95"
+        >
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+          </svg>
+          <span>Conectar Dispositivo (QR Code)</span>
+        </button>
+        <p class="text-[10px] text-slate-400 text-center leading-tight">
+          Gera QR Code para parear e sincronizar com o App Mobile
+        </p>
+      </div>
     </div>
   </header>
 
@@ -1503,7 +1520,33 @@
     </div>
   </div>
 
+  <!-- MODAL CONECTAR DISPOSITIVO (QR CODE) -->
+  <div id="modal-connect-device" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl p-5 space-y-4 max-w-sm w-full shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>📱 Conectar Dispositivo Mobile</span>
+        </h3>
+        <button id="btn-close-connect-device" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer font-bold">✕</button>
+      </div>
+      <p class="text-xs text-slate-300">
+        Abra o app PulseShare no celular, vá em <strong>Configurações → Parear Dispositivo</strong> e aponte a câmera para o QR Code abaixo:
+      </p>
+      <div id="connect-device-qr-container" class="flex flex-col items-center justify-center p-3 bg-white rounded-xl">
+        <!-- SVG QR Code -->
+      </div>
+      <div class="space-y-1">
+        <span class="text-[10px] text-slate-400 block font-semibold">Ou copie o código de pareamento:</span>
+        <div class="flex gap-1.5">
+          <input id="input-pairing-code-copy" type="text" readonly class="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-[10px] text-slate-300 font-mono outline-none" />
+          <button id="btn-copy-pairing-code" type="button" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer">Copiar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="fflate.min.js"></script>
+  <script src="pulseshare-crypto-identity.js"></script>
   <script src="pulseshare-mesh-engine.js"></script>
   <script src="popup.js"></script>
 </body>

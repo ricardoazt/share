@@ -6,7 +6,7 @@
   <title>PulseShare Android</title>
   <link rel="stylesheet" href="tailwind.css" />
   <style>
-    /* Safe-area padding e estilo do app nativo */
+    /* Safe-area padding e estilo do app nativo Edge-to-Edge */
     :root {
       --sat: env(safe-area-inset-top, 0px);
       --sab: env(safe-area-inset-bottom, 0px);
@@ -26,6 +26,9 @@
     .custom-scroll::-webkit-scrollbar-track { background: transparent; }
     .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
     
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
     @keyframes pulse-slow {
       0%, 100% { opacity: 1; transform: scale(1); }
       50% { opacity: 0.5; transform: scale(0.92); }
@@ -38,33 +41,108 @@
     .glow-indigo {
       box-shadow: 0 0 15px rgba(99, 102, 241, 0.25);
     }
+
+    /* WhatsApp Avatar Sizing & Strict Bounds */
+    #chat-contact-avatar {
+      width: 40px !important;
+      height: 40px !important;
+      min-width: 40px !important;
+      min-height: 40px !important;
+      max-width: 40px !important;
+      max-height: 40px !important;
+      border-radius: 9999px !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+    }
+    #header-avatar-slot {
+      width: 36px !important;
+      height: 36px !important;
+      min-width: 36px !important;
+      min-height: 36px !important;
+      max-width: 36px !important;
+      max-height: 36px !important;
+      border-radius: 12px !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+    }
+    .chat-avatar {
+      width: 48px !important;
+      height: 48px !important;
+      min-width: 48px !important;
+      min-height: 48px !important;
+      max-width: 48px !important;
+      max-height: 48px !important;
+      border-radius: 16px !important;
+      overflow: hidden !important;
+      flex-shrink: 0 !important;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+    }
+    #chat-contact-avatar svg,
+    #header-avatar-slot svg,
+    .chat-avatar svg,
+    .avatar-slot svg {
+      width: 100% !important;
+      height: 100% !important;
+      max-width: 100% !important;
+      max-height: 100% !important;
+      display: block !important;
+    }
+
+    /* Edge-to-Edge Full Screen Chat Sliding Transition (WhatsApp Style) */
+    .chat-slide-pane {
+      position: fixed;
+      inset: 0;
+      z-index: 45;
+      display: flex;
+      flex-direction: column;
+      background-color: #020617;
+      transform: translateX(100%);
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+      will-change: transform;
+    }
+    .chat-slide-pane.active {
+      transform: translateX(0);
+    }
   </style>
 </head>
 <body class="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden relative">
 
   <!-- CABEÇALHO NATIVO SUPERIOR -->
-  <header class="px-4 py-3 bg-slate-900/95 border-b border-slate-800/80 flex items-center justify-between shrink-0 z-30 shadow-md">
-    <div class="flex items-center gap-2.5">
-      <div class="w-8 h-8 rounded-xl bg-gradient-to-tr from-orange-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-orange-500/20">
-        <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z" />
-        </svg>
+  <header class="px-4 py-2.5 bg-slate-900/95 border-b border-slate-800/80 flex items-center justify-between shrink-0 z-30 shadow-md">
+    <div class="flex items-center gap-2.5 cursor-pointer" id="header-profile-btn" title="Perfil Criptográfico & Chaves">
+      <div id="header-avatar-slot" class="w-8 h-8 rounded-xl overflow-hidden bg-slate-800 border border-slate-700/80 flex items-center justify-center shrink-0">
+        <!-- Avatar SVG ou Identicon do perfil ativo -->
       </div>
       <div>
         <div class="flex items-center gap-1.5">
-          <span class="text-sm font-black tracking-wide text-white">PulseShare</span>
+          <span id="header-profile-name" class="text-sm font-black tracking-wide text-white">PulseShare</span>
           <span id="header-mesh-dot" class="w-2 h-2 rounded-full bg-amber-400 pulse-dot" title="Sincronizando malha..."></span>
         </div>
-        <span id="header-user-tag" class="text-[11px] font-mono text-orange-400 font-bold block leading-none">@conectando...</span>
+        <span id="header-user-tag" class="text-[11px] font-mono text-indigo-400 font-bold block leading-none">@conectando...</span>
       </div>
     </div>
 
-    <!-- BOTÕES DO TOPO (Status e Configurações) -->
-    <div class="flex items-center gap-2">
+    <!-- BOTÕES DO TOPO (Busca Global, Status e Configurações) -->
+    <div class="flex items-center gap-1.5">
+      <button id="btn-header-search" type="button" title="Busca Global de Usuários" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+        </svg>
+      </button>
+
       <span id="header-status-badge" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700/80">
         Conectando...
       </span>
-      <button id="btn-open-settings" type="button" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
+
+      <button id="btn-open-settings" type="button" title="Configurações" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
           <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -73,27 +151,141 @@
     </div>
   </header>
 
-  <!-- ÁREA PRINCIPAL COM SCROLL E CONTEÚDO DAS ABAS -->
-  <main class="flex-1 overflow-y-auto custom-scroll relative">
+  <!-- ÁREA PRINCIPAL COM SCROLL E CONTEÚDO DAS ABAS (CHAT-FIRST POR PADRÃO) -->
+  <main class="flex-1 overflow-hidden relative">
 
     <!-- ===================================================================== -->
-    <!-- ABA 1: INÍCIO (DASHBOARD) -->
+    <!-- ABA 1: CHAT P2P (CHAT-FIRST & FULL-SCREEN EDGE-TO-EDGE) -->
     <!-- ===================================================================== -->
-    <section id="view-home" class="p-4 space-y-4">
+    <section id="view-chat" class="h-full flex-1 min-h-0 flex flex-col relative overflow-hidden">
+      
+      <!-- SUB-PAINEL 1: LISTA DE CONVERSAS (WhatsApp style) -->
+      <div id="chat-list-pane" class="flex-1 flex flex-col min-h-0 h-full overflow-hidden relative">
+        
+        <!-- Barra Superior da Lista: Título e Categorias de Contatos -->
+        <div class="px-4 pt-2.5 pb-2 bg-slate-900/90 border-b border-slate-800/80 shrink-0 space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-black text-white tracking-wide">Conversas</span>
+              <span id="chat-conversations-count" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-indigo-300 border border-slate-700">0</span>
+            </div>
+            <div class="flex items-center gap-1.5">
+              <button id="btn-chat-global-search" type="button" title="Busca Global na Malha" class="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 active:scale-95 transition-all">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                </svg>
+              </button>
+              <button id="btn-chat-qr-sync" type="button" title="Conectar Dispositivo / QR Code" class="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 active:scale-95 transition-all">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- Filtro de Listas / Categorias (Todas, Favoritos, Família, Trabalho) -->
+          <div id="chat-categories-bar" class="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
+            <button type="button" data-category="Todas" class="category-pill active px-3 py-1 rounded-full text-xs font-bold bg-indigo-600 text-white shrink-0 transition-all">Todas</button>
+            <button type="button" data-category="Favoritos" class="category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all">⭐ Favoritos</button>
+            <button type="button" data-category="Família" class="category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all">🏠 Família</button>
+            <button type="button" data-category="Trabalho" class="category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all">💼 Trabalho</button>
+            <button id="btn-add-category-list" type="button" class="px-2.5 py-1 rounded-full text-xs font-bold bg-slate-800/60 text-slate-400 hover:text-indigo-300 border border-slate-700/60 shrink-0 transition-all">+ Nova Lista</button>
+          </div>
+        </div>
+
+        <!-- Lista Rolável de Conversas (Apenas usuários interagidos) -->
+        <div id="chat-conversations-list" class="flex-1 overflow-y-auto custom-scroll divide-y divide-slate-800/60">
+          <!-- preenchido dinamicamente com os cards de conversas -->
+        </div>
+
+        <!-- Botão Flutuante (FAB) para Iniciar Conversa / Buscar -->
+        <button id="btn-fab-new-chat" type="button" class="fixed right-5 bottom-20 z-30 w-14 h-14 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white shadow-xl shadow-indigo-600/40 flex items-center justify-center active:scale-90 transition-transform">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- SUB-PAINEL 2: CONVERSA ATIVA FULL-SCREEN EDGE-TO-EDGE (Desliza ocupando 100% da tela) -->
+      <div id="chat-active-conversation-pane" class="chat-slide-pane">
+        <!-- Barra de Cabeçalho do Contato (WhatsApp style) -->
+        <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0 shadow-md">
+          <div class="flex items-center gap-2 min-w-0 flex-1">
+            <button id="btn-chat-back" type="button" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95 transition-all shrink-0">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+              </svg>
+            </button>
+            <div id="chat-contact-avatar" class="w-9 h-9 min-w-[36px] max-w-[36px] min-h-[36px] max-h-[36px] rounded-full overflow-hidden shrink-0 border border-slate-700/80 bg-slate-800 flex items-center justify-center">
+              <!-- Avatar do contato -->
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5">
+                <h4 id="chat-contact-name" class="text-sm font-bold text-white truncate leading-tight">Contato</h4>
+                <span id="chat-contact-transport-badge" class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">🟢 LAN</span>
+              </div>
+              <span id="chat-contact-tag" class="text-[11px] font-mono text-slate-400 truncate block leading-none mt-0.5">@usuario</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            <button id="btn-chat-contact-menu" type="button" class="p-2 rounded-xl text-slate-400 hover:text-white active:scale-95">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Área de Mensagens Full-Screen (Sem caixas ou molduras limitadoras) -->
+        <div id="chat-messages-container" class="flex-1 min-h-0 overflow-y-auto custom-scroll p-4 space-y-2.5 bg-slate-950">
+          <!-- Balões de mensagem injetados dinamicamente -->
+        </div>
+
+        <!-- Barra Inferior de Entrada (WhatsApp Edge-to-Edge) -->
+        <div id="chat-bottom-input-bar" class="p-2 bg-slate-900 border-t border-slate-800/90 shrink-0 space-y-2">
+          <!-- Pré-visualização de anexos -->
+          <div id="chat-attachment-preview" class="hidden flex flex-wrap gap-2 p-2 bg-slate-950 rounded-xl border border-slate-800 text-xs"></div>
+          
+          <div class="flex items-center gap-2">
+            <button id="btn-chat-attach" type="button" title="Anexar arquivo" class="w-9 h-9 min-w-[36px] rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95 border border-slate-700/80 flex items-center justify-center shrink-0 transition-all">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.37l-10.94 10.94a1.5 1.5 0 01-2.122-2.122l7.693-7.693" />
+              </svg>
+            </button>
+            <input id="input-chat-text" type="text" placeholder="Mensagem segura..." class="flex-1 min-w-0 bg-slate-950 border border-slate-700/80 rounded-full px-4 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors" />
+            <button id="btn-chat-send" type="button" class="w-9 h-9 min-w-[36px] rounded-full bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 shadow-md shadow-indigo-600/40 flex items-center justify-center shrink-0 transition-all">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- ABA 2: INÍCIO (DASHBOARD & AÇÕES RÁPIDAS) -->
+    <!-- ===================================================================== -->
+    <section id="view-home" class="hidden p-4 space-y-4">
       
       <!-- Card do Meu Usuário -->
       <div class="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 shadow-xl relative overflow-hidden">
-        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-orange-500/10 blur-2xl pointer-events-none"></div>
+        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-indigo-500/10 blur-2xl pointer-events-none"></div>
         <div class="flex items-start justify-between">
-          <div>
-            <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Identidade na Malha</span>
-            <div class="flex items-center gap-2 mt-0.5">
-              <h2 id="home-tag-display" class="text-xl font-black text-white tracking-tight">@usuario</h2>
-              <span id="home-status-pill" class="text-[9px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">ONLINE</span>
+          <div class="flex items-center gap-3">
+            <div id="home-avatar-slot" class="w-12 h-12 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 flex items-center justify-center">
+              <!-- Avatar grande -->
+            </div>
+            <div>
+              <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Identidade Nostr</span>
+              <div class="flex items-center gap-2 mt-0.5">
+                <h2 id="home-tag-display" class="text-lg font-black text-white tracking-tight">@usuario</h2>
+                <span id="home-status-pill" class="text-[9px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">ONLINE</span>
+              </div>
             </div>
           </div>
-          <button id="btn-edit-tag" type="button" class="text-xs text-orange-400 hover:text-orange-300 font-bold px-2 py-1 rounded-lg bg-orange-500/10 border border-orange-500/20 active:scale-95">
-            Alterar
+          <button id="btn-edit-tag" type="button" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 active:scale-95">
+            Perfil
           </button>
         </div>
 
@@ -148,7 +340,7 @@
       <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
         <div class="flex items-center justify-between">
           <span class="text-xs font-bold text-white flex items-center gap-2">
-            <span>🌐 Status da Malha Mesh</span>
+            <span>🌐 Status da Rede (LAN + BLE + Mesh)</span>
           </span>
           <span id="home-peers-count-badge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-indigo-300 border border-slate-700">0 peers online</span>
         </div>
@@ -172,136 +364,80 @@
     </section>
 
     <!-- ===================================================================== -->
-    <!-- ABA 2: CHAT P2P -->
-    <!-- ===================================================================== -->
-    <section id="view-chat" class="hidden h-full flex flex-col p-4 space-y-3">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
-        <h3 class="text-sm font-bold text-white flex items-center gap-1.5">
-          <span>💬 Conversas Criptografadas E2EE</span>
-        </h3>
-        <select id="chat-peer-select" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded-lg px-2 py-1 outline-none">
-          <option value="">Selecione um usuário...</option>
-        </select>
-      </div>
-
-      <!-- Janela de Mensagens -->
-      <div id="chat-messages-container" class="flex-1 overflow-y-auto custom-scroll space-y-2 p-3 rounded-2xl bg-slate-900/60 border border-slate-800 min-h-[300px]">
-        <div class="h-full flex flex-col items-center justify-center text-center text-slate-500 py-12">
-          <svg class="w-10 h-10 mb-2 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-          </svg>
-          <p class="text-xs">Selecione um usuário acima para conversar ponto a ponto com criptografia de ponta a ponta.</p>
-        </div>
-      </div>
-
-      <!-- Barra de Envio de Chat -->
-      <div class="flex items-center gap-2 pt-1">
-        <button id="btn-chat-attach" type="button" title="Anexar arquivo" class="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition-all active:scale-95 border border-slate-700">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.37l-10.94 10.94a1.5 1.5 0 01-2.122-2.122l7.693-7.693" />
-          </svg>
-        </button>
-        <input id="input-chat-text" type="text" placeholder="Digite uma mensagem segura..." class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500" />
-        <button id="btn-chat-send" type="button" class="p-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white transition-all active:scale-95 shadow-md shadow-indigo-600/30">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
-          </svg>
-        </button>
-      </div>
-    </section>
-
-    <!-- ===================================================================== -->
     <!-- ABA 3: TRANSFERÊNCIAS -->
     <!-- ===================================================================== -->
-    <section id="view-transfers" class="hidden p-4 space-y-3">
-      <div class="flex items-center justify-between pb-1 border-b border-slate-800">
-        <div class="flex items-center gap-2">
+    <section id="view-transfers" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <div class="flex items-center gap-3">
           <button id="tab-transfers-active" type="button" class="text-xs font-bold text-orange-400 border-b-2 border-orange-500 pb-1 px-1">Ativas</button>
           <button id="tab-transfers-history" type="button" class="text-xs font-medium text-slate-400 hover:text-white pb-1 px-1">Histórico</button>
         </div>
-        <button id="btn-clear-completed-transfers" type="button" class="text-[10px] text-slate-400 hover:text-rose-400">Limpar concluídas</button>
+        <button id="btn-clear-completed-transfers" type="button" class="text-[10px] text-slate-400 hover:text-rose-400">Limpar Concluídas</button>
       </div>
-
-      <!-- Lista de Cards de Transferência -->
-      <div id="transfers-list-container" class="space-y-3">
-        <div class="py-16 text-center text-slate-500 space-y-2">
-          <svg class="w-10 h-10 mx-auto opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-          </svg>
-          <p class="text-xs">Nenhuma transferência em andamento no momento.</p>
-        </div>
+      <div id="transfers-list" class="space-y-2.5">
+        <!-- preenchido dinamicamente -->
       </div>
     </section>
 
     <!-- ===================================================================== -->
     <!-- ABA 4: LINKS PÚBLICOS -->
     <!-- ===================================================================== -->
-    <section id="view-shares" class="hidden p-4 space-y-3">
-      <div class="flex items-center justify-between pb-1 border-b border-slate-800">
-        <h3 class="text-sm font-bold text-white">🔗 Meus Links Públicos Ativos</h3>
-        <button id="btn-new-share-link" type="button" class="text-xs font-bold text-orange-400 bg-orange-500/10 border border-orange-500/30 px-2.5 py-1 rounded-lg active:scale-95">
-          + Criar Link
-        </button>
+    <section id="view-shares" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
+        <h3 class="text-sm font-bold text-white">🔗 Meus Links de Download Ativos</h3>
+        <button id="btn-new-share-link" type="button" class="px-2.5 py-1 rounded-lg bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shadow active:scale-95">+ Novo</button>
       </div>
-
-      <div id="shares-list-container" class="space-y-3">
-        <div class="py-16 text-center text-slate-500 space-y-2">
-          <svg class="w-10 h-10 mx-auto opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-          </svg>
-          <p class="text-xs">Nenhum link público ativo gerado por este dispositivo.</p>
-        </div>
+      <div id="shares-list" class="space-y-2.5">
+        <!-- preenchido dinamicamente -->
       </div>
     </section>
 
     <!-- ===================================================================== -->
-    <!-- ABA 5: USUÁRIOS / MALHA MESH -->
+    <!-- ABA 5: USUÁRIOS E DISPOSITIVOS NA MALHA -->
     <!-- ===================================================================== -->
-    <section id="view-mesh" class="hidden p-4 space-y-3">
-      <div class="flex items-center justify-between pb-1 border-b border-slate-800">
+    <section id="view-mesh" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
         <div>
-          <h3 class="text-sm font-bold text-white">👥 Usuários Conectados</h3>
-          <span class="text-[10px] text-slate-400">Catálogo descentralizado da rede P2P</span>
+          <h3 class="text-sm font-bold text-white">🌐 Dispositivos Conectados</h3>
+          <p class="text-[10px] text-slate-400">Rede Local (LAN), Bluetooth (BLE) e Malha P2P</p>
         </div>
-        <span id="mesh-peers-online-badge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-          0 Online
-        </span>
+        <button id="btn-refresh-mesh" type="button" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+          </svg>
+        </button>
       </div>
-
-      <!-- Campo de Busca de Usuários -->
-      <div>
-        <input id="input-search-peers" type="text" placeholder="Buscar por @usuario..." class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500" />
-      </div>
-
-      <!-- Lista de Usuários Conhecidos -->
-      <div id="mesh-peers-container" class="space-y-2.5">
-        <!-- Renderizado dinamicamente -->
+      <div id="mesh-peers-list" class="space-y-2">
+        <!-- preenchido dinamicamente -->
       </div>
     </section>
 
   </main>
 
   <!-- ===================================================================== -->
-  <!-- BARRA DE NAVEGAÇÃO INFERIOR NATIVA (5 ABAS) -->
+  <!-- BARRA DE NAVEGAÇÃO INFERIOR NATIVA (5 ABAS - CHAT FIRST) -->
   <!-- ===================================================================== -->
-  <nav class="grid grid-cols-5 bg-slate-900/95 border-t border-slate-800/80 shrink-0 select-none pb-1 z-30 shadow-lg">
-    <button id="nav-home" type="button" class="nav-tab active py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-bold text-orange-400">
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
-      </svg>
-      <span>Início</span>
-    </button>
-
-    <button id="nav-chat" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
+  <nav id="app-bottom-nav" class="grid grid-cols-5 bg-slate-900/95 border-t border-slate-800/80 shrink-0 select-none pb-1 z-30 shadow-lg">
+    <!-- 1. CHAT (Primeira aba padrão) -->
+    <button id="nav-chat" type="button" class="nav-tab active py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-bold text-indigo-400 relative">
       <div class="relative">
         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
         </svg>
         <span id="badge-chat-unread" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-indigo-500 text-white font-mono">0</span>
       </div>
-      <span>Chat</span>
+      <span>Conversas</span>
     </button>
 
+    <!-- 2. INÍCIO -->
+    <button id="nav-home" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200">
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
+      </svg>
+      <span>Início</span>
+    </button>
+
+    <!-- 3. ENVIOS -->
     <button id="nav-transfers" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
       <div class="relative">
         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -312,31 +448,201 @@
       <span>Envios</span>
     </button>
 
+    <!-- 4. LINKS -->
     <button id="nav-shares" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
-      <div class="relative">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-        </svg>
-      </div>
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+      </svg>
       <span>Links</span>
     </button>
 
+    <!-- 5. USUÁRIOS -->
     <button id="nav-mesh" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
-      <div class="relative">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-        </svg>
-      </div>
+      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+      </svg>
       <span>Usuários</span>
     </button>
   </nav>
 
   <!-- ===================================================================== -->
+  <!-- MODAL 1: BUSCA GLOBAL DE USUÁRIOS (LAN / BLE / MESH) -->
+  <!-- ===================================================================== -->
+  <div id="modal-global-search" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🔍 Busca Global de Usuários</span>
+        </h3>
+        <button id="btn-close-global-search" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Campo de Busca -->
+      <div class="relative">
+        <input id="input-global-search" type="text" placeholder="Buscar por @tag, nome ou hash..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 font-mono outline-none focus:border-indigo-500" />
+      </div>
+
+      <!-- Lista de Resultados da Busca -->
+      <div id="global-search-results" class="space-y-2 max-h-72 overflow-y-auto custom-scroll">
+        <!-- Renderizado dinamicamente -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 2: IDENTIDADE CRIPTOGRÁFICA (NOSTR-STYLE 7 PALAVRAS & 2FA & MULTI-PERFIL & QR CODE) -->
+  <!-- ===================================================================== -->
+  <div id="modal-identity-profile" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[92vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>🛡️ Identidade Descentralizada & Chaves</span>
+        </h3>
+        <button id="btn-close-identity-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Perfil Ativo -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center gap-3">
+        <div id="identity-avatar-slot" class="w-14 h-14 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 flex items-center justify-center shrink-0"></div>
+        <div class="flex-1 min-w-0">
+          <span class="text-[10px] text-slate-400 font-semibold uppercase tracking-wider block">Perfil Ativo</span>
+          <h4 id="identity-name-display" class="text-base font-black text-white truncate">Nome</h4>
+          <span id="identity-tag-display" class="text-xs font-mono text-indigo-400 font-bold block truncate">@usuario_hash</span>
+        </div>
+      </div>
+
+      <!-- 7 Palavras-Chave de Recuperação (Seed Phrase) -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-bold text-white block">7 Palavras de Recuperação (Seed Phrase)</span>
+            <span class="text-[10px] text-slate-400">Guarde para restaurar sua conta em qualquer dispositivo</span>
+          </div>
+          <button id="btn-copy-seed-words" type="button" class="text-xs font-bold text-indigo-400 hover:text-indigo-300 px-2 py-1 bg-indigo-500/10 rounded border border-indigo-500/20 active:scale-95">
+            Copiar
+          </button>
+        </div>
+        <div id="seed-words-chips-grid" class="grid grid-cols-4 gap-1.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-center font-mono text-xs text-white">
+          <!-- chips das 7 palavras -->
+        </div>
+      </div>
+
+      <!-- Proteção 2FA por PIN (AES-256-GCM) -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-bold text-white block">Proteção 2FA com PIN (AES-256-GCM)</span>
+            <span class="text-[10px] text-slate-400">Criptografa suas chaves privadas localmente</span>
+          </div>
+          <input id="toggle-2fa-pin" type="checkbox" class="w-4 h-4 accent-indigo-500 cursor-pointer" />
+        </div>
+        <div id="field-pin-setup" class="hidden flex gap-2 pt-1 border-t border-slate-800/80">
+          <input id="input-2fa-pin" type="password" maxlength="6" placeholder="PIN de 4 a 6 dígitos" class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none" />
+          <button id="btn-save-2fa-pin" type="button" class="px-3.5 py-2 bg-indigo-600 text-white text-xs font-bold rounded-xl active:scale-95">Ativar</button>
+        </div>
+      </div>
+
+      <!-- Sincronização de Dispositivos (QR Code) -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <span class="text-xs font-bold text-white block">Sincronização entre Dispositivos</span>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="btn-show-my-qr" type="button" class="py-2.5 px-3 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold active:scale-95 transition-all text-center">
+            📱 Meu QR Code
+          </button>
+          <button id="btn-scan-device-qr" type="button" class="py-2.5 px-3 rounded-xl bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 border border-orange-500/30 text-xs font-bold active:scale-95 transition-all text-center">
+            📷 Parear Dispositivo
+          </button>
+        </div>
+        <div id="qr-code-display-area" class="hidden flex flex-col items-center justify-center p-3 bg-white rounded-xl">
+          <!-- SVG QR Code do perfil -->
+        </div>
+      </div>
+
+      <!-- Múltiplos Perfis -->
+      <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-white block">Múltiplos Perfis</span>
+          <button id="btn-add-new-profile" type="button" class="text-xs font-bold text-emerald-400 hover:text-emerald-300 px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20 active:scale-95">
+            + Criar Perfil
+          </button>
+        </div>
+        <div id="profiles-list-container" class="space-y-1.5 max-h-36 overflow-y-auto custom-scroll">
+          <!-- Lista de perfis salvos -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 3: PAREAR DISPOSITIVO / SCANNER DE QR CODE -->
+  <!-- ===================================================================== -->
+  <div id="modal-qr-pair-scanner" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white flex items-center gap-2">
+          <span>📷 Parear com Extensão / Outro Dispositivo</span>
+        </h3>
+        <button id="btn-close-qr-scanner-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+
+      <!-- Opção 1: Colar Texto de Pareamento -->
+      <div class="space-y-1.5">
+        <label class="text-xs font-semibold text-white">Código de Pareamento (Texto ou QR)</label>
+        <textarea id="input-pairing-payload" rows="3" placeholder="Cole o payload ou escaneie o QR gerado na Extensão..." class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs text-white font-mono outline-none"></textarea>
+        <button id="btn-confirm-import-pairing" type="button" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-orange-600 to-indigo-600 text-white font-bold text-xs shadow active:scale-95">
+          Importar e Parear Sessão
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 4: MENU DE AÇÕES DO CONTATO -->
+  <!-- ===================================================================== -->
+  <div id="modal-contact-menu" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 id="contact-menu-title" class="text-sm font-bold text-white">Opções da Conversa</h3>
+        <button id="btn-close-contact-menu" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-2">
+        <button id="btn-contact-save" type="button" class="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-semibold text-white flex items-center gap-2">
+          <span>👤 Salvar nos Contatos</span>
+        </button>
+        <button id="btn-contact-add-list" type="button" class="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-semibold text-white flex items-center gap-2">
+          <span>🏷️ Adicionar a uma Lista (Favoritos/Família...)</span>
+        </button>
+        <button id="btn-contact-delete-chat" type="button" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold flex items-center gap-2">
+          <span>🗑️ Excluir Conversa</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 5: CRIAR NOVA LISTA DE CONTATOS -->
+  <!-- ===================================================================== -->
+  <div id="modal-add-category-list" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white">Criar Nova Lista de Contatos</h3>
+        <button id="btn-close-add-category" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="space-y-2">
+        <input id="input-new-category-name" type="text" placeholder="Ex: Projetos, Academia, Faculdade" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none" />
+        <button id="btn-save-new-category" type="button" class="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow active:scale-95">
+          Salvar Lista
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
   <!-- MODAL: ENVIAR ARQUIVOS (DIRETO OU VIA LINK) -->
   <!-- ===================================================================== -->
   <div id="modal-send" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
-    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
         <h3 id="modal-send-title" class="text-sm font-bold text-white flex items-center gap-2">
           <span>📤 Enviar Arquivos P2P</span>
         </h3>
@@ -412,34 +718,42 @@
   </div>
 
   <!-- ===================================================================== -->
-  <!-- MODAL: CONFIGURAÇÕES -->
+  <!-- MODAL: CONFIGURAÇÕES GERAIS -->
   <!-- ===================================================================== -->
   <div id="modal-settings" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
-    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
         <h3 class="text-sm font-bold text-white flex items-center gap-2">
           <span>⚙️ Configurações do PulseShare</span>
         </h3>
         <button id="btn-close-settings-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
       </div>
 
-      <!-- Alteração de Tag -->
-      <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-white">Meu Nome de Usuário (@tag)</label>
-        <div class="flex gap-2">
-          <input id="setting-my-tag" type="text" placeholder="@meu_usuario" class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none" />
-          <button id="btn-save-tag" type="button" class="px-3.5 py-2 bg-orange-600 text-white text-xs font-bold rounded-xl active:scale-95">Salvar</button>
+      <!-- Download Automático no Chat -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
+        <div class="pr-3">
+          <span class="text-xs font-semibold text-white block">Download Automático no Chat</span>
+          <span class="text-[10px] text-slate-400">Desativado por padrão. Quando desativado, você escolhe quando baixar no chat ou em Transferências.</span>
         </div>
-        <p class="text-[10px] text-slate-400">Validado contra o catálogo descentralizado de identidades.</p>
+        <input id="setting-chat-auto-download" type="checkbox" class="w-4 h-4 accent-indigo-500 cursor-pointer shrink-0" />
       </div>
 
-      <!-- Recebimento Automático -->
-      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-        <div>
-          <span class="text-xs font-semibold text-white block">Recebimento Automático</span>
-          <span class="text-[10px] text-slate-400">Salva arquivos recebidos na pasta Downloads sem confirmação</span>
+      <!-- Diretório de Salvamento / Pasta de Downloads -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between">
+          <div>
+            <span class="text-xs font-semibold text-white block">Diretório para Salvar Arquivos</span>
+            <span class="text-[10px] text-slate-400">Subpasta dentro de Downloads ou Transferências</span>
+          </div>
+          <button id="btn-open-download-dir" type="button" class="text-[10px] text-indigo-400 hover:text-indigo-300 font-bold px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/20 active:scale-95">
+            📂 Abrir Pasta
+          </button>
         </div>
-        <input id="setting-auto-accept" type="checkbox" checked class="w-4 h-4 accent-emerald-500 cursor-pointer" />
+        <div class="flex gap-2">
+          <input id="setting-download-dir" type="text" placeholder="PulseShare" class="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-orange-500" />
+          <button id="btn-save-download-dir" type="button" class="px-3 py-1.5 bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold rounded-lg active:scale-95 shadow-sm">Salvar</button>
+        </div>
+        <p id="label-download-path-preview" class="text-[10px] font-mono text-slate-400 truncate">Destino: /storage/emulated/0/Download/PulseShare</p>
       </div>
 
       <!-- Roteamento Mesh Relay -->
@@ -450,17 +764,6 @@
             <span class="text-[10px] text-slate-400">Intermedeia conexões P2P bloqueadas por firewall</span>
           </div>
           <input id="setting-mesh-relay" type="checkbox" checked class="w-4 h-4 accent-indigo-500 cursor-pointer" />
-        </div>
-        <div class="pt-2 border-t border-slate-800/80 flex items-center justify-between">
-          <span class="text-[10px] text-slate-400">Banda Reservada:</span>
-          <select id="setting-relay-bandwidth" class="bg-slate-900 border border-slate-700 text-xs text-slate-200 rounded-lg px-2 py-1 outline-none">
-            <option value="256">256 KB/s</option>
-            <option value="512">512 KB/s</option>
-            <option value="1024">1 MB/s</option>
-            <option value="2048" selected>2 MB/s (Padrão)</option>
-            <option value="5120">5 MB/s</option>
-            <option value="0">Ilimitada</option>
-          </select>
         </div>
       </div>
 
@@ -475,17 +778,19 @@
           <input id="setting-turn-user" type="text" placeholder="Usuário" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
           <input id="setting-turn-pass" type="password" placeholder="Senha" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none" />
         </div>
+        <button id="btn-save-turn" type="button" class="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 active:scale-95">Salvar Configurações TURN</button>
       </div>
 
       <!-- Informações da Versão e Autoria -->
       <div class="pt-2 border-t border-slate-800 text-center text-[10px] text-slate-500">
-        <p>PulseShare Android v1.0.0 — 100% Serverless P2P WebRTC</p>
-        <p>Desenvolvido para transferência ultrarrápida ponto a ponto.</p>
+        <p>PulseShare Android v2.0.0 — Chat-First P2P (Nostr Identity + LAN/BLE)</p>
+        <p>Transferência ultrarrápida ponto a ponto sem servidores intermediários.</p>
       </div>
     </div>
   </div>
 
   <!-- SCRIPTS BÁSICOS E MOTOR DA MALHA -->
+  <script src="pulseshare-crypto-identity.js"></script>
   <script src="pulseshare-mesh-engine.js"></script>
   <script src="fflate.min.js"></script>
   <script src="app.js"></script>
