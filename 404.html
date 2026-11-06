@@ -1318,6 +1318,7 @@
     // ============================================================================
     function showPackUI() {
       packContent.classList.remove('hidden');
+      if (typeof revealChatTab === 'function') revealChatTab();
       packTitle.textContent = packData.packName || 'Pacote de Arquivos';
       packSender.textContent = `Remetente: ${packData.ownerTag || ownerTag}`;
       const totalSize = packData.totalSize || (packData.files || []).reduce((acc, f) => acc + (f.size || 0), 0);
@@ -2361,6 +2362,11 @@
       const { signalType, transferId } = pkt;
       const payload = pkt.payload || {};
 
+      // Chat só existe depois que o link foi liberado (senha correta ou sem senha).
+      if (!isChatUnlocked()) {
+        return /^CHAT_/.test(signalType || '') || String(transferId || '').startsWith('chatmedia-');
+      }
+
       if (signalType === 'CHAT_MESSAGE') {
         const id = payload.id || transferId;
         broadcastSignal('CHAT_ACK', { msgId: id, senderTag: visitorTag, status: chat.open ? 'READ' : 'DELIVERED' }, ownerTag, id);
@@ -2436,7 +2442,13 @@
       }
     });
 
-    if (shareId && ownerTag) {
+    // As abas (e o chat) só aparecem depois que o pacote foi carregado e, se houver
+    // senha, depois do desbloqueio. Até lá a página mostra apenas o link/senha.
+    function isChatUnlocked() {
+      return !!(shareId && ownerTag && packData && (!packData.hasPassword || unlocked));
+    }
+    function revealChatTab() {
+      if (!isChatUnlocked()) return;
       tabBar.classList.remove('hidden');
       renderOwnerStatus();
       renderChat();
