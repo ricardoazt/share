@@ -923,19 +923,22 @@ async function startSenderWebRTC(
     existing?.pc &&
     !existing.cancelled &&
     existing.pc.connectionState !== 'failed' &&
-    existing.pc.connectionState !== 'closed' &&
-    Date.now() - (existing.createdAt || 0) < 4000
+    existing.pc.connectionState !== 'closed'
   ) {
-    // Se já estamos negociando este mesmo transferId há menos de 4s, apenas reenvia o Offer
-    if (existing.offerPayload) {
-      sendSignalViaBackground(targetTag, signalTransferId, 'WEBRTC_OFFER', existing.offerPayload);
-      for (const c of existing.localCandidatesHistory || []) {
-        sendSignalViaBackground(targetTag, signalTransferId, 'ICE_CANDIDATE', { candidate: c });
+    // FILE_ACCEPT duplicado: nunca reinicia uma conexão que já está enviando.
+    if (existing.channel?.readyState === 'open' || existing.pc.connectionState === 'connected') return;
+    // Ainda negociando: reenvia o mesmo Offer (o primeiro pode ter se perdido no broker).
+    // Só recria a conexão se a negociação estiver travada há muito tempo.
+    if (Date.now() - (existing.createdAt || 0) < 30000) {
+      if (existing.offerPayload) {
+        sendSignalViaBackground(targetTag, signalTransferId, 'WEBRTC_OFFER', existing.offerPayload);
+        for (const c of existing.localCandidatesHistory || []) {
+          sendSignalViaBackground(targetTag, signalTransferId, 'ICE_CANDIDATE', { candidate: c });
+        }
       }
+      return;
     }
-    return;
   }
-
   reportProgress(uiTransferId, { status: 'CONNECTING', inProgress: true });
 
   if (existing?.pc) {
@@ -1241,6 +1244,13 @@ async function startSenderWebRTC(
 
 async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster, transferMeta, remoteIceServers = null) {
   const existing = peerSessions.get(transferId);
+  if (existing?.pc && existing.offerSdp && existing.offerSdp === sdpOffer?.sdp) {
+    // Offer repetido (reenvio do remetente): reaproveita a sessão em vez de derrubá-la
+    if (existing.answerPayload) {
+      sendSignalViaBackground(senderTag, transferId, 'WEBRTC_ANSWER', existing.answerPayload);
+    }
+    return;
+  }
   if (existing?.pc) {
     try { existing.pc.close(); } catch {}
   }
@@ -1262,6 +1272,8 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
     pc,
     channel: null,
     uiTransferId: transferId,
+    offerSdp: sdpOffer?.sdp || null,
+    answerPayload: null,
     pendingCandidates,
     remoteDescSet: false,
     paused: false,
@@ -1357,18 +1369,8 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
           const blob = new Blob(chunks, { type: fileType });
           chunks.length = 0; // Libera memória imediatamente
           if (String(transferId || '').startsWith('chatmedia-')) {
+            // O background decide se salva em disco (usuário clicou em "Baixar")
             storeReceivedChatMediaBlob(transferId, blob, fileName, fileType);
-            const isAudioOrVoice = fileType && (fileType.startsWith('audio/') || fileType.includes('ogg') || fileType.includes('webm'));
-            const isSmallImage = fileType && fileType.startsWith('image/') && blob.size < 5 * 1024 * 1024;
-            if (!isAudioOrVoice && !isSmallImage) {
-              const blobUrl = URL.createObjectURL(blob);
-              sendToBackground({
-                type: 'OFFSCREEN_DOWNLOAD_READY',
-                transferId,
-                blobUrl,
-                fileName
-              });
-            }
             setTimeout(() => {
               pc.close();
               peerSessions.delete(transferId);
@@ -1419,12 +1421,13 @@ async function startReceiverWebRTC(transferId, senderTag, sdpOffer, localRoster,
   await waitForIceGathering(pc, 700);
 
   answerDispatched = true;
-  sendSignalViaBackground(senderTag, transferId, 'WEBRTC_ANSWER', {
+  session.answerPayload = {
     sdp: {
       type: pc.localDescription.type,
       sdp: pc.localDescription.sdp
     }
-  });
+  };
+  sendSignalViaBackground(senderTag, transferId, 'WEBRTC_ANSWER', session.answerPayload);
 
   while (queuedLocalCandidates.length > 0) {
     const candidateObj = queuedLocalCandidates.shift();

@@ -1,7 +1,7 @@
 # PulseShare — Guia de Referência do Projeto (para o Claude)
 
 > Mapa do código para continuar o desenvolvimento sem varrer o repositório inteiro.
-> Gerado em 2026-11-01, atualizado em 2026-11-05 (correções de chat/link/transferências). **Atualize este arquivo quando mudar arquitetura, protocolos ou a estrutura de arquivos.**
+> Gerado em 2026-11-01, atualizado em 2026-11-05 (correções de chat/link/transferências; download de mídia do chat na extensão e layout responsivo). **Atualize este arquivo quando mudar arquitetura, protocolos ou a estrutura de arquivos.**
 > Idioma do projeto: português (UI, comentários, commits). Responder ao usuário em português.
 
 ## 1. O que é
@@ -37,6 +37,7 @@ Ao editar um, **copie para os outros** (hoje estão idênticos byte a byte):
 - `app.html` (raiz) → `android/app/src/main/assets/www/index.html` (**nome diferente!**)
 - `index.html` (portal) → `404.html`
 - `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `fflate.min.js`, `tailwind.css` → também em `extension/`
+  - ⚠️ `extension/tailwind.css` **já diverge** da raiz (tem regras extras do chat da extensão: layout responsivo, progresso de mídia, utilitárias que faltavam). Não copie a raiz por cima; adicione classes novas no fim do arquivo certo (o Tailwind é pré-compilado — classe que não está no CSS simplesmente não funciona).
 - portal (`index.html`) ≈ `extension/receiver.html` + `extension/receiver.js` (lógica equivalente, divergem; o receiver da extensão NÃO tem o chat temporário)
 
 Comando de sync sugerido:
@@ -127,6 +128,14 @@ Arquitetura: **popup (UI) ↔ service worker (`background.js`, estado + MQTT) �
 **background ↔ offscreen (`action`):** `OFFSCREEN_SIGNAL`, `OFFSCREEN_CONTROL`, `OFFSCREEN_SET_TURN_CONFIG`, `OFFSCREEN_DOWNLOAD_CHAT_MEDIA`, `OFFSCREEN_RECEIVE_RELAY_CHUNK`, `START_MESH_RELAY_STREAM`, `STAGE_FILE_MEMORY`, `REVOKE_BLOB_URL`, `STATE_UPDATED`.
 Arquivos grandes passam do popup ao offscreen por `BroadcastChannel('pulseshare_file_bridge')` + IndexedDB.
 Na extensão o `meshEngine.init()` **é** chamado (DTN de chat, CRDT, Kademlia ativos).
+
+**Mídia do chat na extensão (desde 2026-11-05):**
+- Receptor só aceita sozinho imagem/áudio/voz/vídeo ≤ 16 MB (`isAutoPreviewChatMedia` em `background.js`, ficam só na memória/IndexedDB para pré-visualizar). Demais arquivos ficam `AWAITING_ACCEPT` com botão **Baixar**.
+- Clique em Baixar → `DOWNLOAD_CHAT_MEDIA` → marca `saveToDisk:true`, envia `FILE_ACCEPT` (ou, se o arquivo já é local, pede ao offscreen) → ao concluir `OFFSCREEN_CHAT_MEDIA_READY` → `OFFSCREEN_DOWNLOAD_CHAT_MEDIA` → `chrome.downloads` em `PulseShare/` e grava `downloadId`. A bolha mostra progresso → 📂 (mostrar na pasta) / Abrir; a transferência aparece em Transferências (filtro `isTransferVisibleInList`). O offscreen **não** salva mais mídia de chat em disco por conta própria.
+- `FILE_ACCEPT` de mídia de chat sai no máximo 1× a cada 20 s (`acceptChatMediaOnce`); o offscreen não reinicia um WebRTC já aberto ao receber `FILE_ACCEPT`/`WEBRTC_OFFER` duplicado. Fallback para relay após aceite: 15 s (chat) / 8 s (demais).
+- `broadcastState()` tem throttle (250 ms) e persistência no storage a cada 1,5 s (`flushBroadcastState` força imediato).
+- Popup: `renderActiveChatConversation` compara uma assinatura (`buildChatRenderSignature`) e, se só mudou progresso, atualiza as barras no lugar (`updateChatMediaProgressInPlace`); blob URLs são cacheados (`getChatMediaBlobUrl`) e recarregados do IndexedDB ao reabrir o popup.
+- Layout do chat: abaixo de 760 px de largura (ou no popup) mostra só a lista OU a conversa (classe `chat-mobile-hidden`, botão ← volta e fecha a conversa); acima disso, lado a lado.
 
 Link público gerado: `https://ricardoazt.github.io/share/#share=<id>&owner=@tag&exp=<ts>` (base configurável; `DEFAULT_PORTAL_URL` em `popup.js`).
 

@@ -1666,9 +1666,16 @@ function renderCardFilesTreeHtml(files, transferId) {
   return `<div class="flex flex-col gap-1 max-h-56 overflow-y-auto pr-0.5 text-slate-300 mt-1">${renderBranch(tree, 0)}</div>`;
 }
 
+// Mídia de chat aparece em Transferências quando o usuário clicou em "Baixar"
+function isTransferVisibleInList(t) {
+  if (!t) return false;
+  const isChat = t.isChatMedia || String(t.id || '').startsWith('chatmedia-');
+  return !isChat || Boolean(t.saveToDisk);
+}
+
 function renderTransfers() {
   const allTransfers = Object.values(currentState.transfers || {})
-    .filter((t) => !t.isChatMedia && !String(t.id || '').startsWith('chatmedia-'))
+    .filter(isTransferVisibleInList)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
   const now = Date.now();
@@ -1746,7 +1753,7 @@ function renderTransfers() {
       ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
       : 'bg-sky-500/15 text-sky-300 border-sky-500/30';
 
-    const badgeLabel = isTunnel ? '☁️ LINK WEBRTC' : isSend ? '↑ ENVIO' : '↓ RECEB.';
+    const badgeLabel = isTunnel ? '☁️ LINK WEBRTC' : t.isChatMedia ? (isSend ? '💬 ↑ CHAT' : '💬 ↓ CHAT') : isSend ? '↑ ENVIO' : '↓ RECEB.';
 
     const barColor = isError || isCancelled || isExpired
       ? 'bg-rose-500'
@@ -1822,7 +1829,7 @@ function renderTransfers() {
     }
 
     let postActionsHtml = '';
-    if (isDone && !isSend && !isTunnel && typeof t.downloadId === 'number') {
+    if (isDone && !isTunnel && typeof t.downloadId === 'number') {
       postActionsHtml = `
         <div class="flex items-center gap-1 shrink-0">
           <button
@@ -2059,9 +2066,7 @@ function renderTransfers() {
 }
 
 function updateNavBadges() {
-  const allTransfers = Object.values(currentState.transfers || {}).filter(
-    (t) => !t.isChatMedia && !String(t.id || '').startsWith('chatmedia-')
-  );
+  const allTransfers = Object.values(currentState.transfers || {}).filter(isTransferVisibleInList);
   const now = Date.now();
 
   const activeCount = allTransfers.filter(
@@ -4626,6 +4631,11 @@ if (btnChatBackList) {
       chatSidebarPane.classList.remove('chat-mobile-hidden');
       chatConversationPane.classList.add('chat-mobile-hidden');
     }
+    // Volta para a lista: fecha a conversa (mensagens novas voltam a contar como não lidas)
+    exitChatSelectionMode();
+    activeChatPeerTag = null;
+    lastChatRenderSignature = '';
+    renderChatView();
   });
 }
 
@@ -4795,6 +4805,162 @@ function renderChatConversationsList() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Mídia do chat: cache de blob URLs, estado da transferência e progresso inline
+// ---------------------------------------------------------------------------
+// Antes cada render criava um blob URL novo para cada imagem/vídeo: as imagens
+// recarregavam (altura 0 → altura real) a cada atualização de progresso e o chat tremia.
+const chatBlobUrlCache = new Map(); // transferId -> { blob, url }
+let lastChatRenderSignature = '';
+
+// Ao reabrir o popup a memória está vazia: recupera a mídia salva no IndexedDB
+const chatMediaHydrating = new Set();
+function hydrateChatMediaFromDb(transferId) {
+  if (!transferId || chatMediaHydrating.has(transferId)) return;
+  chatMediaHydrating.add(transferId);
+  getStagedFile(transferId).then((file) => {
+    if (file && !activeSessionFiles.has(transferId)) {
+      activeSessionFiles.set(transferId, file);
+      if (currentMainTab === 'chat') renderActiveChatConversation();
+    }
+  });
+}
+
+function getChatMediaBlobUrl(transferId) {
+  if (!transferId) return '';
+  const blob = activeSessionFiles.get(transferId);
+  if (!blob) {
+    hydrateChatMediaFromDb(transferId);
+    return '';
+  }
+  const cached = chatBlobUrlCache.get(transferId);
+  if (cached && cached.blob === blob) return cached.url;
+  if (cached) {
+    try { URL.revokeObjectURL(cached.url); } catch {}
+  }
+  const url = URL.createObjectURL(blob);
+  chatBlobUrlCache.set(transferId, { blob, url });
+  return url;
+}
+
+function getChatMediaTransferInfo(transferId) {
+  const t = transferId ? (currentState.transfers || {})[transferId] : null;
+  const status = t?.status || '';
+  const downloadId = typeof t?.downloadId === 'number' ? t.downloadId : null;
+  return {
+    t,
+    status,
+    isActive: status === 'CONNECTING' || status === 'TRANSFERRING' || status === 'PAUSED',
+    isWaiting: status === 'AWAITING_ACCEPT',
+    isDone: status === 'COMPLETED',
+    isError: status === 'ERROR' || status === 'CANCELLED',
+    isSaving: Boolean(t?.saveToDisk && status === 'COMPLETED' && downloadId === null),
+    downloadId,
+    progress: Math.min(100, Math.max(0, Math.round(t?.progress || 0)))
+  };
+}
+
+function getChatMediaProgressLabel(info, isOut) {
+  const t = info.t || {};
+  if (info.status === 'CONNECTING') return isOut ? 'Conectando ao destinatário…' : 'Conectando…';
+  if (info.status === 'PAUSED') return `Pausado • ${info.progress}%`;
+  const total = t.fileSize || 0;
+  const done = typeof t.transferredBytes === 'number' ? t.transferredBytes : Math.round((total * info.progress) / 100);
+  const speed = t.speedBps ? ` • ${formatSpeed(t.speedBps)}` : '';
+  return `${isOut ? 'Enviando' : 'Baixando'} ${info.progress}% • ${formatBytes(done)} de ${formatBytes(total)}${speed}`;
+}
+
+function renderChatMediaProgressHtml(transferId, info, isOut) {
+  return `
+    <div class="chat-media-progress" data-progress-tid="${escapeHtml(transferId)}" data-progress-out="${isOut ? '1' : '0'}">
+      <div class="chat-media-progress-track">
+        <div class="chat-media-progress-bar ${isOut ? 'is-out' : ''}" style="width: ${info.status === 'CONNECTING' ? 3 : info.progress}%"></div>
+      </div>
+      <div class="flex items-center justify-between gap-2 mt-0.5">
+        <span class="chat-media-progress-label text-[9px] font-mono text-slate-300 truncate">${escapeHtml(getChatMediaProgressLabel(info, isOut))}</span>
+        <button type="button" class="text-[10px] text-rose-300 hover:text-rose-400 cursor-pointer shrink-0" data-action="cancel-media" data-transfer-id="${escapeHtml(transferId)}" title="Cancelar">✕</button>
+      </div>
+    </div>
+  `;
+}
+
+// Botões/estado da mídia (arquivo genérico ou mídia grande não baixada)
+function renderChatMediaActionsHtml(media, info, isOut) {
+  const tid = escapeHtml(media.transferId || '');
+  const fname = escapeHtml(media.fileName || 'arquivo');
+  const btn = (action, label, cls, title = '') =>
+    `<button type="button" class="px-2 py-1 rounded ${cls} font-bold text-[10px] shrink-0 cursor-pointer shadow transition-colors" data-action="${action}" data-transfer-id="${tid}" data-file-name="${fname}"${info.downloadId !== null ? ` data-download-id="${info.downloadId}"` : ''}${title ? ` title="${title}"` : ''}>${label}</button>`;
+
+  if (info.isActive) return '';
+  if (info.downloadId !== null) {
+    return `<div class="flex items-center gap-1 shrink-0">
+      ${btn('show-folder', '📂', 'bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700', 'Mostrar na pasta')}
+      ${btn('open-file', 'Abrir', 'bg-emerald-500 hover:bg-emerald-500 text-slate-950', 'Abrir arquivo')}
+    </div>`;
+  }
+  if (info.isSaving) return '<span class="text-[9px] text-slate-300 italic shrink-0">Salvando…</span>';
+  if (isOut) {
+    if (info.isWaiting) return '<span class="text-[9px] text-slate-300 italic shrink-0" title="O destinatário ainda não baixou">Aguardando</span>';
+    if (info.isError) return '<span class="text-[9px] text-rose-300 shrink-0">Falhou</span>';
+    return '';
+  }
+  if (info.isError) return btn('download-file', '↻ Tentar de novo', 'bg-amber-500 hover:bg-amber-500 text-slate-950');
+  return btn('download-file', 'Baixar', 'bg-sky-500 hover:bg-sky-400 text-slate-950');
+}
+
+// Imagem/vídeo ainda não disponível neste dispositivo
+function renderChatMediaPlaceholderHtml(emoji, media, isOut) {
+  const info = getChatMediaTransferInfo(media.transferId);
+  const actions = renderChatMediaActionsHtml(media, info, isOut);
+  return `
+    <div class="chat-media-placeholder text-xs text-slate-300">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex flex-col min-w-0">
+          <span class="truncate">${emoji} ${escapeHtml(media.fileName || 'Mídia')}</span>
+          <span class="text-[9px] font-mono text-slate-400">${formatBytes(media.fileSize || 0)}</span>
+        </div>
+        ${actions}
+      </div>
+      ${info.isActive ? renderChatMediaProgressHtml(media.transferId, info, isOut) : ''}
+    </div>
+  `;
+}
+
+function buildChatRenderSignature(messages) {
+  const transfers = currentState.transfers || {};
+  const parts = [activeChatPeerTag, chatSelectionMode ? 'S' : '', Array.from(chatSelectedMsgIds).join(',')];
+  for (const m of messages) {
+    const tid = m.media?.transferId || m.transferId || '';
+    const t = tid ? transfers[tid] : null;
+    const isOutMsg = m.direction === 'outgoing' || (currentState.myTag && m.senderTag === currentState.myTag);
+    const msgKind = m.type || m.msgType || 'text';
+    parts.push([
+      m.id,
+      isOutMsg ? m.status : '', // ticks só aparecem nas mensagens enviadas
+      m.mediaStatus,
+      (m.text || '').length,
+      m.reactions ? JSON.stringify(m.reactions) : '',
+      // CONNECTING/TRANSFERRING/PAUSED só mudam a barra (atualizada no lugar)
+      t ? `${/^(CONNECTING|TRANSFERRING|PAUSED)$/.test(t.status) ? 'ACTIVE' : t.status}:${t.downloadId ?? ''}:${t.saveToDisk ? 1 : 0}` : '',
+      tid && msgKind !== 'file' && activeSessionFiles.has(tid) ? 'B' : ''
+    ].join('|'));
+  }
+  return parts.join('\n');
+}
+
+// Atualiza só as barras de progresso já renderizadas (sem refazer o DOM)
+function updateChatMediaProgressInPlace() {
+  if (!chatMessagesList) return;
+  chatMessagesList.querySelectorAll('[data-progress-tid]').forEach((el) => {
+    const info = getChatMediaTransferInfo(el.dataset.progressTid);
+    const isOut = el.dataset.progressOut === '1';
+    const bar = el.querySelector('.chat-media-progress-bar');
+    const label = el.querySelector('.chat-media-progress-label');
+    if (bar) bar.style.width = `${info.status === 'CONNECTING' ? 3 : info.progress}%`;
+    if (label) label.textContent = getChatMediaProgressLabel(info, isOut);
+  });
+}
+
 function renderActiveChatConversation() {
   if (!activeChatPeerTag) {
     if (chatEmptyPlaceholder) chatEmptyPlaceholder.classList.remove('hidden');
@@ -4854,10 +5020,22 @@ function renderActiveChatConversation() {
 
   // Lista de mensagens
   if (!chatMessagesList) return;
-  chatMessagesList.innerHTML = '';
 
   const normActiveTag = normalizeTag(activeChatPeerTag);
   const messages = (currentState.chatMessages && (currentState.chatMessages[normActiveTag] || currentState.chatMessages[activeChatPeerTag])) || [];
+
+  // Nada mudou além do progresso: atualiza as barras no lugar e evita refazer o DOM
+  const renderSignature = buildChatRenderSignature(messages);
+  if (renderSignature === lastChatRenderSignature && chatMessagesList.childElementCount > 0) {
+    updateChatMediaProgressInPlace();
+    return;
+  }
+  lastChatRenderSignature = renderSignature;
+
+  const isAtBottom = chatMessagesList.childElementCount === 0 ||
+    chatMessagesList.scrollHeight - chatMessagesList.scrollTop - chatMessagesList.clientHeight < 100;
+  const previousScrollTop = chatMessagesList.scrollTop;
+  chatMessagesList.innerHTML = '';
 
 
   if (messages.length === 0) {
@@ -4873,8 +5051,6 @@ function renderActiveChatConversation() {
     chatMessagesList.appendChild(emptyEl);
     return;
   }
-
-  const isAtBottom = chatMessagesList.scrollHeight - chatMessagesList.scrollTop - chatMessagesList.clientHeight < 100;
 
   messages.forEach((msg) => {
     const isOut = msg.direction === 'outgoing' || (currentState.myTag && (msg.senderTag === currentState.myTag || msg.from === currentState.myTag));
@@ -4919,14 +5095,13 @@ function renderActiveChatConversation() {
 
     // Mídia: Imagem
     if (msgType === 'image' && media) {
-      const blob = activeSessionFiles.get(media.transferId);
-      const blobUrl = blob ? URL.createObjectURL(blob) : '';
+      const blobUrl = getChatMediaBlobUrl(media.transferId);
       bodyHtml += `
         <div class="chat-media-frame cursor-pointer" data-action="open-lightbox" data-msg-id="${escapeHtml(msg.id)}">
           ${
             blobUrl
               ? `<img src="${blobUrl}" class="chat-media-img hover:opacity-95 transition-opacity" alt="${escapeHtml(media.fileName || 'Imagem')}" />`
-              : `<div class="p-4 text-center text-slate-400 text-xs italic bg-slate-900/60 rounded-xl">📷 ${escapeHtml(media.fileName || 'Carregando imagem...')}</div>`
+              : renderChatMediaPlaceholderHtml('📷', media, isOut)
           }
         </div>
       `;
@@ -4934,14 +5109,13 @@ function renderActiveChatConversation() {
 
     // Mídia: Vídeo
     if (msgType === 'video' && media) {
-      const blob = activeSessionFiles.get(media.transferId);
-      const blobUrl = blob ? URL.createObjectURL(blob) : '';
+      const blobUrl = getChatMediaBlobUrl(media.transferId);
       bodyHtml += `
         <div class="chat-media-frame">
           ${
             blobUrl
               ? `<video src="${blobUrl}" controls class="chat-media-video" preload="metadata"></video>`
-              : `<div class="p-4 text-center text-slate-400 text-xs italic bg-slate-900/60 rounded-xl">🎥 ${escapeHtml(media.fileName || 'Carregando vídeo...')}</div>`
+              : renderChatMediaPlaceholderHtml('🎥', media, isOut)
           }
         </div>
       `;
@@ -4949,8 +5123,7 @@ function renderActiveChatConversation() {
 
     // Mídia: Mensagem de Voz (WhatsApp style player)
     if (msgType === 'voice' && media) {
-      const blob = activeSessionFiles.get(media.transferId);
-      const blobUrl = blob ? URL.createObjectURL(blob) : '';
+      const blobUrl = getChatMediaBlobUrl(media.transferId);
       const durSec = media.duration || 0;
       const durStr = `${String(Math.floor(durSec / 60)).padStart(2, '0')}:${String(durSec % 60).padStart(2, '0')}`;
       const waveformBars = Array.isArray(media.waveform) && media.waveform.length > 0
@@ -4981,8 +5154,7 @@ function renderActiveChatConversation() {
 
     // Mídia: Arquivo de Áudio
     if (msgType === 'audio' && media) {
-      const blob = activeSessionFiles.get(media.transferId);
-      const blobUrl = blob ? URL.createObjectURL(blob) : '';
+      const blobUrl = getChatMediaBlobUrl(media.transferId);
       bodyHtml += `
         <div class="p-1 flex flex-col gap-1">
           <div class="flex items-center gap-1.5 text-xs font-medium text-slate-200">
@@ -5001,24 +5173,20 @@ function renderActiveChatConversation() {
     // Mídia: Arquivo Genérico
     if (msgType === 'file' && media) {
       const icon = getFileExtensionIcon(media.fileName || '');
+      const info = getChatMediaTransferInfo(media.transferId);
       bodyHtml += `
-        <div class="chat-file-card flex items-center justify-between p-2 rounded-lg bg-slate-900/60 border border-slate-700/50 gap-2">
-          <div class="flex items-center gap-2 min-w-0">
-            <span class="text-base shrink-0">${icon}</span>
-            <div class="flex flex-col min-w-0">
-              <span class="text-xs font-semibold text-slate-100 truncate" title="${escapeHtml(media.fileName)}">${escapeHtml(media.fileName)}</span>
-              <span class="text-[9px] font-mono text-slate-400">${formatBytes(media.fileSize || 0)}</span>
+        <div class="chat-file-card chat-file-card-stack">
+          <div class="flex items-center justify-between gap-2 w-full">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="text-base shrink-0">${icon}</span>
+              <div class="flex flex-col min-w-0">
+                <span class="text-xs font-semibold text-slate-100 truncate" title="${escapeHtml(media.fileName)}">${escapeHtml(media.fileName)}</span>
+                <span class="text-[9px] font-mono text-slate-400">${formatBytes(media.fileSize || 0)}</span>
+              </div>
             </div>
+            ${renderChatMediaActionsHtml(media, info, isOut)}
           </div>
-          <button
-            type="button"
-            class="px-2 py-1 rounded bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-[10px] shrink-0 cursor-pointer shadow transition-colors"
-            data-action="download-file"
-            data-transfer-id="${escapeHtml(media.transferId)}"
-            data-file-name="${escapeHtml(media.fileName)}"
-          >
-            Baixar
-          </button>
+          ${info.isActive ? renderChatMediaProgressHtml(media.transferId, info, isOut) : ''}
         </div>
       `;
     }
@@ -5091,6 +5259,14 @@ function renderActiveChatConversation() {
 
   if (isAtBottom) {
     chatMessagesList.scrollTop = chatMessagesList.scrollHeight;
+    // Imagens/vídeos carregam depois: mantém colado no fim
+    chatMessagesList.querySelectorAll('img, video').forEach((el) => {
+      el.addEventListener(el.tagName === 'IMG' ? 'load' : 'loadedmetadata', () => {
+        chatMessagesList.scrollTop = chatMessagesList.scrollHeight;
+      }, { once: true });
+    });
+  } else {
+    chatMessagesList.scrollTop = previousScrollTop;
   }
 }
 
@@ -5103,16 +5279,24 @@ function attachBubbleEvents(bubbleEl, msg) {
     });
   }
 
-  // Download de arquivo
-  const downloadBtn = bubbleEl.querySelector('[data-action="download-file"]');
-  if (downloadBtn) {
-    downloadBtn.addEventListener('click', (e) => {
+  // Download de arquivo / pasta / abrir / cancelar
+  bubbleEl.querySelectorAll('[data-action="download-file"], [data-action="show-folder"], [data-action="open-file"], [data-action="cancel-media"]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      const transferId = downloadBtn.dataset.transferId;
-      const fileName = downloadBtn.dataset.fileName;
-      downloadChatMedia(transferId, fileName);
+      const action = btn.dataset.action;
+      const transferId = btn.dataset.transferId;
+      const downloadId = Number(btn.dataset.downloadId);
+      if (action === 'download-file') {
+        downloadChatMedia(transferId, btn.dataset.fileName);
+      } else if (action === 'show-folder' && !Number.isNaN(downloadId)) {
+        openChatDownload(downloadId, transferId, btn.dataset.fileName, false);
+      } else if (action === 'open-file' && !Number.isNaN(downloadId)) {
+        openChatDownload(downloadId, transferId, btn.dataset.fileName, true);
+      } else if (action === 'cancel-media' && transferId) {
+        chrome.runtime.sendMessage({ action: 'CANCEL_TRANSFER', transferId });
+      }
     });
-  }
+  });
 
   // Player de Voz WhatsApp
   const voicePlayer = bubbleEl.querySelector('.chat-voice-player');
@@ -5122,8 +5306,7 @@ function attachBubbleEvents(bubbleEl, msg) {
     const timeDisplay = voicePlayer.querySelector('.voice-duration');
     const speedBtn = voicePlayer.querySelector('.chat-voice-speed-btn');
 
-    const blob = activeSessionFiles.get(msg.media.transferId);
-    const blobUrl = blob ? URL.createObjectURL(blob) : '';
+    const blobUrl = getChatMediaBlobUrl(msg.media.transferId);
 
     if (playBtn && blobUrl) {
       playBtn.addEventListener('click', (e) => {
@@ -5178,23 +5361,48 @@ function attachBubbleEvents(bubbleEl, msg) {
 
 function downloadChatMedia(transferId, fileName) {
   if (!transferId) return;
-  const blob = activeSessionFiles.get(transferId);
-  if (blob) {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName || 'arquivo-p2p';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      a.remove();
-      URL.revokeObjectURL(url);
-    }, 1000);
-    showToast(`Baixando ${fileName || 'arquivo'}...`, 'info');
-  } else {
-    showToast(`Solicitando download de ${fileName || 'arquivo'}...`, 'info');
-    chrome.runtime.sendMessage({ action: 'DOWNLOAD_CHAT_MEDIA', transferId, fileName });
+  const info = getChatMediaTransferInfo(transferId);
+  if (info.downloadId !== null) {
+    openChatDownload(info.downloadId, transferId, fileName, false);
+    return;
   }
+  if (info.isActive) {
+    showToast(`${fileName || 'Arquivo'} já está sendo baixado.`, 'info');
+    return;
+  }
+  // Sempre passa pelo background: ele mostra o progresso (chat + Transferências) e
+  // salva em Downloads/PulseShare guardando o downloadId para "Abrir pasta".
+  const t = (currentState.transfers || {})[transferId];
+  if (t) {
+    t.saveToDisk = true;
+    if (!info.isDone && t.direction !== 'outgoing') {
+      t.status = 'CONNECTING';
+      t.progress = 0;
+    }
+  }
+  renderActiveChatConversation();
+  showToast(`Baixando ${fileName || 'arquivo'}…`, 'info');
+  chrome.runtime.sendMessage({ action: 'DOWNLOAD_CHAT_MEDIA', transferId, fileName }, (res) => {
+    if (res && res.ok === false) showToast(res.error || 'Não foi possível baixar.', 'error');
+  });
+}
+
+// Abre o arquivo salvo (ou a pasta). Se foi apagado do disco, salva de novo.
+function openChatDownload(downloadId, transferId, fileName, openFile) {
+  chrome.downloads.search({ id: downloadId }, (items) => {
+    const item = items && items[0];
+    if (!item || item.exists === false || item.state === 'interrupted') {
+      showToast('Arquivo não encontrado na pasta. Salvando novamente…', 'info');
+      chrome.runtime.sendMessage({ action: 'DOWNLOAD_CHAT_MEDIA', transferId, fileName, force: true });
+      return;
+    }
+    try {
+      if (openFile) chrome.downloads.open(downloadId);
+      else chrome.downloads.show(downloadId);
+    } catch (err) {
+      chrome.downloads.show(downloadId);
+    }
+  });
 }
 
 // Player de Áudio e Voz
@@ -6253,6 +6461,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (window.location.search.includes('tab=1') || window.location.search.includes('window=1')) {
     document.body.classList.add('expanded-view');
   }
+  // O HTML abre com a view Início visível, mas o estado inicial é chat-first:
+  // sincroniza para que a aba mostrada e currentMainTab sempre coincidam.
+  switchMainTab(currentMainTab);
 
   chrome.storage.local.get(['myTag', 'lastTargetTag'], (res) => {
     if (res.myTag) {

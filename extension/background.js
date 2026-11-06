@@ -1488,19 +1488,83 @@ function safeSendMessage(message, retries = 6) {
   }
 }
 
-function broadcastState() {
+// Broadcast com throttle: progresso de várias transferências simultâneas chegava a
+// dezenas de STATE_UPDATED por segundo (cada um re-renderizando o popup inteiro e
+// gravando todo o estado no storage), o que fazia o layout tremer e travava o worker.
+const BROADCAST_MIN_INTERVAL_MS = 250;
+const PERSIST_INTERVAL_MS = 1500;
+let broadcastTimer = null;
+let lastBroadcastAt = 0;
+let persistTimer = null;
+
+function persistStateSoon() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    chrome.storage.local.set({
+      transfers: state.transfers,
+      peerRegistry: state.peerRegistry,
+      deletedTags: state.deletedTags || {},
+      meshEngineSummary: state.meshEngineSummary,
+      chatMessages: state.chatMessages || {},
+      chatUnreadCounts: state.chatUnreadCounts || {}
+    });
+  }, PERSIST_INTERVAL_MS);
+}
+
+function flushBroadcastState() {
+  if (broadcastTimer) {
+    clearTimeout(broadcastTimer);
+    broadcastTimer = null;
+  }
+  lastBroadcastAt = Date.now();
   if (meshEngine.initialized) {
     state.meshEngineSummary = meshEngine.getStatusSummary();
   }
-  chrome.storage.local.set({
-    transfers: state.transfers,
-    peerRegistry: state.peerRegistry,
-    deletedTags: state.deletedTags || {},
-    meshEngineSummary: state.meshEngineSummary,
-    chatMessages: state.chatMessages || {},
-    chatUnreadCounts: state.chatUnreadCounts || {}
-  });
+  persistStateSoon();
   chrome.runtime.sendMessage({ type: 'STATE_UPDATED', action: 'STATE_UPDATED', state }).catch(() => {});
+}
+
+function broadcastState() {
+  if (broadcastTimer) return;
+  const wait = BROADCAST_MIN_INTERVAL_MS - (Date.now() - lastBroadcastAt);
+  if (wait <= 0) {
+    flushBroadcastState();
+    return;
+  }
+  broadcastTimer = setTimeout(flushBroadcastState, wait);
+}
+
+// Mídia de chat que é baixada sozinha (precisa do conteúdo para pré-visualizar).
+// Arquivos genéricos e mídias grandes só são baixados quando o usuário clica em "Baixar".
+const CHAT_PREVIEW_AUTO_MAX_BYTES = 16 * 1024 * 1024;
+function isAutoPreviewChatMedia(fileType, fileSize, msgType) {
+  const type = String(fileType || '').toLowerCase();
+  const kind = String(msgType || '').toLowerCase();
+  const size = Number(fileSize) || 0;
+  if (size > CHAT_PREVIEW_AUTO_MAX_BYTES) return false;
+  if (kind === 'voice' || kind === 'image' || kind === 'audio' || kind === 'video') return true;
+  return type.startsWith('image/') || type.startsWith('audio/') || type.startsWith('video/');
+}
+
+// Envia FILE_ACCEPT de mídia de chat no máximo uma vez a cada 20 s por transferência.
+// Antes o receptor aceitava duas vezes (CHAT_MESSAGE + FILE_OFFER) e de novo a cada
+// reenvio do CHAT_MESSAGE, o que reiniciava o WebRTC no meio da transferência.
+function acceptChatMediaOnce(transferId, toTag, extraPayload = {}, force = false) {
+  const t = state.transfers[transferId];
+  if (!t || !toTag) return false;
+  if (!force && t.acceptSentAt && Date.now() - t.acceptSentAt < 20000) return false;
+  t.acceptSentAt = Date.now();
+  if (t.status === 'AWAITING_ACCEPT' || t.status === 'ERROR' || t.status === 'CANCELLED') {
+    t.status = 'CONNECTING';
+  }
+  sendSignal(toTag, transferId, 'FILE_ACCEPT', {
+    isChatMedia: true,
+    chatMsgId: t.chatMsgId || undefined,
+    roster: Object.values(state.peerRegistry),
+    ...extraPayload
+  });
+  return true;
 }
 
 function updateTransfer(transferId, patch) {
@@ -2259,30 +2323,36 @@ async function handleIncomingSignal(msg) {
 
     if (hasMedia) {
       const mediaTid = payload.transferId;
-      state.transfers[mediaTid] = {
-        id: mediaTid,
-        direction: 'incoming',
-        isChatMedia: true,
-        chatPeerTag: peerTag,
-        chatMsgId: msgId,
-        peerTag,
-        routeType: 'DIRECT',
-        relayTag: null,
-        fileName: payload.fileMeta.name || 'midia_chat',
-        fileSize: payload.fileMeta.size || 0,
-        fileType: payload.fileMeta.type || 'application/octet-stream',
-        progress: 0,
-        transferredBytes: 0,
-        speedBps: 0,
-        status: 'CONNECTING',
-        updatedAt: Date.now()
-      };
-      await ensureOffscreenDocument();
-      sendSignal(peerTag, mediaTid, 'FILE_ACCEPT', {
-        isChatMedia: true,
-        chatMsgId: msgId,
-        roster: Object.values(state.peerRegistry)
-      });
+      const mediaType = payload.fileMeta.type || payload.fileMeta.fileType || 'application/octet-stream';
+      const mediaSize = payload.fileMeta.size || payload.fileMeta.fileSize || 0;
+      const autoPreview = isAutoPreviewChatMedia(mediaType, mediaSize, payload?.msgType || payload?.type);
+      if (!state.transfers[mediaTid]) {
+        state.transfers[mediaTid] = {
+          id: mediaTid,
+          direction: 'incoming',
+          isChatMedia: true,
+          chatPeerTag: peerTag,
+          chatMsgId: msgId,
+          peerTag,
+          routeType: 'DIRECT',
+          relayTag: null,
+          fileName: payload.fileMeta.name || payload.fileMeta.fileName || 'midia_chat',
+          fileSize: mediaSize,
+          fileType: mediaType,
+          progress: 0,
+          transferredBytes: 0,
+          speedBps: 0,
+          saveToDisk: false,
+          status: autoPreview ? 'CONNECTING' : 'AWAITING_ACCEPT',
+          updatedAt: Date.now()
+        };
+      } else if (!state.transfers[mediaTid].chatMsgId) {
+        state.transfers[mediaTid].chatMsgId = msgId;
+      }
+      if (autoPreview) {
+        await ensureOffscreenDocument();
+        acceptChatMediaOnce(mediaTid, peerTag);
+      }
     }
 
     broadcastState();
@@ -2383,25 +2453,43 @@ async function handleIncomingSignal(msg) {
     const previousOffer = state.transfers[transferId];
     const batchMeta = payload.batchId ? pickBatchMeta(payload) : pickBatchMeta(previousOffer);
 
-    state.transfers[transferId] = {
-      id: transferId,
-      direction: 'incoming',
-      isChatMedia: isChatMediaOffer || Boolean(previousOffer?.isChatMedia),
-      chatPeerTag: isChatMediaOffer ? normalizeTag(peerDisplayTag) : (previousOffer?.chatPeerTag || null),
-      chatMsgId: payload.chatMsgId || previousOffer?.chatMsgId || null,
-      peerTag: peerDisplayTag,
-      routeType: isRelayed ? 'MESH_RELAY' : 'DIRECT',
-      relayTag: payload.routedVia || null,
-      fileName: payload.fileName,
-      fileSize: payload.fileSize,
-      fileType: payload.fileType,
-      ...batchMeta,
-      progress: 0,
-      transferredBytes: 0,
-      speedBps: 0,
-      status: (state.autoAccept || isChatMediaOffer) ? 'CONNECTING' : 'AWAITING_ACCEPT',
-      updatedAt: Date.now()
-    };
+    const chatAutoPreview = isChatMediaOffer && isAutoPreviewChatMedia(payload.fileType, payload.fileSize);
+    // Failover do remetente para relay: a nova oferta precisa de um novo aceite
+    const switchedToRelay = Boolean(isRelayed && previousOffer && previousOffer.routeType !== 'MESH_RELAY');
+
+    if (isChatMediaOffer && previousOffer) {
+      // Oferta repetida / CHAT_MESSAGE chegou antes: não zera o progresso nem o status
+      previousOffer.isChatMedia = true;
+      previousOffer.chatMsgId = previousOffer.chatMsgId || payload.chatMsgId || null;
+      previousOffer.fileName = previousOffer.fileName || payload.fileName;
+      previousOffer.fileSize = previousOffer.fileSize || payload.fileSize;
+      previousOffer.fileType = previousOffer.fileType || payload.fileType;
+      if (isRelayed) {
+        previousOffer.routeType = 'MESH_RELAY';
+        previousOffer.relayTag = payload.routedVia;
+      }
+    } else {
+      state.transfers[transferId] = {
+        id: transferId,
+        direction: 'incoming',
+        isChatMedia: isChatMediaOffer || Boolean(previousOffer?.isChatMedia),
+        chatPeerTag: isChatMediaOffer ? normalizeTag(peerDisplayTag) : (previousOffer?.chatPeerTag || null),
+        chatMsgId: payload.chatMsgId || previousOffer?.chatMsgId || null,
+        peerTag: peerDisplayTag,
+        routeType: isRelayed ? 'MESH_RELAY' : 'DIRECT',
+        relayTag: payload.routedVia || null,
+        fileName: payload.fileName,
+        fileSize: payload.fileSize,
+        fileType: payload.fileType,
+        ...batchMeta,
+        progress: 0,
+        transferredBytes: 0,
+        speedBps: 0,
+        saveToDisk: isChatMediaOffer ? false : undefined,
+        status: (isChatMediaOffer ? chatAutoPreview : state.autoAccept) ? 'CONNECTING' : 'AWAITING_ACCEPT',
+        updatedAt: Date.now()
+      };
+    }
     broadcastState();
 
     await ensureOffscreenDocument();
@@ -2410,18 +2498,33 @@ async function handleIncomingSignal(msg) {
       await ensureExtensionPopupOpen('?window=1');
     }
 
-    if (state.autoAccept || isChatMediaOffer) {
+    if (isChatMediaOffer) {
+      const t = state.transfers[transferId];
+      // Aceita se for pré-visualização automática ou se o usuário já clicou em "Baixar"
+      if (chatAutoPreview || t.saveToDisk) {
+        if (isRelayed) {
+          acceptChatMediaOnce(transferId, payload.routedVia, {
+            isRelayed: true,
+            senderTag: payload.senderTag,
+            targetTag: state.myTag
+          }, switchedToRelay);
+        } else {
+          acceptChatMediaOnce(transferId, from);
+        }
+      }
+      return;
+    }
+
+    if (state.autoAccept) {
       if (isRelayed) {
         sendSignal(payload.routedVia, transferId, 'FILE_ACCEPT', {
           isRelayed: true,
-          isChatMedia: isChatMediaOffer,
           senderTag: payload.senderTag,
           targetTag: state.myTag,
           roster: Object.values(state.peerRegistry)
         });
       } else {
         sendSignal(from, transferId, 'FILE_ACCEPT', {
-          isChatMedia: isChatMediaOffer,
           roster: Object.values(state.peerRegistry)
         });
       }
@@ -2476,7 +2579,7 @@ async function handleIncomingSignal(msg) {
       ) {
         tryFailoverToMeshRelay(transferId, from || curr.peerTag, curr);
       }
-    }, 5000);
+    }, state.transfers[transferId]?.isChatMedia ? 15000 : 8000);
     routeFallbackTimers.set(transferId, handshakeFallback);
   }
 
@@ -2629,7 +2732,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (found) {
           found.mediaProgress = 100;
           found.mediaStatus = 'READY';
-          if (found.direction === 'incoming') {
+          if (found.direction === 'incoming' && found.status !== 'READ') {
             found.status = 'DELIVERED';
           }
           matchedMsg = found;
@@ -2645,6 +2748,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           timestamp: Date.now()
         });
       }
+      if (t && t.saveToDisk && !t.downloadId) {
+        safeSendMessage({
+          target: 'offscreen',
+          action: 'OFFSCREEN_DOWNLOAD_CHAT_MEDIA',
+          transferId: msg.transferId,
+          fileName: t.fileName || msg.fileName || 'midia_pulseshare'
+        });
+      }
       broadcastState();
       chrome.runtime.sendMessage({
         type: 'CHAT_MEDIA_READY',
@@ -2655,12 +2766,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     } else if (msg.type === 'OFFSCREEN_CHAT_MEDIA_NOT_FOUND') {
       const t = state.transfers[msg.transferId];
       if (t && t.direction === 'incoming') {
-        t.status = 'CONNECTING';
+        // O arquivo não está mais neste dispositivo: pede de novo ao remetente
+        t.progress = 0;
+        t.transferredBytes = 0;
+        t.speedBps = 0;
+        acceptChatMediaOnce(msg.transferId, t.chatPeerTag || t.peerTag, {}, true);
         broadcastState();
-        sendSignal(t.peerTag, msg.transferId, 'FILE_ACCEPT', {
-          isChatMedia: true,
-          roster: Object.values(state.peerRegistry)
-        });
+      } else if (t) {
+        updateTransfer(msg.transferId, { status: 'ERROR', error: 'Arquivo original não está mais disponível.' });
       }
     } else if (msg.type === 'OFFSCREEN_DOWNLOAD_READY') {
       triggerChromeDownload(msg.transferId, msg.blobUrl, msg.fileName).then(() => {
@@ -2921,28 +3034,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     case 'DOWNLOAD_CHAT_MEDIA': {
+      // Clique em "Baixar" numa mídia do chat: baixa (se ainda não veio) mostrando o
+      // progresso no chat e em Transferências, e salva em Downloads/PulseShare.
       let t = state.transfers[msg.transferId];
       if (!t && state.chatMessages) {
         for (const [pTag, thread] of Object.entries(state.chatMessages)) {
           if (!Array.isArray(thread)) continue;
           const found = thread.find((m) => m.transferId === msg.transferId || m.media?.transferId === msg.transferId);
           if (found) {
+            const isOutgoingMsg = found.direction === 'outgoing' || found.senderTag === state.myTag;
             t = {
               id: msg.transferId,
-              direction: 'incoming',
+              direction: isOutgoingMsg ? 'outgoing' : 'incoming',
               isChatMedia: true,
               chatPeerTag: pTag,
               chatMsgId: found.id,
               peerTag: pTag,
               routeType: 'DIRECT',
               relayTag: null,
-              fileName: msg.fileName || found.fileMeta?.name || found.media?.fileName || 'midia_chat',
-              fileSize: found.fileMeta?.size || found.media?.fileSize || 0,
-              fileType: found.fileMeta?.type || found.media?.fileType || 'application/octet-stream',
+              fileName: msg.fileName || found.fileMeta?.name || found.fileMeta?.fileName || found.media?.fileName || 'midia_chat',
+              fileSize: found.fileMeta?.size || found.fileMeta?.fileSize || found.media?.fileSize || 0,
+              fileType: found.fileMeta?.type || found.fileMeta?.fileType || found.media?.fileType || 'application/octet-stream',
               progress: 0,
               transferredBytes: 0,
               speedBps: 0,
-              status: 'CONNECTING',
+              status: isOutgoingMsg || found.mediaStatus === 'READY' ? 'COMPLETED' : 'AWAITING_ACCEPT',
               updatedAt: Date.now()
             };
             state.transfers[msg.transferId] = t;
@@ -2950,21 +3066,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
         }
       }
-      if (t && t.direction === 'incoming') {
-        t.status = 'CONNECTING';
-        broadcastState();
-        sendSignal(t.peerTag, msg.transferId, 'FILE_ACCEPT', {
-          isChatMedia: true,
-          roster: Object.values(state.peerRegistry)
-        });
+      if (!t) {
+        sendResponse({ ok: false, error: 'Mídia não encontrada.' });
+        return true;
       }
+
+      t.saveToDisk = true;
+      if (msg.fileName) t.fileName = msg.fileName;
+      if (t.downloadId && !msg.force) {
+        sendResponse({ ok: true, alreadySaved: true, downloadId: t.downloadId });
+        return true;
+      }
+      if (msg.force) delete t.downloadId;
+
+      const peer = t.chatPeerTag || t.peerTag;
+      const isLocal = t.direction === 'outgoing' || t.status === 'COMPLETED';
+      const isActive = t.status === 'CONNECTING' || t.status === 'TRANSFERRING' || t.status === 'PAUSED';
+
       ensureOffscreenDocument().then(() => {
-        safeSendMessage({
-          target: 'offscreen',
-          action: 'OFFSCREEN_DOWNLOAD_CHAT_MEDIA',
-          transferId: msg.transferId,
-          fileName: msg.fileName || t?.fileName || 'midia_pulseshare'
-        });
+        if (isLocal) {
+          safeSendMessage({
+            target: 'offscreen',
+            action: 'OFFSCREEN_DOWNLOAD_CHAT_MEDIA',
+            transferId: msg.transferId,
+            fileName: t.fileName || 'midia_pulseshare'
+          });
+        } else if (isActive) {
+          // Já está baixando: só reenvia o aceite se a conexão parece travada
+          const stalled = (t.transferredBytes || 0) === 0 && Date.now() - (t.acceptSentAt || 0) > 20000;
+          if (stalled) acceptChatMediaOnce(t.id, peer, {}, true);
+        } else {
+          t.progress = 0;
+          t.transferredBytes = 0;
+          t.speedBps = 0;
+          t.error = null;
+          acceptChatMediaOnce(t.id, peer, {}, true);
+        }
+        t.updatedAt = Date.now();
+        broadcastState();
       });
       sendResponse({ ok: true });
       return true;
