@@ -417,9 +417,38 @@
       text-align: center;
       line-height: 1.4;
     }
+
+    /* Abas Download / Chat temporário */
+    .portal-tabs { display: flex; gap: 6px; background: #0b1220; border: 1px solid #1e293b; border-radius: 12px; padding: 4px; }
+    .portal-tab { flex: 1; padding: 8px 10px; border-radius: 9px; background: transparent; color: #94a3b8; font-weight: 700; font-size: 13px; cursor: pointer; position: relative; }
+    .portal-tab.active { background: #f97316; color: #fff; }
+    .tab-badge { position: absolute; top: 2px; right: 8px; background: #f43f5e; color: #fff; font-size: 10px; border-radius: 999px; padding: 0 6px; line-height: 16px; }
+    .chat-panel { display: flex; flex-direction: column; gap: 8px; }
+    .chat-owner-status { font-size: 11px; font-weight: 600; }
+    .chat-list { height: 52vh; min-height: 260px; overflow-y: auto; background: #0b1220; border: 1px solid #1e293b; border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .chat-empty { margin: auto; text-align: center; color: #94a3b8; font-size: 12px; line-height: 1.6; }
+    .chat-row { display: flex; }
+    .chat-row.mine { justify-content: flex-end; }
+    .chat-bubble { max-width: 82%; background: #1e293b; border-radius: 12px; padding: 6px 10px; color: #f1f5f9; font-size: 13px; }
+    .chat-row.mine .chat-bubble { background: #4f46e5; }
+    .chat-text { white-space: pre-wrap; word-break: break-word; user-select: text; }
+    .chat-meta { font-size: 10px; opacity: .7; text-align: right; margin-top: 2px; }
+    .chat-media { margin-top: 4px; background: rgba(2,6,23,.5); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+    .chat-media-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+    .chat-media-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .chat-media-action { font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .chat-media-btn { background: #f97316; color: #fff; border-radius: 8px; padding: 4px 10px; font-weight: 700; font-size: 11px; cursor: pointer; text-decoration: none; display: inline-block; }
+    .chat-img { max-width: 100%; max-height: 220px; border-radius: 8px; }
+    .chat-composer { display: flex; gap: 6px; }
+    .chat-composer input[type=text] { flex: 1; min-width: 0; background: #020617; border: 1px solid #334155; border-radius: 10px; padding: 9px 12px; color: #fff; font-size: 14px; outline: none; }
+    .chat-composer input[type=text]:focus { border-color: #f97316; }
+    .chat-icon-btn { background: #1e293b; color: #fff; border-radius: 10px; padding: 0 12px; font-size: 16px; cursor: pointer; }
+    .chat-send-btn { background: #f97316; color: #fff; border-radius: 10px; padding: 0 14px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    .chat-typing { font-size: 11px; color: #34d399; }
     .hidden { display: none !important; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
+  <link rel="icon" href="data:," />
   <script src="fflate.min.js"></script>
   <script src="pulseshare-mesh-engine.js"></script>
 </head>
@@ -434,6 +463,25 @@
       <span id="share-badge" class="share-badge">#---</span>
     </div>
 
+    <!-- Abas: Download do link / Chat temporário com o remetente -->
+    <div id="portal-tabs" class="portal-tabs hidden">
+      <button id="tab-btn-download" type="button" class="portal-tab active">📥 Download</button>
+      <button id="tab-btn-chat" type="button" class="portal-tab">💬 Chat <span id="chat-unread-badge" class="tab-badge hidden">0</span></button>
+    </div>
+
+    <div id="panel-chat" class="chat-panel hidden">
+      <span id="chat-owner-status" class="chat-owner-status">⚪ Remetente</span>
+      <div id="chat-list" class="chat-list"></div>
+      <span id="chat-typing" class="chat-typing hidden">digitando...</span>
+      <div class="chat-composer">
+        <button id="chat-attach" type="button" class="chat-icon-btn" title="Enviar arquivo">📎</button>
+        <input id="chat-input" type="text" placeholder="Digite uma mensagem..." autocomplete="off" maxlength="4000" />
+        <button id="chat-send" type="button" class="chat-send-btn">Enviar</button>
+      </div>
+      <input id="chat-file-input" type="file" multiple class="hidden" />
+    </div>
+
+    <div id="panel-download" style="display: flex; flex-direction: column; gap: 16px;">
     <!-- Alertas (Erros, Expiração, Cancelamento) -->
     <div id="alert-card" class="alert-card hidden">
       <span>⚠️</span>
@@ -530,6 +578,8 @@
         <!-- Renderizado dinamicamente -->
       </div>
     </div>
+
+    </div><!-- /panel-download -->
 
     <!-- Rodapé Explicativo -->
     <p class="footer">
@@ -1052,6 +1102,7 @@
         if (seenPacketIds.has(pktId)) return;
         seenPacketIds.add(pktId);
       }
+      if (handleChatPacket(pkt)) return;
       if (pkt.meshType !== 'DIRECT_SIGNAL') return;
       if (pkt.to && pkt.to !== visitorTag && pkt.transferId !== shareId) return;
 
@@ -1631,7 +1682,7 @@
             triggerMeshRelayFallback(downloadRecord);
           }
         }
-      }, 3500);
+      }, 9000);
     }
 
     function waitForIceGathering(pc, timeoutMs = 800) {
@@ -1963,6 +2014,433 @@
     document.addEventListener('DOMContentLoaded', () => {
       connectBrokers();
     });
+
+    // ============================================================================
+    // Chat temporário com o remetente (visitante sem extensão/app instalado)
+    // Existe só enquanto esta página estiver aberta. Texto e arquivos nos dois
+    // sentidos, pelo mesmo protocolo do chat da extensão/app (CHAT_MESSAGE etc.).
+    // ============================================================================
+    const tabBar = document.getElementById('portal-tabs');
+    const tabBtnDownload = document.getElementById('tab-btn-download');
+    const tabBtnChat = document.getElementById('tab-btn-chat');
+    const chatUnreadBadge = document.getElementById('chat-unread-badge');
+    const panelDownload = document.getElementById('panel-download');
+    const panelChat = document.getElementById('panel-chat');
+    const chatList = document.getElementById('chat-list');
+    const chatInput = document.getElementById('chat-input');
+    const chatSendBtn = document.getElementById('chat-send');
+    const chatAttachBtn = document.getElementById('chat-attach');
+    const chatFileInput = document.getElementById('chat-file-input');
+    const chatOwnerStatus = document.getElementById('chat-owner-status');
+    const chatTyping = document.getElementById('chat-typing');
+
+    const chat = {
+      open: false,
+      unread: 0,
+      messages: [], // { id, mine, text, ts, status, media }
+      transfers: new Map(), // transferId -> { dir, file, name, size, type, pc, channel, status, pct, url, msgId }
+      ownerLastSeen: 0
+    };
+
+    function switchPortalTab(tab) {
+      chat.open = tab === 'chat';
+      panelDownload.classList.toggle('hidden', chat.open);
+      panelChat.classList.toggle('hidden', !chat.open);
+      tabBtnDownload.classList.toggle('active', !chat.open);
+      tabBtnChat.classList.toggle('active', chat.open);
+      if (chat.open) {
+        chat.unread = 0;
+        renderChatBadge();
+        renderChat();
+        setTimeout(() => chatInput.focus(), 50);
+        if (chat.messages.some((m) => !m.mine)) {
+          broadcastSignal('CHAT_READ', { readerTag: visitorTag }, ownerTag, `read-${Date.now()}`);
+        }
+      }
+    }
+    tabBtnDownload.addEventListener('click', () => switchPortalTab('download'));
+    tabBtnChat.addEventListener('click', () => switchPortalTab('chat'));
+
+    function renderChatBadge() {
+      chatUnreadBadge.textContent = String(chat.unread);
+      chatUnreadBadge.classList.toggle('hidden', chat.unread === 0);
+    }
+
+    function renderOwnerStatus() {
+      const online = Date.now() - chat.ownerLastSeen < 45000;
+      chatOwnerStatus.textContent = online ? `🟢 ${ownerTag} online` : `⚪ ${ownerTag} — aguardando ficar online`;
+      chatOwnerStatus.style.color = online ? '#34d399' : '#94a3b8';
+    }
+    setInterval(renderOwnerStatus, 5000);
+
+    function escapeHtmlPortal(str) {
+      const d = document.createElement('div');
+      d.textContent = str == null ? '' : String(str);
+      return d.innerHTML;
+    }
+
+    function chatTime(ts) {
+      const d = new Date(ts);
+      return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    }
+
+    function renderChat() {
+      if (!chat.messages.length) {
+        chatList.innerHTML = `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal(ownerTag)}</b> enquanto esta página estiver aberta.<br>Você também pode enviar arquivos pelo 📎.<br><span style="opacity:.7">O histórico é apagado ao fechar a página.</span></div>`;
+        return;
+      }
+      chatList.innerHTML = chat.messages.map((m) => {
+        let mediaHtml = '';
+        if (m.media) {
+          const tr = chat.transfers.get(m.media.transferId) || {};
+          const isImg = /^image\//.test(m.media.type || '') && tr.url;
+          let action = '';
+          if (m.mine) {
+            action = tr.status === 'done' ? '✔ Enviado' : tr.status === 'sending' ? `${tr.pct || 0}%` : tr.status === 'error' ? 'Falhou' : 'Aguardando o remetente aceitar...';
+          } else if (tr.url) {
+            action = `<a class="chat-media-btn" href="${tr.url}" download="${escapeHtmlPortal(m.media.name)}">💾 Salvar</a>`;
+          } else if (tr.status === 'receiving' || tr.status === 'connecting') {
+            action = tr.status === 'connecting' ? 'Conectando...' : `${tr.pct || 0}%`;
+          } else {
+            action = `<button type="button" class="chat-media-btn" data-dl-chat="${escapeHtmlPortal(m.media.transferId)}">⬇ Baixar</button>`;
+          }
+          mediaHtml = `
+            <div class="chat-media">
+              ${isImg ? `<img src="${tr.url}" alt="" class="chat-img">` : ''}
+              <div class="chat-media-row">
+                <span class="chat-media-name">📁 ${escapeHtmlPortal(m.media.name)}<br><small>${formatBytes(m.media.size || 0)}</small></span>
+                <span class="chat-media-action">${action}</span>
+              </div>
+              ${(tr.status === 'sending' || tr.status === 'receiving') ? `<div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${tr.pct || 0}%"></div></div>` : ''}
+            </div>`;
+        }
+        const tick = !m.mine ? '' : m.status === 'READ' ? '<span style="color:#38bdf8">✓✓</span>' : m.status === 'DELIVERED' ? '✓✓' : '✓';
+        return `
+          <div class="chat-row ${m.mine ? 'mine' : ''}">
+            <div class="chat-bubble">
+              ${m.text ? `<div class="chat-text">${escapeHtmlPortal(m.text)}</div>` : ''}
+              ${mediaHtml}
+              <div class="chat-meta">${chatTime(m.ts)} ${tick}</div>
+            </div>
+          </div>`;
+      }).join('');
+      chatList.scrollTop = chatList.scrollHeight;
+    }
+
+    chatList.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-dl-chat]');
+      if (btn) acceptChatMedia(btn.getAttribute('data-dl-chat'));
+    });
+
+    function newChatId(prefix) {
+      return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    }
+
+    function sendChatPayload(payload, attempt = 1) {
+      broadcastSignal('CHAT_MESSAGE', payload, ownerTag, payload.transferId || payload.id);
+      // Reenvia se não houver confirmação (perda em broker público); o destino deduplica pelo id
+      if (attempt < 4) {
+        setTimeout(() => {
+          const m = chat.messages.find((x) => x.id === payload.id);
+          if (m && m.status === 'SENT') sendChatPayload(payload, attempt + 1);
+        }, 4000 * attempt);
+      }
+    }
+
+    function sendChatText() {
+      const text = chatInput.value.trim();
+      if (!text) return;
+      chatInput.value = '';
+      const id = newChatId('cmsg');
+      const ts = Date.now();
+      chat.messages.push({ id, mine: true, text, ts, status: 'SENT' });
+      renderChat();
+      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text, msgType: 'text', type: 'text', timestamp: ts });
+    }
+    chatSendBtn.addEventListener('click', sendChatText);
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendChatText();
+      }
+    });
+    let typingSentAt = 0;
+    chatInput.addEventListener('input', () => {
+      if (Date.now() - typingSentAt < 2500) return;
+      typingSentAt = Date.now();
+      broadcastSignal('CHAT_TYPING', { status: 'typing' }, ownerTag, `typing-${typingSentAt}`);
+    });
+
+    chatAttachBtn.addEventListener('click', () => chatFileInput.click());
+    chatFileInput.addEventListener('change', () => {
+      Array.from(chatFileInput.files || []).forEach(sendChatFile);
+      chatFileInput.value = '';
+    });
+
+    // Upload: visitante -> remetente
+    function sendChatFile(file) {
+      const transferId = newChatId('chatmedia');
+      const id = newChatId('cmsg');
+      const ts = Date.now();
+      const type = file.type || 'application/octet-stream';
+      const kind = type.startsWith('image/') ? 'image' : type.startsWith('video/') ? 'video' : type.startsWith('audio/') ? 'audio' : 'file';
+      const media = { transferId, name: file.name, fileName: file.name, size: file.size, fileSize: file.size, type, fileType: type };
+      chat.transfers.set(transferId, { dir: 'up', file, name: file.name, size: file.size, type, status: 'waiting', pct: 0, msgId: id });
+      chat.messages.push({ id, mine: true, text: '', ts, status: 'SENT', media });
+      renderChat();
+      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: '', msgType: kind, type: kind, timestamp: ts, transferId, fileMeta: { name: file.name, size: file.size, type }, media });
+      broadcastSignal('FILE_OFFER', { isChatMedia: true, chatMsgId: id, fileName: file.name, fileSize: file.size, fileType: type }, ownerTag, transferId);
+    }
+
+    async function startChatUpload(transferId) {
+      const tr = chat.transfers.get(transferId);
+      if (!tr || tr.dir !== 'up' || tr.pc) return; // aceite duplicado
+      tr.status = 'sending';
+      const iceServers = getActiveIceServers();
+      const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
+      tr.pc = pc;
+      tr.pendingIce = [];
+      const channel = pc.createDataChannel('pulseshare-file-channel', { ordered: true });
+      channel.binaryType = 'arraybuffer';
+      let offerSent = false;
+      const queued = [];
+      pc.onicecandidate = (e) => {
+        if (!e.candidate) return;
+        const c = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
+        if (offerSent) broadcastSignal('ICE_CANDIDATE', { candidate: c }, ownerTag, transferId);
+        else queued.push(c);
+      };
+      channel.onmessage = (e) => {
+        if (typeof e.data !== 'string') return;
+        try {
+          const ctrl = JSON.parse(e.data);
+          if (ctrl.type === 'RECEIVER_ACK_DONE') {
+            tr.status = 'done';
+            tr.pct = 100;
+            renderChat();
+            setTimeout(() => { try { pc.close(); } catch {} }, 800);
+          }
+        } catch {}
+      };
+      channel.onopen = async () => {
+        try {
+          channel.send(JSON.stringify({ type: 'FILE_START', fileId: 'f-0', fileName: tr.name, fileSize: tr.size, fileType: tr.type }));
+          const CHUNK = 16384;
+          let offset = 0;
+          let last = 0;
+          while (offset < tr.size) {
+            const block = new Uint8Array(await tr.file.slice(offset, Math.min(offset + 262144, tr.size)).arrayBuffer());
+            let sub = 0;
+            while (sub < block.length) {
+              while (channel.bufferedAmount > 512 * 1024) await new Promise((r) => setTimeout(r, 15));
+              if (channel.readyState !== 'open') throw new Error('Canal fechado');
+              const end = Math.min(sub + CHUNK, block.length);
+              channel.send(block.slice(sub, end).buffer);
+              offset += end - sub;
+              sub = end;
+              if (Date.now() - last > 200) {
+                last = Date.now();
+                tr.pct = Math.min(99, Math.round((offset / tr.size) * 100));
+                renderChat();
+              }
+            }
+          }
+          while (channel.bufferedAmount > 0 && channel.readyState === 'open') await new Promise((r) => setTimeout(r, 20));
+          channel.send(JSON.stringify({ type: 'EOF', fileId: 'f-0', totalBytes: tr.size }));
+          setTimeout(() => { if (tr.status === 'sending') { tr.status = 'done'; tr.pct = 100; renderChat(); } }, 8000);
+        } catch (err) {
+          tr.status = 'error';
+          renderChat();
+        }
+      };
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGathering(pc, 700);
+      offerSent = true;
+      broadcastSignal('WEBRTC_OFFER', { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }, iceServers }, ownerTag, transferId);
+      queued.splice(0).forEach((c) => broadcastSignal('ICE_CANDIDATE', { candidate: c }, ownerTag, transferId));
+    }
+
+    // Download de mídia enviada pelo remetente no chat
+    function acceptChatMedia(transferId) {
+      const tr = chat.transfers.get(transferId);
+      if (!tr || tr.dir !== 'down' || tr.status === 'connecting' || tr.status === 'receiving') return;
+      tr.status = 'connecting';
+      tr.userRequested = true;
+      renderChat();
+      broadcastSignal('FILE_ACCEPT', { isChatMedia: true, chatMsgId: tr.msgId }, ownerTag, transferId);
+      setTimeout(() => {
+        if (tr.status === 'connecting') { tr.status = 'idle'; renderChat(); }
+      }, 25000);
+    }
+
+    async function startChatDownload(transferId, sdp, remoteIce) {
+      const tr = chat.transfers.get(transferId);
+      if (!tr || tr.dir !== 'down' || tr.status !== 'connecting') return; // só o que foi aceito
+      if (tr.pc) { try { tr.pc.close(); } catch {} }
+      const pc = new RTCPeerConnection({ iceServers: (remoteIce && remoteIce.length) ? remoteIce : getActiveIceServers(), iceCandidatePoolSize: 4 });
+      tr.pc = pc;
+      const chunks = [];
+      let received = 0;
+      let answerSent = false;
+      const queued = [];
+      pc.onicecandidate = (e) => {
+        if (!e.candidate) return;
+        const c = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
+        if (answerSent) broadcastSignal('ICE_CANDIDATE', { candidate: c }, ownerTag, transferId);
+        else queued.push(c);
+      };
+      pc.ondatachannel = (ev) => {
+        const ch = ev.channel;
+        ch.binaryType = 'arraybuffer';
+        ch.onmessage = (e) => {
+          if (typeof e.data === 'string') {
+            let ctrl;
+            try { ctrl = JSON.parse(e.data); } catch { return; }
+            if (ctrl.type === 'FILE_START') {
+              if (ctrl.fileSize) tr.size = ctrl.fileSize;
+              tr.status = 'receiving';
+              renderChat();
+            } else if (ctrl.type === 'EOF') {
+              try { ch.send(JSON.stringify({ type: 'RECEIVER_ACK_DONE' })); } catch {}
+              const blob = new Blob(chunks, { type: tr.type || 'application/octet-stream' });
+              chunks.length = 0;
+              tr.url = URL.createObjectURL(blob);
+              tr.status = 'done';
+              tr.pct = 100;
+              if (!/^image\//.test(tr.type || '')) {
+                const a = document.createElement('a');
+                a.href = tr.url;
+                a.download = tr.name || 'arquivo';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+              }
+              renderChat();
+              broadcastSignal('CHAT_ACK', { msgId: tr.msgId, senderTag: visitorTag, status: 'READ', mediaReady: true }, ownerTag, tr.msgId);
+              setTimeout(() => { try { pc.close(); } catch {} }, 1000);
+            } else if (ctrl.type === 'TRANSFER_ERROR' || ctrl.type === 'TRANSFER_CANCELLED') {
+              tr.status = 'idle';
+              renderChat();
+            }
+            return;
+          }
+          chunks.push(new Uint8Array(e.data));
+          received += e.data.byteLength;
+          const pct = tr.size ? Math.min(99, Math.round((received / tr.size) * 100)) : 50;
+          if (pct !== tr.pct) {
+            tr.pct = pct;
+            renderChat();
+          }
+        };
+      };
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        for (const c of (tr.pendingIce || []).splice(0)) { try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {} }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await waitForIceGathering(pc, 600);
+        broadcastSignal('WEBRTC_ANSWER', { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } }, ownerTag, transferId);
+        answerSent = true;
+        queued.splice(0).forEach((c) => broadcastSignal('ICE_CANDIDATE', { candidate: c }, ownerTag, transferId));
+      } catch (err) {
+        tr.status = 'idle';
+        renderChat();
+      }
+    }
+
+    // Retorna true quando o pacote pertence ao chat (e já foi tratado)
+    function handleChatPacket(pkt) {
+      if (!pkt) return false;
+      if (pkt.senderTag === ownerTag) {
+        chat.ownerLastSeen = Date.now();
+        renderOwnerStatus();
+      }
+      if (pkt.meshType !== 'DIRECT_SIGNAL' || pkt.to !== visitorTag) return false;
+      if (pkt.senderTag !== ownerTag) return false; // só conversa com o dono do link
+      const { signalType, transferId } = pkt;
+      const payload = pkt.payload || {};
+
+      if (signalType === 'CHAT_MESSAGE') {
+        const id = payload.id || transferId;
+        broadcastSignal('CHAT_ACK', { msgId: id, senderTag: visitorTag, status: chat.open ? 'READ' : 'DELIVERED' }, ownerTag, id);
+        if (chat.messages.some((m) => m.id === id)) return true;
+        const meta = payload.media || payload.fileMeta || null;
+        const tid = meta ? (payload.transferId || meta.transferId) : null;
+        const media = tid ? { transferId: tid, name: meta.name || meta.fileName || 'arquivo', size: meta.size || meta.fileSize || 0, type: meta.type || meta.fileType || '' } : null;
+        if (media && !chat.transfers.has(tid)) {
+          chat.transfers.set(tid, { dir: 'down', name: media.name, size: media.size, type: media.type, status: 'idle', pct: 0, msgId: id });
+        }
+        chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media });
+        chat.messages.sort((a, b) => a.ts - b.ts);
+        chatTyping.classList.add('hidden');
+        if (!chat.open) {
+          chat.unread++;
+          renderChatBadge();
+        }
+        renderChat();
+        return true;
+      }
+      if (signalType === 'CHAT_ACK') {
+        const m = chat.messages.find((x) => x.id === (payload.msgId || transferId));
+        if (m && m.mine && m.status !== 'READ') {
+          m.status = payload.status === 'READ' ? 'READ' : 'DELIVERED';
+          renderChat();
+        }
+        return true;
+      }
+      if (signalType === 'CHAT_READ') {
+        chat.messages.forEach((m) => { if (m.mine) m.status = 'READ'; });
+        renderChat();
+        return true;
+      }
+      if (signalType === 'CHAT_TYPING') {
+        const typing = payload.status && payload.status !== 'idle' && payload.status !== false;
+        chatTyping.classList.toggle('hidden', !typing);
+        if (typing) setTimeout(() => chatTyping.classList.add('hidden'), 5000);
+        return true;
+      }
+      if (signalType === 'CHAT_REACTION') return true;
+
+      const tr = chat.transfers.get(transferId);
+      if (signalType === 'FILE_OFFER' && payload.isChatMedia) {
+        if (!tr) {
+          chat.transfers.set(transferId, { dir: 'down', name: payload.fileName || 'arquivo', size: payload.fileSize || 0, type: payload.fileType || '', status: 'idle', pct: 0, msgId: payload.chatMsgId });
+        }
+        return true;
+      }
+      if (!tr) return false; // não é do chat: segue para a área de download
+      if (signalType === 'FILE_ACCEPT') { startChatUpload(transferId); return true; }
+      if (signalType === 'FILE_REJECT' || signalType === 'TRANSFER_REJECT') { tr.status = 'error'; renderChat(); return true; }
+      if (signalType === 'WEBRTC_OFFER') { startChatDownload(transferId, payload.sdp, payload.iceServers); return true; }
+      if (signalType === 'WEBRTC_ANSWER') {
+        if (tr.pc && tr.pc.signalingState === 'have-local-offer') {
+          tr.pc.setRemoteDescription(new RTCSessionDescription(payload.sdp)).then(async () => {
+            for (const c of (tr.pendingIce || []).splice(0)) { try { await tr.pc.addIceCandidate(new RTCIceCandidate(c)); } catch {} }
+          }).catch(() => {});
+        }
+        return true;
+      }
+      if (signalType === 'ICE_CANDIDATE' && payload.candidate) {
+        if (tr.pc && tr.pc.remoteDescription) tr.pc.addIceCandidate(new RTCIceCandidate(payload.candidate)).catch(() => {});
+        else (tr.pendingIce = tr.pendingIce || []).push(payload.candidate);
+        return true;
+      }
+      return true;
+    }
+
+    window.addEventListener('beforeunload', (e) => {
+      if (chat.messages.length || activeDownloads.size) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    });
+
+    if (shareId && ownerTag) {
+      tabBar.classList.remove('hidden');
+      renderOwnerStatus();
+      renderChat();
+    }
   </script>
 </body>
 </html>

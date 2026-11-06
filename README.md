@@ -17,6 +17,8 @@ Extensão Chrome para compartilhamento de arquivos **100% serverless, multiplata
    - O destinatário abre o link no navegador (computador, celular ou tablet, qualquer sistema operacional), **sem precisar instalar a extensão**.
    - A página web (`index.html`) se conecta diretamente à extensão do remetente via WebRTC DataChannel utilizando a malha de brokers MQTT públicos do projeto.
    - Todo o tráfego de dados viaja diretamente ponto a ponto, criptografado de ponta a ponta.
+   - A página do link tem duas abas: **📥 Download** e **💬 Chat temporário** — o visitante conversa (e troca arquivos) com quem compartilhou enquanto a página estiver aberta.
+   - Links também podem ser gerados pelo **app Android** (a versão web do app fica em `app.html`).
 
 ---
 

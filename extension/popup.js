@@ -4686,13 +4686,15 @@ function renderChatConversationsList() {
   const now = Date.now();
 
   const contacts = (typeof PulseShareCrypto !== 'undefined' && PulseShareCrypto.ProfilesManager) ? PulseShareCrypto.ProfilesManager.getContacts() : {};
-  const transfers = currentState.transfers || [];
+  // state.transfers é um objeto (id -> transferência); apenas mídias de chat geram conversa
+  const transfers = Object.values(currentState.transfers || {});
   const conversationPeers = new Set();
   Object.keys(allMessages).forEach((tag) => {
     if (tag && tag !== currentState.myTag) conversationPeers.add(normalizeTag(tag));
   });
   transfers.forEach((t) => {
-    const peerTag = t.senderTag || t.targetTag || t.sender || t.target;
+    if (!t || !t.isChatMedia) return;
+    const peerTag = t.chatPeerTag || t.peerTag;
     if (peerTag && peerTag !== currentState.myTag) conversationPeers.add(normalizeTag(peerTag));
   });
   Object.keys(contacts).forEach((tag) => {
@@ -4771,7 +4773,7 @@ function renderChatConversationsList() {
       </div>
       <div class="flex-1 min-w-0">
         <div class="flex items-center justify-between gap-1">
-          <span class="text-xs font-bold font-mono text-slate-100 truncate">${escapeHtml(conv.tag)}</span>
+          <span class="text-xs font-bold font-mono text-slate-100 truncate">${conv.tag.startsWith('@link_') ? '🔗 Visitante do link ' : ''}${escapeHtml(conv.tag)}</span>
           <span class="text-[9px] font-mono text-slate-500 shrink-0">${timeStr}</span>
         </div>
         <div class="flex items-center justify-between gap-1 mt-0.5">
@@ -4804,7 +4806,11 @@ function renderActiveChatConversation() {
   if (chatActiveContainer) chatActiveContainer.classList.remove('hidden');
 
   // Cabeçalho da conversa
-  if (chatHeaderTag) chatHeaderTag.textContent = activeChatPeerTag;
+  if (chatHeaderTag) {
+    chatHeaderTag.textContent = activeChatPeerTag.startsWith('@link_')
+      ? `🔗 Visitante do link ${activeChatPeerTag} (chat temporário)`
+      : activeChatPeerTag;
+  }
   if (chatHeaderAvatar) {
     chatHeaderAvatar.textContent = activeChatPeerTag.charAt(1).toUpperCase() || '@';
   }

@@ -22,7 +22,7 @@ class PulseShareBridge(
     private val bleHelper = BluetoothMeshHelper(activity).apply {
         onMessageReceived = { fromTag, messageJson ->
             val safeJson = JSONObject.quote(messageJson)
-            val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onBleMessageReceived) { window.PulseShareNativeCallback.onBleMessageReceived('$fromTag', $safeJson); }"
+            val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onBleMessageReceived) { window.PulseShareNativeCallback.onBleMessageReceived(${JSONObject.quote(fromTag)}, $safeJson); }"
             activity.evaluateJs(js)
         }
         onPeersUpdated = { peersJson ->
@@ -184,6 +184,20 @@ class PulseShareBridge(
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 activity.startActivity(chooser)
+            } catch (ignored: Exception) {}
+        }
+    }
+
+    /** Abre um link (ex.: portal de download de um link PulseShare) no navegador do sistema. */
+    @JavascriptInterface
+    fun openUrl(url: String) {
+        if (!url.startsWith("https://") && !url.startsWith("http://")) return
+        mainHandler.post {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                activity.startActivity(intent)
             } catch (ignored: Exception) {}
         }
     }

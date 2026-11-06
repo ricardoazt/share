@@ -1065,8 +1065,22 @@ function setupDirectRouteFallback(transferId, targetTag, fileMeta) {
   const timer = setTimeout(() => {
     routeFallbackTimers.delete(transferId);
     const t = state.transfers[transferId];
-    if (t && (t.status === 'CONNECTING' || t.status === 'AWAITING_ACCEPT') && t.routeType === 'DIRECT') {
+    if (!t || t.routeType !== 'DIRECT') return;
+    // Só cai para relay quando o destinatário JÁ aceitou e a conexão direta não abriu.
+    // Antes, uma mídia de chat ainda não aceita (download manual) era empurrada via
+    // relay para o destinatário sem consentimento.
+    if (t.status === 'CONNECTING' && (t.transferredBytes || 0) === 0) {
       tryFailoverToMeshRelay(transferId, targetTag, fileMeta);
+    } else if (t.status === 'AWAITING_ACCEPT' && !t.isChatMedia && !t.reofferSent) {
+      // Oferta pode ter se perdido no broker público: reenvia uma vez
+      t.reofferSent = true;
+      sendSignal(targetTag, transferId, 'FILE_OFFER', {
+        fileName: t.fileName,
+        fileSize: t.fileSize,
+        fileType: t.fileType,
+        ...pickBatchMeta(t),
+        roster: Object.values(state.peerRegistry)
+      });
     }
   }, 7000);
   routeFallbackTimers.set(transferId, timer);
@@ -1247,6 +1261,28 @@ async function handleMeshPacket(packet, isLocalBroadcast = false) {
 
     case 'ROSTER_GOSSIP_SYNC': {
       mergeRemoteRoster(packet.roster);
+      break;
+    }
+
+    // Anúncio de presença do App Android / Web (app.js) — interoperabilidade de presença
+    case 'PRESENCE_ANNOUNCE': {
+      const annTag = normalizeTag(packet.tag || packet.senderTag);
+      if (annTag && annTag !== normalizeTag(state.myTag)) {
+        if (mergeRemoteRoster([
+          {
+            tag: annTag,
+            nodeId: packet.nodeId || packet.senderNodeId,
+            lastSeen: Date.now(),
+            status: 'online',
+            regHash: packet.reghash || '',
+            clientType: packet.clientType || 'android',
+            relayEnabled: packet.relayMode !== false
+          }
+        ])) {
+          chrome.storage.local.set({ peerRegistry: state.peerRegistry });
+        }
+        broadcastState();
+      }
       break;
     }
 

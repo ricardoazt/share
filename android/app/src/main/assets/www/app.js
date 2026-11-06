@@ -189,6 +189,10 @@
       else if (navigator.share) navigator.share({ title, text }).catch(() => {});
       else prompt('Copie o link:', text);
     },
+    openUrl: (url) => {
+      if (Native.isAvailable() && window.PulseShareNative.openUrl) window.PulseShareNative.openUrl(url);
+      else window.open(url, '_blank', 'noopener');
+    },
     copy: (text) => {
       if (Native.isAvailable()) window.PulseShareNative.copyToClipboard(text);
       else if (navigator.clipboard) navigator.clipboard.writeText(text);
@@ -517,95 +521,146 @@
     });
   }
 
-  function connectBrokers() {
-    let connectedCount = 0;
+  let presenceTimer = null;
+  const brokerReconnectTimers = {};
 
-    PUBLIC_WSS_BROKERS.forEach((url) => {
-      try {
-        const ws = new WebSocket(url, ['mqtt']);
-        ws.binaryType = 'arraybuffer';
+  // Conecta (ou reconecta) UM broker. Antes, o onclose de qualquer socket chamava
+  // connectBrokers() inteiro, reabrindo todos os brokers e empilhando setIntervals.
+  function connectSingleBroker(url) {
+    const existing = brokerSockets.find((w) => w && w._psUrl === url);
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) return;
 
-        ws.onopen = () => {
-          connectedCount++;
-          updateHeaderStatus();
+    let ws;
+    try {
+      ws = new WebSocket(url, ['mqtt']);
+    } catch (err) {
+      console.warn('Falha ao conectar no broker:', url, err);
+      scheduleBrokerReconnect(url);
+      return;
+    }
+    ws.binaryType = 'arraybuffer';
+    ws._psUrl = url;
+    ws._rxBuffer = new Uint8Array(0);
+    if (existing) brokerSockets.splice(brokerSockets.indexOf(existing), 1, ws);
+    else brokerSockets.push(ws);
 
-          // CONNECT packet
-          const clientId = 'ps_and_' + Math.random().toString(36).slice(2, 8);
-          const protoName = encodeUTF8String('MQTT');
-          const clientBytes = encodeUTF8String(clientId);
-          const varHeader = [...protoName, 4, 0x02, 0, 60];
-          const payload = [...clientBytes];
-          const totalLen = varHeader.length + payload.length;
-          const lenBytes = encodeRemainingLength(totalLen);
-          const connPacket = new Uint8Array(1 + lenBytes.length + totalLen);
-          connPacket[0] = 0x10;
-          connPacket.set(lenBytes, 1);
-          connPacket.set(varHeader, 1 + lenBytes.length);
-          connPacket.set(payload, 1 + lenBytes.length + varHeader.length);
-          ws.send(connPacket);
+    let pingTimer = null;
 
-          // SUBSCRIBE packet
-          const subTopic = encodeUTF8String(MESH_TOPIC);
-          const subLen = 2 + subTopic.length + 1;
-          const subLenBytes = encodeRemainingLength(subLen);
-          const subPacket = new Uint8Array(1 + subLenBytes.length + subLen);
-          subPacket[0] = 0x82;
-          subPacket.set(subLenBytes, 1);
-          subPacket.set([0, 1], 1 + subLenBytes.length);
-          subPacket.set(subTopic, 3 + subLenBytes.length);
-          subPacket[subPacket.length - 1] = 0;
-          ws.send(subPacket);
+    ws.onopen = () => {
+      updateHeaderStatus();
 
-          announcePresence();
-        };
+      // CONNECT packet (clean session, keep-alive 60s)
+      const clientId = 'ps_and_' + Math.random().toString(36).slice(2, 8);
+      const protoName = encodeUTF8String('MQTT');
+      const clientBytes = encodeUTF8String(clientId);
+      const varHeader = [...protoName, 4, 0x02, 0, 60];
+      const payload = [...clientBytes];
+      const totalLen = varHeader.length + payload.length;
+      const lenBytes = encodeRemainingLength(totalLen);
+      const connPacket = new Uint8Array(1 + lenBytes.length + totalLen);
+      connPacket[0] = 0x10;
+      connPacket.set(lenBytes, 1);
+      connPacket.set(varHeader, 1 + lenBytes.length);
+      connPacket.set(payload, 1 + lenBytes.length + varHeader.length);
+      ws.send(connPacket);
 
-        ws.onmessage = (event) => {
-          handleIncomingMqttBytes(new Uint8Array(event.data));
-        };
+      // SUBSCRIBE packet
+      const subTopic = encodeUTF8String(MESH_TOPIC);
+      const subLen = 2 + subTopic.length + 1;
+      const subLenBytes = encodeRemainingLength(subLen);
+      const subPacket = new Uint8Array(1 + subLenBytes.length + subLen);
+      subPacket[0] = 0x82;
+      subPacket.set(subLenBytes, 1);
+      subPacket.set([0, 1], 1 + subLenBytes.length);
+      subPacket.set(subTopic, 3 + subLenBytes.length);
+      subPacket[subPacket.length - 1] = 0;
+      ws.send(subPacket);
 
-        ws.onerror = () => {};
-        ws.onclose = () => {
-          connectedCount = Math.max(0, connectedCount - 1);
-          updateHeaderStatus();
-          setTimeout(() => connectBrokers(), 5000);
-        };
+      // PINGREQ periódico para o broker não derrubar a sessão por keep-alive
+      pingTimer = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send(new Uint8Array([0xc0, 0x00])); } catch {}
+        }
+      }, 30000);
 
-        brokerSockets.push(ws);
-      } catch (err) {
-        console.warn('Falha ao conectar no broker:', url, err);
-      }
-    });
+      setTimeout(announcePresence, 300);
+    };
 
-    setInterval(() => {
-      announcePresence();
-    }, 15000);
+    ws.onmessage = (event) => {
+      handleIncomingMqttBytes(ws, new Uint8Array(event.data));
+    };
+
+    ws.onerror = () => {};
+    ws.onclose = () => {
+      if (pingTimer) clearInterval(pingTimer);
+      updateHeaderStatus();
+      scheduleBrokerReconnect(url);
+    };
   }
 
-  function handleIncomingMqttBytes(bytes) {
+  function scheduleBrokerReconnect(url) {
+    if (brokerReconnectTimers[url]) return;
+    brokerReconnectTimers[url] = setTimeout(() => {
+      delete brokerReconnectTimers[url];
+      connectSingleBroker(url);
+    }, 5000);
+  }
+
+  function connectBrokers() {
+    PUBLIC_WSS_BROKERS.forEach((url) => connectSingleBroker(url));
+    if (!presenceTimer) {
+      presenceTimer = setInterval(() => {
+        announcePresence();
+      }, 15000);
+    }
+  }
+
+  // Um frame WebSocket pode conter vários pacotes MQTT, ou só parte de um.
+  // Acumula bytes por socket e extrai pacotes completos.
+  function handleIncomingMqttBytes(ws, bytes) {
     if (!bytes || bytes.length === 0) return;
-    const packetType = bytes[0] >> 4;
-    if (packetType !== 3) return; // Somente PUBLISH
+    let buf = ws._rxBuffer && ws._rxBuffer.length ? concatBytes(ws._rxBuffer, bytes) : bytes;
 
-    let idx = 1;
-    let multiplier = 1;
-    let remainingLength = 0;
-    let digit;
-    do {
-      digit = bytes[idx++];
-      remainingLength += (digit & 127) * multiplier;
-      multiplier *= 128;
-    } while ((digit & 128) !== 0 && idx < bytes.length);
+    while (buf.length >= 2) {
+      let idx = 1;
+      let multiplier = 1;
+      let remainingLength = 0;
+      let digit;
+      let complete = false;
+      do {
+        if (idx >= buf.length) break;
+        digit = buf[idx++];
+        remainingLength += (digit & 127) * multiplier;
+        multiplier *= 128;
+        if ((digit & 128) === 0) complete = true;
+      } while (!complete && idx < 5);
+      if (!complete) break; // cabeçalho incompleto
 
-    const topicLen = (bytes[idx] << 8) | bytes[idx + 1];
-    idx += 2;
-    idx += topicLen;
+      const packetEnd = idx + remainingLength;
+      if (packetEnd > buf.length) break; // aguarda o restante do pacote
 
-    const payloadBytes = bytes.subarray(idx);
-    try {
-      const jsonStr = new TextDecoder().decode(payloadBytes);
-      const data = JSON.parse(jsonStr);
-      handleIncomingPacket(data);
-    } catch {}
+      const packetType = buf[0] >> 4;
+      if (packetType === 3) {
+        const qos = (buf[0] >> 1) & 0x03;
+        let p = idx;
+        const topicLen = (buf[p] << 8) | buf[p + 1];
+        p += 2 + topicLen;
+        if (qos > 0) p += 2;
+        try {
+          const data = JSON.parse(new TextDecoder().decode(buf.subarray(p, packetEnd)));
+          handleIncomingPacket(data);
+        } catch {}
+      }
+      buf = buf.subarray(packetEnd);
+    }
+    ws._rxBuffer = buf.length ? buf.slice() : new Uint8Array(0);
+  }
+
+  function concatBytes(a, b) {
+    const out = new Uint8Array(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
   }
 
   function announcePresence() {
@@ -652,14 +707,55 @@
         break;
       }
 
+      // Presença da Extensão Chrome (gossip do catálogo de peers)
+      case 'PEER_ANNOUNCE':
+      case 'ROSTER_GOSSIP_SYNC': {
+        if (mergeRosterIntoRegistry(packet.roster)) {
+          updateHeaderStatus();
+          renderConversationsList();
+          renderMeshPeers();
+        }
+        break;
+      }
+
       case 'DIRECT_SIGNAL': {
         const target = normalizeTag(packet.to);
         if (target === normalizeTag(myTag)) {
-          handleDirectSignal(packet.senderTag, packet.transferId, packet.signalType, packet.payload);
+          const from = normalizeTag(packet.senderTag);
+          if (from && peerRegistry[from]) peerRegistry[from].lastSeen = Date.now();
+          handleDirectSignal(from, packet.transferId, packet.signalType, packet.payload || {});
         }
         break;
       }
     }
+  }
+
+  function mergeRosterIntoRegistry(roster) {
+    if (!Array.isArray(roster)) return false;
+    const now = Date.now();
+    const me = normalizeTag(myTag);
+    let changed = false;
+    roster.forEach((item) => {
+      if (!item || typeof item.tag !== 'string') return;
+      const tag = normalizeTag(item.tag);
+      if (!tag.startsWith('@') || tag.startsWith('@link_') || tag === me) return;
+      const lastSeen = Math.min(now, Number(item.lastSeen) || 0);
+      if (now - lastSeen > 180000) return; // ignora entradas antigas (> 3 min)
+      const local = peerRegistry[tag];
+      if (local && (local.lastSeen || 0) >= lastSeen) return;
+      peerRegistry[tag] = {
+        tag,
+        name: (local && local.name) || tag.replace(/^@/, '').split('_')[0],
+        reghash: item.regHash || item.reghash || (local && local.reghash) || '0x0000',
+        avatar: (local && local.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 64) : null),
+        clientType: item.clientType || (local && local.clientType) || 'extension',
+        relayMode: item.relayEnabled !== false,
+        transport: peerTransports[tag] || 'P2P',
+        lastSeen
+      };
+      changed = true;
+    });
+    return changed;
   }
 
   function handleBleIncomingMessage(fromTag, messageJson) {
@@ -703,52 +799,139 @@
   // ==========================================================================
   // 6. PROCESSAMENTO DE SINAIS DIRETOS WEBRTC & SINALIZAÇÃO
   // ==========================================================================
+  // Candidatos ICE que chegam antes da RTCPeerConnection / remoteDescription
+  const pendingIce = new Map(); // transferId -> [candidate]
+  // Recepção de arquivos via relay pela malha MQTT (fallback quando o WebRTC não conecta)
+  const relayIncoming = new Map(); // transferId -> { chunks: Map, total, received }
+
+  function setTransferStatus(tr, status, extra) {
+    if (!tr) return;
+    tr.status = status;
+    if (extra) Object.assign(tr, extra);
+    if (['completed', 'cancelled', 'error'].includes(status)) {
+      tr.speed = '0 KB/s';
+      tr.finishedAt = Date.now();
+    }
+    renderTransfers();
+    const peer = tr.type === 'send' ? tr.target : tr.sender;
+    if (activeChatPeer && peer === activeChatPeer) renderChatMessages(activeChatPeer);
+    if (tr.shareId) renderShares();
+  }
+
+  function updateTransferProgress(tr, bytes, total) {
+    const now = Date.now();
+    tr.transferredBytes = bytes;
+    if (total) tr.totalBytes = total;
+    if (tr._lastUi && now - tr._lastUi < 300 && bytes < (tr.totalBytes || Infinity)) return;
+    tr._lastUi = now;
+    const elapsedSec = Math.max(0.1, (now - (tr.startTime || now)) / 1000);
+    const speedBps = Math.round(bytes / elapsedSec);
+    tr.speed = speedBps > 1048576 ? (speedBps / 1048576).toFixed(1) + ' MB/s' : (speedBps / 1024).toFixed(0) + ' KB/s';
+    tr.progress = tr.totalBytes > 0 ? Math.min(99, Math.round((bytes / tr.totalBytes) * 100)) : 50;
+    renderTransfers();
+    const peer = tr.type === 'send' ? tr.target : tr.sender;
+    if (activeChatPeer && peer === activeChatPeer) renderChatMessages(activeChatPeer);
+    if (tr.shareId) renderShares();
+  }
+
   function handleDirectSignal(from, transferId, signalType, payload) {
+    if (window.__psTrace) console.log('[sig]', signalType, from, transferId, JSON.stringify(payload).slice(0, 120));
     switch (signalType) {
       case 'CHAT_MESSAGE': {
-        handleIncomingChatMessage(payload);
+        // O remetente real é sempre quem assinou o pacote (from)
+        handleIncomingChatMessage({ ...payload, senderTag: from });
+        break;
+      }
+
+      case 'CHAT_ACK': {
+        const msgId = payload.msgId || transferId;
+        const m = (chatMessages[from] || []).find((x) => x.id === msgId);
+        if (m && m.sender === myTag && m.status !== 'READ') {
+          m.status = payload.status === 'READ' ? 'READ' : 'DELIVERED';
+          saveChatMessagesToStorage();
+          if (activeChatPeer === from) renderChatMessages(from);
+        }
+        break;
+      }
+
+      case 'CHAT_READ': {
+        let changed = false;
+        (chatMessages[from] || []).forEach((m) => {
+          if (m.sender === myTag && m.status !== 'READ') {
+            m.status = 'READ';
+            changed = true;
+          }
+        });
+        if (changed) {
+          saveChatMessagesToStorage();
+          if (activeChatPeer === from) renderChatMessages(from);
+        }
+        break;
+      }
+
+      case 'CHAT_TYPING': {
+        peerTypingState[from] = { status: payload.status || 'idle', at: Date.now() };
+        if (activeChatPeer === from) updateChatHeaderTyping();
+        break;
+      }
+
+      case 'CHAT_REACTION': {
+        const msgId = payload.msgId || transferId;
+        const m = (chatMessages[from] || []).find((x) => x.id === msgId);
+        if (m) {
+          if (!m.reactions) m.reactions = {};
+          if (payload.emoji) m.reactions[from] = payload.emoji;
+          else delete m.reactions[from];
+          saveChatMessagesToStorage();
+          if (activeChatPeer === from) renderChatMessages(from);
+        }
         break;
       }
 
       case 'FILE_OFFER': {
-        const isChatMedia = Boolean(payload.isChatMedia);
-        const fileName = payload.fileName || 'arquivo_recebido';
-        const fileSize = payload.fileSize || 0;
-        const fileType = payload.fileType || '*/*';
+        const isChatMedia = Boolean(payload.isChatMedia || String(transferId || '').startsWith('chatmedia'));
+        const existing = transfers[transferId];
+        if (existing && !['awaiting_accept', 'error', 'cancelled'].includes(existing.status)) break; // oferta repetida
 
         // Regra de Download: Se for pelo chat, só baixa automaticamente se chatAutoDownload for true.
         const shouldAccept = isChatMedia ? Boolean(chatAutoDownload) : Boolean(autoAccept);
 
-        transfers[transferId] = {
+        transfers[transferId] = Object.assign(existing || {}, {
           id: transferId,
           type: 'receive',
-          sender: from,
-          fileName,
-          totalBytes: fileSize,
-          fileType,
+          sender: normalizeTag(payload.senderTag && payload.routedVia ? payload.senderTag : from),
+          offerFrom: from,
+          routedVia: payload.routedVia || null,
+          fileName: payload.fileName || (existing && existing.fileName) || 'arquivo_recebido',
+          totalBytes: payload.fileSize || (existing && existing.totalBytes) || 0,
+          fileType: payload.fileType || (existing && existing.fileType) || '*/*',
           transferredBytes: 0,
           status: shouldAccept ? 'connecting' : 'awaiting_accept',
           speed: '0 KB/s',
           progress: 0,
           isChatMedia,
-          chatMsgId: payload.chatMsgId || null,
+          chatMsgId: payload.chatMsgId || (existing && existing.chatMsgId) || null,
           startTime: Date.now(),
-          savedPath: null
-        };
+          savedPath: (existing && existing.savedPath) || null
+        });
         renderTransfers();
+        if (activeChatPeer === from) renderChatMessages(from);
 
-        if (shouldAccept) {
-          sendSignal(from, transferId, 'FILE_ACCEPT', {
-            isChatMedia,
-            chatMsgId: payload.chatMsgId || null,
-            roster: Object.values(peerRegistry)
-          });
-        }
+        if (shouldAccept) acceptIncomingTransfer(transferId);
         break;
       }
 
       case 'FILE_ACCEPT': {
-        startSenderWebRTC(transferId, from, payload);
+        startSenderWebRTC(transferId, from);
+        break;
+      }
+
+      case 'FILE_REJECT':
+      case 'TRANSFER_REJECT': {
+        const tr = transfers[transferId];
+        if (tr && !['completed'].includes(tr.status)) {
+          setTransferStatus(tr, 'error', { error: payload.error || 'Recusado pelo destinatário' });
+        }
         break;
       }
 
@@ -772,7 +955,6 @@
           const candStr = payload.candidate.candidate || '';
           if (candStr.includes('typ host') && /(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(candStr)) {
             peerTransports[from] = 'LAN';
-            console.log('⚡ Conexão LAN direta detectada com:', from);
             if (activeChatPeer === from) {
               const badge = document.getElementById('chat-contact-transport-badge');
               if (badge) {
@@ -785,7 +967,70 @@
         }
         break;
       }
+
+      // ---- Link público (portal web) servido por este app ----
+      case 'PACK_INFO_REQUEST': {
+        handlePackInfoRequest(from, transferId, payload);
+        break;
+      }
+
+      case 'PACK_FILE_PULL':
+      case 'PUBLIC_LINK_PULL':
+      case 'TUNNEL_RELAY_PULL': {
+        handlePackFilePull(from, transferId, payload, signalType === 'TUNNEL_RELAY_PULL');
+        break;
+      }
+
+      case 'PACK_DOWNLOAD_COMPLETE': {
+        const share = publicShares[payload.shareId];
+        if (share) {
+          share.downloads = (share.downloads || 0) + 1;
+          renderShares();
+        }
+        break;
+      }
+
+      case 'MESH_RELAY_CHUNK': {
+        handleRelayChunk(from, transferId, payload);
+        break;
+      }
     }
+  }
+
+  function acceptIncomingTransfer(transferId) {
+    const tr = transfers[transferId];
+    if (!tr) return;
+    tr.status = 'connecting';
+    tr.startTime = Date.now();
+    renderTransfers();
+    if (tr.routedVia) {
+      // Oferta chegou via nó relay da malha: o aceite volta para o relay
+      sendSignal(tr.routedVia, transferId, 'FILE_ACCEPT', {
+        isRelayed: true,
+        isChatMedia: Boolean(tr.isChatMedia),
+        senderTag: tr.sender,
+        targetTag: myTag,
+        roster: myRosterSnapshot()
+      });
+    } else {
+      sendSignal(tr.offerFrom || tr.sender, transferId, 'FILE_ACCEPT', {
+        isChatMedia: Boolean(tr.isChatMedia),
+        chatMsgId: tr.chatMsgId || null,
+        roster: myRosterSnapshot()
+      });
+    }
+    // Se o remetente não responder em 25s, marca erro para permitir nova tentativa
+    setTimeout(() => {
+      const cur = transfers[transferId];
+      if (cur && cur.status === 'connecting' && !cur.transferredBytes) {
+        setTransferStatus(cur, 'error', { error: 'Remetente não respondeu' });
+      }
+    }, 25000);
+  }
+
+  function myRosterSnapshot() {
+    const me = myTag ? [{ tag: myTag, nodeId, lastSeen: Date.now(), status: 'online', regHash: myRegHash, clientType: Native.isAvailable() ? 'android' : 'web' }] : [];
+    return me.concat(Object.values(peerRegistry).slice(0, 50).map((p) => ({ tag: p.tag, lastSeen: p.lastSeen, status: 'online', regHash: p.reghash })));
   }
 
   function getIceServers() {
@@ -805,8 +1050,8 @@
   function uint8ArrayToBase64(bytes) {
     let binary = '';
     const len = bytes.byteLength;
-    for (let i = 0; i < len; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    for (let i = 0; i < len; i += 8192) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, len)));
     }
     return btoa(binary);
   }
@@ -824,234 +1069,284 @@
   function waitForBufferDrain(channel, maxAmount = 256 * 1024) {
     if (channel.bufferedAmount <= maxAmount) return Promise.resolve();
     return new Promise((resolve) => {
-      channel.onbufferedamountlow = () => {
-        channel.onbufferedamountlow = null;
-        resolve();
-      };
       const timer = setInterval(() => {
         if (channel.readyState !== 'open' || channel.bufferedAmount <= maxAmount) {
           clearInterval(timer);
-          channel.onbufferedamountlow = null;
           resolve();
         }
       }, 15);
     });
   }
 
+  function waitForIceGathering(pc, timeoutMs) {
+    if (pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', check);
+        resolve();
+      };
+      const check = () => { if (pc.iceGatheringState === 'complete') done(); };
+      const timer = setTimeout(done, timeoutMs);
+      pc.addEventListener('icegatheringstatechange', check);
+    });
+  }
+
+  function candidateToJSON(c) {
+    if (!c) return null;
+    if (typeof c.toJSON === 'function') return c.toJSON();
+    return { candidate: c.candidate, sdpMid: c.sdpMid, sdpMLineIndex: c.sdpMLineIndex, usernameFragment: c.usernameFragment };
+  }
+
+  // Leitura genérica de um trecho de arquivo (File/Blob web, URI SAF Android ou base64)
+  async function readFileSlice(fileItem, offset, length) {
+    const blob = fileItem instanceof Blob ? fileItem : (fileItem && fileItem.file instanceof Blob ? fileItem.file : null);
+    if (blob) return new Uint8Array(await blob.slice(offset, offset + length).arrayBuffer());
+    if (fileItem && fileItem.uri && Native.isAvailable()) {
+      const b64 = Native.readUriChunkBase64(fileItem.uri, offset, length);
+      return b64 ? base64ToUint8Array(b64) : new Uint8Array(0);
+    }
+    if (fileItem && fileItem.base64) {
+      if (!fileItem._bytes) fileItem._bytes = base64ToUint8Array(fileItem.base64);
+      return fileItem._bytes.subarray(offset, offset + length);
+    }
+    return new Uint8Array(0);
+  }
+
   // ==========================================================================
   // 7. WEBRTC SENDER & RECEIVER CORE COM FIX DE BUFFER E STREAMING
   // ==========================================================================
-  async function startSenderWebRTC(transferId, targetTag, payload) {
+  async function startSenderWebRTC(transferId, targetTag, opts = {}) {
     const tr = transfers[transferId];
-    const fileItem = stagedFilesMap.get(transferId) || (tr && tr.fileItem);
-    if (!tr || !fileItem) return;
+    const fileItem = opts.fileItem || stagedFilesMap.get(transferId) || (tr && tr.fileItem);
+    if (!tr || !fileItem) {
+      sendSignal(targetTag, transferId, 'FILE_REJECT', { error: 'Arquivo não está mais disponível no remetente.' });
+      if (tr) setTransferStatus(tr, 'error', { error: 'Arquivo não encontrado. Selecione-o novamente.' });
+      return;
+    }
+
+    // FILE_ACCEPT duplicado (a extensão aceita pelo CHAT_MESSAGE e pelo FILE_OFFER): ignora
+    const existing = activePeerConnections.get(transferId);
+    if (existing && existing._psRole === 'send' && !['failed', 'closed'].includes(existing.connectionState)) return;
+    if (tr.relayActive || tr.status === 'completed') return;
+    if (existing) { try { existing.close(); } catch {} }
 
     tr.status = 'connecting';
+    tr.route = 'P2P';
+    tr.startTime = Date.now();
+    tr.paused = false;
+    tr.cancelled = false;
     renderTransfers();
     Native.startKeepAlive('Transferindo ' + tr.fileName + ' para ' + targetTag);
 
     const pc = new RTCPeerConnection({ iceServers: getIceServers(), iceCandidatePoolSize: 4 });
+    pc._psRole = 'send';
     activePeerConnections.set(transferId, pc);
 
     const dc = pc.createDataChannel('pulseshare-file-channel', { ordered: true });
     dc.binaryType = 'arraybuffer';
-    directDataChannels.set(targetTag, dc);
 
+    let offerSent = false;
+    const queuedCandidates = [];
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        sendSignal(targetTag, transferId, 'ICE_CANDIDATE', { candidate: e.candidate });
+      if (!e.candidate) return;
+      const c = candidateToJSON(e.candidate);
+      if (offerSent) sendSignal(targetTag, transferId, 'ICE_CANDIDATE', { candidate: c });
+      else queuedCandidates.push(c);
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' && tr.status !== 'completed' && !tr.relayActive) {
+        // Link público: o portal cai para o túnel via malha (TUNNEL_RELAY_PULL)
+        if (!opts.isLinkPull) setTransferStatus(tr, 'error', { error: 'Falha na conexão P2P' });
       }
     };
 
     dc.onopen = async () => {
-      tr.status = 'transferring';
-      renderTransfers();
-
+      if (tr.relayActive) { try { pc.close(); } catch {} return; }
+      setTransferStatus(tr, 'transferring');
       try {
         dc.send(JSON.stringify({
           type: 'FILE_START',
-          fileId: 'f-0',
+          fileId: opts.fileId || 'f-0',
           fileName: tr.fileName,
           fileSize: tr.totalBytes,
-          fileType: tr.fileType || '*/*'
+          fileType: tr.fileType || 'application/octet-stream'
         }));
-      } catch (err) {
-        console.error('Erro ao enviar FILE_START:', err);
-      }
 
-      const CHUNK_SIZE = 16384; // 16 KB (WebRTC SCTP block)
-      let offset = 0;
-      const totalBytes = tr.totalBytes;
-      let lastReport = Date.now();
+        const CHUNK_SIZE = 16384; // 16 KB (WebRTC SCTP block)
+        const READ_BLOCK = 256 * 1024;
+        const totalBytes = tr.totalBytes;
+        let offset = 0;
 
-      try {
-        if (fileItem.uri && Native.isAvailable()) {
-          // Android SAF streaming direto via Kotlin
-          const READ_BLOCK = 65536; // 64 KB
-          while (offset < totalBytes) {
-            const readLen = Math.min(READ_BLOCK, totalBytes - offset);
-            const b64Chunk = Native.readUriChunkBase64(fileItem.uri, offset, readLen);
-            if (!b64Chunk) break;
-
-            const blockBytes = base64ToUint8Array(b64Chunk);
-            let subOffset = 0;
-
-            while (subOffset < blockBytes.length) {
-              if (dc.bufferedAmount > 256 * 1024) {
-                await waitForBufferDrain(dc);
-              }
-              if (dc.readyState !== 'open') throw new Error('Canal fechado');
-
-              const sliceEnd = Math.min(subOffset + CHUNK_SIZE, blockBytes.length);
-              const slice = blockBytes.subarray(subOffset, sliceEnd);
-              // Transmite fatia limpa do buffer com offset zero para evitar corrupção SCTP
-              const rawBuf = slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
-              dc.send(rawBuf);
-
-              subOffset += slice.length;
-              offset += slice.length;
-              tr.transferredBytes = offset;
-
-              const now = Date.now();
-              if (now - lastReport >= 300 || offset >= totalBytes) {
-                const elapsedSec = Math.max(0.1, (now - tr.startTime) / 1000);
-                const speedBps = Math.round(offset / elapsedSec);
-                tr.speed = speedBps > 1048576 ? (speedBps / 1048576).toFixed(1) + ' MB/s' : (speedBps / 1024).toFixed(0) + ' KB/s';
-                tr.progress = totalBytes > 0 ? Math.min(99, Math.round((offset / totalBytes) * 100)) : 99;
-                lastReport = now;
-                renderTransfers();
-                if (activeChatPeer === targetTag) renderChatMessages(targetTag);
-              }
-            }
-          }
-        } else {
-          // Streaming para arquivos HTML5 File ou Blob (Web / Extensão)
-          const fileObj = (fileItem instanceof Blob) ? fileItem : (fileItem.file instanceof Blob ? fileItem.file : null);
-          if (fileObj) {
-            while (offset < totalBytes) {
-              if (dc.bufferedAmount > 256 * 1024) {
-                await waitForBufferDrain(dc);
-              }
-              if (dc.readyState !== 'open') throw new Error('Canal fechado');
-
-              const sliceEnd = Math.min(offset + CHUNK_SIZE, totalBytes);
-              const blobSlice = fileObj.slice(offset, sliceEnd);
-              const arrayBuf = await blobSlice.arrayBuffer();
-              dc.send(arrayBuf);
-
-              offset += arrayBuf.byteLength;
-              tr.transferredBytes = offset;
-
-              const now = Date.now();
-              if (now - lastReport >= 300 || offset >= totalBytes) {
-                const elapsedSec = Math.max(0.1, (now - tr.startTime) / 1000);
-                const speedBps = Math.round(offset / elapsedSec);
-                tr.speed = speedBps > 1048576 ? (speedBps / 1048576).toFixed(1) + ' MB/s' : (speedBps / 1024).toFixed(0) + ' KB/s';
-                tr.progress = totalBytes > 0 ? Math.min(99, Math.round((offset / totalBytes) * 100)) : 99;
-                lastReport = now;
-                renderTransfers();
-                if (activeChatPeer === targetTag) renderChatMessages(targetTag);
-              }
-            }
-          } else if (fileItem.base64) {
-            const allBytes = base64ToUint8Array(fileItem.base64);
-            while (offset < allBytes.length) {
-              if (dc.bufferedAmount > 256 * 1024) {
-                await waitForBufferDrain(dc);
-              }
-              if (dc.readyState !== 'open') throw new Error('Canal fechado');
-
-              const sliceEnd = Math.min(offset + CHUNK_SIZE, allBytes.length);
-              const slice = allBytes.subarray(offset, sliceEnd);
-              const rawBuf = slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength);
-              dc.send(rawBuf);
-
-              offset += slice.length;
-              tr.transferredBytes = offset;
-
-              const now = Date.now();
-              if (now - lastReport >= 300 || offset >= totalBytes) {
-                const elapsedSec = Math.max(0.1, (now - tr.startTime) / 1000);
-                const speedBps = Math.round(offset / elapsedSec);
-                tr.speed = speedBps > 1048576 ? (speedBps / 1048576).toFixed(1) + ' MB/s' : (speedBps / 1024).toFixed(0) + ' KB/s';
-                tr.progress = totalBytes > 0 ? Math.min(99, Math.round((offset / totalBytes) * 100)) : 99;
-                lastReport = now;
-                renderTransfers();
-                if (activeChatPeer === targetTag) renderChatMessages(targetTag);
-              }
-            }
+        while (offset < totalBytes) {
+          const block = await readFileSlice(fileItem, offset, Math.min(READ_BLOCK, totalBytes - offset));
+          if (!block.length) throw new Error('Falha ao ler o arquivo');
+          let sub = 0;
+          while (sub < block.length) {
+            if (tr.cancelled) throw new Error('Transferência cancelada');
+            while (tr.paused && !tr.cancelled) await new Promise((r) => setTimeout(r, 150));
+            if (dc.bufferedAmount > 512 * 1024) await waitForBufferDrain(dc, 128 * 1024);
+            if (dc.readyState !== 'open') throw new Error('Canal fechado');
+            const end = Math.min(sub + CHUNK_SIZE, block.length);
+            const slice = block.subarray(sub, end);
+            // Fatia limpa com offset zero (evita corrupção SCTP)
+            dc.send(slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength));
+            sub = end;
+            offset += slice.length;
+            updateTransferProgress(tr, offset);
           }
         }
 
         await waitForBufferDrain(dc, 0);
-
-        // Envia marcador de fim de arquivo
-        dc.send(JSON.stringify({
-          type: 'EOF',
-          fileId: 'f-0',
-          totalBytes
-        }));
-
+        dc.send(JSON.stringify({ type: 'EOF', fileId: opts.fileId || 'f-0', totalBytes }));
+        tr._eofSent = true;
+        // Se o receptor não confirmar, conclui mesmo assim
+        setTimeout(() => {
+          if (tr.status === 'transferring') finishSend(tr, pc, transferId, targetTag);
+        }, 8000);
       } catch (err) {
-        console.error('Erro no streaming de envio:', err);
-        tr.status = 'error';
-        renderTransfers();
+        if (tr.cancelled || err.message === 'Transferência cancelada') {
+          try { dc.send(JSON.stringify({ type: 'TRANSFER_CANCELLED' })); } catch {}
+          setTransferStatus(tr, 'cancelled');
+        } else {
+          console.error('Erro no streaming de envio:', err);
+          try { dc.send(JSON.stringify({ type: 'TRANSFER_ERROR', error: err.message })); } catch {}
+          setTransferStatus(tr, 'error', { error: err.message });
+        }
+        Native.stopKeepAlive();
       }
     };
 
     dc.onmessage = (msgEvent) => {
-      if (typeof msgEvent.data === 'string') {
-        try {
-          const ctrl = JSON.parse(msgEvent.data);
-          if (ctrl.type === 'RECEIVER_ACK_DONE') {
-            tr.status = 'completed';
-            tr.progress = 100;
-            tr.speed = '0 KB/s';
-            Native.stopKeepAlive();
-            Native.toast(`Envio de ${tr.fileName} concluído com sucesso!`);
-            renderTransfers();
-            if (activeChatPeer === targetTag) renderChatMessages(targetTag);
-            setTimeout(() => {
-              try { pc.close(); } catch {}
-              activePeerConnections.delete(transferId);
-            }, 1000);
-          }
-        } catch {}
-      }
+      if (typeof msgEvent.data !== 'string') return;
+      try {
+        const ctrl = JSON.parse(msgEvent.data);
+        if (ctrl.type === 'RECEIVER_ACK_DONE') {
+          finishSend(tr, pc, transferId, targetTag);
+        } else if (ctrl.type === 'P2P_ROSTER_SYNC') {
+          mergeRosterIntoRegistry(ctrl.roster);
+        } else if (ctrl.type === 'REQUEST_PAUSE') {
+          tr.paused = true;
+          setTransferStatus(tr, 'paused');
+        } else if (ctrl.type === 'REQUEST_RESUME') {
+          tr.paused = false;
+          setTransferStatus(tr, 'transferring');
+        } else if (ctrl.type === 'REQUEST_CANCEL') {
+          tr.cancelled = true;
+        }
+      } catch {}
     };
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
+    // Embute os candidatos STUN já coletados no SDP (menos dependência do trickle via MQTT)
+    await waitForIceGathering(pc, 700);
+    offerSent = true;
     sendSignal(targetTag, transferId, 'WEBRTC_OFFER', {
-      sdp: {
-        type: pc.localDescription.type,
-        sdp: pc.localDescription.sdp
-      },
+      sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp },
       iceServers: getIceServers()
     });
+    while (queuedCandidates.length) {
+      sendSignal(targetTag, transferId, 'ICE_CANDIDATE', { candidate: queuedCandidates.shift() });
+    }
+  }
+
+  function finishSend(tr, pc, transferId, targetTag) {
+    if (tr.status === 'completed') return;
+    tr.progress = 100;
+    tr.transferredBytes = tr.totalBytes;
+    setTransferStatus(tr, 'completed');
+    Native.stopKeepAlive();
+    if (!tr.shareId) Native.toast(`Envio de ${tr.fileName} concluído!`);
+    if (tr.shareId && publicShares[tr.shareId]) {
+      publicShares[tr.shareId].bytesServed = (publicShares[tr.shareId].bytesServed || 0) + (tr.totalBytes || 0);
+      renderShares();
+    }
+    setTimeout(() => {
+      try { pc && pc.close(); } catch {}
+      if (activePeerConnections.get(transferId) === pc) activePeerConnections.delete(transferId);
+    }, 1000);
+  }
+
+  // Salvamento de arquivo recebido: Android grava em streaming no disco; web monta Blob
+  function createReceiveSink(transferId, tr) {
+    let pending = [];
+    let pendingBytes = 0;
+    let first = true;
+    const FLUSH_AT = 256 * 1024; // agrupa chunks para reduzir chamadas à ponte JS->Kotlin
+    const flush = (isLast) => {
+      if (!Native.isAvailable()) return '';
+      let merged = new Uint8Array(pendingBytes);
+      let off = 0;
+      pending.forEach((c) => { merged.set(c, off); off += c.length; });
+      pending = [];
+      pendingBytes = 0;
+      const res = Native.saveChunk(transferId, tr.fileName, merged.length ? uint8ArrayToBase64(merged) : '', first, isLast, tr.fileType || '*/*');
+      first = false;
+      return res;
+    };
+    return {
+      write(bytes) {
+        if (Native.isAvailable()) {
+          pending.push(bytes);
+          pendingBytes += bytes.length;
+          if (pendingBytes >= FLUSH_AT) flush(false);
+        } else {
+          if (!tr._chunks) tr._chunks = [];
+          tr._chunks.push(bytes);
+        }
+      },
+      finish() {
+        if (Native.isAvailable()) {
+          const finalPath = flush(true);
+          if (finalPath && finalPath !== 'CHUNK_WRITTEN') tr.savedPath = finalPath;
+        } else {
+          const blob = new Blob(tr._chunks || [], { type: tr.fileType && tr.fileType !== '*/*' ? tr.fileType : 'application/octet-stream' });
+          tr._chunks = null;
+          tr.savedPath = URL.createObjectURL(blob);
+          tr.blob = blob;
+          // Fora do chat (ou com auto-download) salva direto no disco do navegador
+          if (!tr.isChatMedia || chatAutoDownload || tr.userRequested) {
+            const a = document.createElement('a');
+            a.href = tr.savedPath;
+            a.download = tr.fileName || 'arquivo';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          }
+        }
+      },
+      abort() {
+        pending = [];
+        tr._chunks = null;
+        Native.cancelTransfer(transferId);
+      }
+    };
+  }
+
+  function completeReceive(tr, senderTag) {
+    tr.progress = 100;
+    tr.transferredBytes = tr.totalBytes || tr.transferredBytes;
+    setTransferStatus(tr, 'completed');
+    Native.stopKeepAlive();
+    Native.toast(`Download concluído: ${tr.fileName}`);
+    if (tr.isChatMedia && tr.chatMsgId) {
+      sendSignal(senderTag, tr.chatMsgId, 'CHAT_ACK', { msgId: tr.chatMsgId, senderTag: myTag, status: 'DELIVERED', mediaReady: true });
+    }
   }
 
   async function startReceiverWebRTC(transferId, senderTag, sdpOffer, remoteIceServers) {
-    let tr = transfers[transferId];
-    if (!tr) {
-      tr = {
-        id: transferId,
-        type: 'receive',
-        sender: senderTag,
-        fileName: 'arquivo_recebido',
-        totalBytes: 0,
-        fileType: '*/*',
-        transferredBytes: 0,
-        status: 'connecting',
-        speed: '0 KB/s',
-        progress: 0,
-        startTime: Date.now(),
-        savedPath: null
-      };
-      transfers[transferId] = tr;
-      renderTransfers();
-    }
+    const tr = transfers[transferId];
+    // Offer sem oferta/aceite prévio (transferência desconhecida) é ignorada
+    if (!tr || tr.type !== 'receive') return;
+    if (tr.status === 'completed' || tr.status === 'cancelled') return;
+    // Nunca recebe um arquivo que o usuário ainda não aceitou (mídia de chat com download manual)
+    if (tr.status === 'awaiting_accept') return;
+
+    // Uma nova offer para o mesmo transferId substitui a conexão anterior
+    const old = activePeerConnections.get(transferId);
+    if (old) { try { old.close(); } catch {} }
 
     Native.startKeepAlive('Recebendo arquivo de ' + senderTag);
 
@@ -1059,129 +1354,117 @@
       iceServers: (remoteIceServers && remoteIceServers.length) ? remoteIceServers : getIceServers(),
       iceCandidatePoolSize: 4
     });
+    pc._psRole = 'recv';
     activePeerConnections.set(transferId, pc);
 
+    let answerSent = false;
+    const queuedCandidates = [];
     pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        sendSignal(senderTag, transferId, 'ICE_CANDIDATE', { candidate: e.candidate });
-      }
+      if (!e.candidate) return;
+      const c = candidateToJSON(e.candidate);
+      if (answerSent) sendSignal(senderTag, transferId, 'ICE_CANDIDATE', { candidate: c });
+      else queuedCandidates.push(c);
     };
 
-    let isFirstChunk = true;
-    let lastReport = Date.now();
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' && !['completed', 'cancelled'].includes(tr.status)) {
+        setTransferStatus(tr, 'error', { error: 'Falha na conexão P2P' });
+        Native.stopKeepAlive();
+      }
+    };
 
     pc.ondatachannel = (e) => {
       const dc = e.channel;
       dc.binaryType = 'arraybuffer';
-      directDataChannels.set(senderTag, dc);
+      tr._dc = dc;
+      tr.startTime = Date.now();
+      let sink = null;
+      let received = 0;
 
       dc.onmessage = (msgEvent) => {
         if (typeof msgEvent.data === 'string') {
-          try {
-            const data = JSON.parse(msgEvent.data);
-            if (data.type === 'CHAT_DIRECT') {
-              handleIncomingChatMessage(data.payload);
-              return;
-            }
-            if (data.type === 'FILE_START') {
-              if (data.fileName) tr.fileName = data.fileName;
-              if (data.fileSize) tr.totalBytes = data.fileSize;
-              if (data.fileType) tr.fileType = data.fileType;
-              tr.status = 'transferring';
-              if (Native.isAvailable()) {
-                Native.saveChunk(transferId, tr.fileName, '', true, false, tr.fileType || '*/*');
-              }
-              isFirstChunk = false;
-              renderTransfers();
-              if (activeChatPeer === senderTag) renderChatMessages(senderTag);
-              return;
-            }
-
-            if (data.type === 'EOF') {
-              try {
-                dc.send(JSON.stringify({ type: 'RECEIVER_ACK_DONE' }));
-              } catch {}
-
-              if (Native.isAvailable()) {
-                const finalPath = Native.saveChunk(transferId, tr.fileName, '', false, true, tr.fileType || '*/*');
-                if (finalPath && finalPath !== 'CHUNK_WRITTEN') {
-                  tr.savedPath = finalPath;
-                }
-              } else if (tr._chunks) {
-                const blob = new Blob(tr._chunks, { type: tr.fileType || 'application/octet-stream' });
-                const blobUrl = URL.createObjectURL(blob);
-                tr.savedPath = blobUrl;
-                const a = document.createElement('a');
-                a.href = blobUrl;
-                a.download = tr.fileName || 'arquivo';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                tr._chunks = null;
-              }
-
-              tr.status = 'completed';
-              tr.progress = 100;
-              tr.speed = '0 KB/s';
-              Native.stopKeepAlive();
-              Native.toast(`Download concluído: ${tr.fileName}`);
-              renderTransfers();
-              if (activeChatPeer === senderTag) renderChatMessages(senderTag);
-
-              setTimeout(() => {
-                try { pc.close(); } catch {}
-                activePeerConnections.delete(transferId);
-              }, 1200);
-              return;
-            }
-          } catch {}
+          let data;
+          try { data = JSON.parse(msgEvent.data); } catch { return; }
+          if (data.type === 'P2P_ROSTER_SYNC') {
+            mergeRosterIntoRegistry(data.roster);
+            return;
+          }
+          if (data.type === 'FILE_START') {
+            if (data.fileName) tr.fileName = data.fileName;
+            if (data.fileSize) tr.totalBytes = data.fileSize;
+            if (data.fileType) tr.fileType = data.fileType;
+            received = 0;
+            sink = createReceiveSink(transferId, tr);
+            setTransferStatus(tr, 'transferring');
+            return;
+          }
+          if (data.type === 'TRANSFER_PAUSED') { setTransferStatus(tr, 'paused'); return; }
+          if (data.type === 'TRANSFER_RESUMED') { setTransferStatus(tr, 'transferring'); return; }
+          if (data.type === 'TRANSFER_CANCELLED' || data.type === 'TRANSFER_ERROR') {
+            if (sink) sink.abort();
+            setTransferStatus(tr, data.type === 'TRANSFER_ERROR' ? 'error' : 'cancelled', { error: data.error || '' });
+            Native.stopKeepAlive();
+            try { pc.close(); } catch {}
+            return;
+          }
+          if (data.type === 'EOF') {
+            try { dc.send(JSON.stringify({ type: 'RECEIVER_ACK_DONE' })); } catch {}
+            if (!sink) sink = createReceiveSink(transferId, tr);
+            sink.finish();
+            completeReceive(tr, senderTag);
+            setTimeout(() => {
+              try { pc.close(); } catch {}
+              if (activePeerConnections.get(transferId) === pc) activePeerConnections.delete(transferId);
+            }, 1200);
+          }
           return;
         }
 
         // Chunk binário recebido
+        if (tr.status === 'cancelled') return;
+        if (!sink) sink = createReceiveSink(transferId, tr);
         const chunkBytes = new Uint8Array(msgEvent.data);
-        tr.transferredBytes += chunkBytes.byteLength;
-
-        if (Native.isAvailable()) {
-          const chunkB64 = uint8ArrayToBase64(chunkBytes);
-          const res = Native.saveChunk(transferId, tr.fileName, chunkB64, isFirstChunk, false, tr.fileType || '*/*');
-          if (res && res !== 'CHUNK_WRITTEN') tr.savedPath = res;
-        } else {
-          if (!tr._chunks) tr._chunks = [];
-          tr._chunks.push(chunkBytes);
-        }
-        isFirstChunk = false;
-
-        const now = Date.now();
-        if (now - lastReport >= 300 || (tr.totalBytes > 0 && tr.transferredBytes >= tr.totalBytes)) {
-          const elapsedSec = Math.max(0.1, (now - tr.startTime) / 1000);
-          const speedBps = Math.round(tr.transferredBytes / elapsedSec);
-          tr.speed = speedBps > 1048576 ? (speedBps / 1048576).toFixed(1) + ' MB/s' : (speedBps / 1024).toFixed(0) + ' KB/s';
-          tr.progress = tr.totalBytes > 0 ? Math.min(99, Math.round((tr.transferredBytes / tr.totalBytes) * 100)) : 50;
-          lastReport = now;
-          renderTransfers();
-          if (activeChatPeer === senderTag) renderChatMessages(senderTag);
-        }
+        sink.write(chunkBytes);
+        received += chunkBytes.byteLength;
+        updateTransferProgress(tr, received);
       };
     };
 
-    await pc.setRemoteDescription(new RTCSessionDescription(sdpOffer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-
-    sendSignal(senderTag, transferId, 'WEBRTC_ANSWER', {
-      sdp: {
-        type: pc.localDescription.type,
-        sdp: pc.localDescription.sdp
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(sdpOffer));
+      pc._remoteSet = true;
+      await flushPendingIce(transferId, pc);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitForIceGathering(pc, 600);
+      sendSignal(senderTag, transferId, 'WEBRTC_ANSWER', {
+        sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }
+      });
+      answerSent = true;
+      while (queuedCandidates.length) {
+        sendSignal(senderTag, transferId, 'ICE_CANDIDATE', { candidate: queuedCandidates.shift() });
       }
-    });
+    } catch (err) {
+      console.warn('Erro na negociação WebRTC (receptor):', err);
+      setTransferStatus(tr, 'error', { error: 'Falha na negociação WebRTC' });
+    }
+  }
+
+  async function flushPendingIce(transferId, pc) {
+    const list = pendingIce.get(transferId) || [];
+    pendingIce.delete(transferId);
+    for (const c of list) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(c)); } catch {}
+    }
   }
 
   async function handleIncomingAnswer(transferId, sdpAnswer) {
     const pc = activePeerConnections.get(transferId);
-    if (pc && pc.signalingState !== 'closed') {
+    if (pc && pc.signalingState === 'have-local-offer') {
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(sdpAnswer));
+        pc._remoteSet = true;
+        await flushPendingIce(transferId, pc);
       } catch (err) {
         console.warn('SetRemoteDescription answer err:', err);
       }
@@ -1190,16 +1473,266 @@
 
   async function handleIncomingIce(transferId, candidate) {
     const pc = activePeerConnections.get(transferId);
-    if (pc && candidate) {
-      try {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch {}
+    if (!pc || !pc._remoteSet) {
+      // Candidato chegou antes da offer/answer: guarda para aplicar depois
+      if (!pendingIce.has(transferId)) pendingIce.set(transferId, []);
+      pendingIce.get(transferId).push(candidate);
+      return;
     }
+    try {
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch {}
+  }
+
+  // ==========================================================================
+  // 7b. LINK PÚBLICO SERVIDO PELO APP (portal GitHub Pages ↔ app)
+  // ==========================================================================
+  const DEFAULT_PORTAL_URL = 'https://ricardoazt.github.io/share/';
+
+  function createPublicShare(files, opts = {}) {
+    const shareId = 'ps-' + Array.from(crypto.getRandomValues(new Uint8Array(4))).map((b) => b.toString(16).padStart(2, '0')).join('');
+    const list = files.map((f, i) => ({
+      fileId: 'f-' + i,
+      name: f.name,
+      size: f.size || 0,
+      type: f.mimeType || f.type || 'application/octet-stream',
+      item: f
+    }));
+    const expiresAt = opts.expiresMin > 0 ? Date.now() + opts.expiresMin * 60000 : null;
+    const portal = (localStorage.getItem('ps_portal_url') || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
+    const shareUrl = `${portal}#share=${shareId}&owner=${encodeURIComponent(myTag)}${expiresAt ? `&exp=${expiresAt}` : ''}`;
+    publicShares[shareId] = {
+      shareId,
+      files: list,
+      packName: list.length === 1 ? list[0].name : `Pack (${list.length} arquivos)`,
+      totalSize: list.reduce((acc, f) => acc + f.size, 0),
+      expiresAt,
+      createdAt: Date.now(),
+      shareUrl,
+      downloads: 0,
+      status: 'active'
+    };
+    renderShares();
+    return publicShares[shareId];
+  }
+
+  function shareUnavailableReason(share) {
+    if (!share) return { error: 'NOT_FOUND', message: 'Link não encontrado ou encerrado.' };
+    if (share.status === 'cancelled') return { error: 'CANCELLED', message: 'O compartilhamento foi cancelado pelo remetente.' };
+    if (share.expiresAt && Date.now() >= share.expiresAt) return { error: 'EXPIRED', message: 'Este link expirou.' };
+    return null;
+  }
+
+  function handlePackInfoRequest(from, transferId, payload) {
+    const share = publicShares[payload.shareId];
+    const bad = shareUnavailableReason(share);
+    if (bad) {
+      // Só responde NOT_FOUND se o link for deste app (evita ruído entre dispositivos)
+      if (share) sendSignal(from, transferId || payload.shareId, 'PACK_INFO_RESPONSE', { ok: false, ...bad });
+      return;
+    }
+    sendSignal(from, transferId || share.shareId, 'PACK_INFO_RESPONSE', {
+      ok: true,
+      shareId: share.shareId,
+      packName: share.packName,
+      totalSize: share.totalSize,
+      files: share.files.map(({ fileId, name, size, type }) => ({ fileId, name, size, type })),
+      hasPassword: Boolean(share.passwordHash),
+      passwordSalt: share.passwordSalt || '',
+      passwordHash: share.passwordHash || '',
+      expiresAt: share.expiresAt,
+      ownerTag: myTag
+    });
+  }
+
+  function handlePackFilePull(from, transferId, payload, viaRelay) {
+    const share = publicShares[payload.shareId];
+    const fileId = payload.fileId || 'f-0';
+    const bad = shareUnavailableReason(share);
+    if (bad) {
+      if (share) sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: bad.message });
+      return;
+    }
+    const file = share.files.find((f) => f.fileId === fileId);
+    if (!file) {
+      sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Arquivo não encontrado no link' });
+      return;
+    }
+    let tr = transfers[transferId];
+    if (!tr) {
+      tr = transfers[transferId] = {
+        id: transferId,
+        type: 'send',
+        target: from,
+        targetLabel: 'Visitante do link',
+        shareId: share.shareId,
+        fileName: file.name,
+        totalBytes: file.size,
+        fileType: file.type,
+        transferredBytes: 0,
+        status: 'connecting',
+        progress: 0,
+        speed: '0 KB/s',
+        fileItem: file.item,
+        startTime: Date.now()
+      };
+      renderTransfers();
+    }
+    if (viaRelay) startRelaySend(transferId, from, file);
+    else startSenderWebRTC(transferId, from, { fileItem: file.item, fileId, isLinkPull: true });
+  }
+
+  // Envio do arquivo em blocos base64 pela malha MQTT (portal em CGNAT/firewall)
+  async function startRelaySend(transferId, targetTag, file) {
+    const tr = transfers[transferId];
+    if (!tr || tr.relayActive || tr.status === 'completed') return;
+    tr.relayActive = true;
+    tr.route = 'RELAY';
+    const pc = activePeerConnections.get(transferId);
+    if (pc) { try { pc.close(); } catch {} activePeerConnections.delete(transferId); }
+    tr.startTime = Date.now();
+    setTransferStatus(tr, 'transferring');
+
+    const RELAY_CHUNK = 12 * 1024;
+    const total = file.size || 0;
+    const totalChunks = Math.max(1, Math.ceil(total / RELAY_CHUNK));
+    const fileMeta = { fileId: file.fileId, name: file.name, size: total, type: file.type };
+    let offset = 0;
+    let seq = 0;
+    try {
+      do {
+        if (tr.cancelled) throw new Error('Transferência cancelada');
+        const bytes = total ? await readFileSlice(file.item, offset, Math.min(RELAY_CHUNK, total - offset)) : new Uint8Array(0);
+        if (total && !bytes.length) throw new Error('Falha ao ler o arquivo');
+        offset += bytes.length;
+        seq++;
+        sendSignal(targetTag, transferId, 'MESH_RELAY_CHUNK', {
+          from: myTag,
+          transferId,
+          relayTag: myTag,
+          fileId: file.fileId,
+          chunkSeq: seq,
+          totalChunks,
+          chunkBase64: bytes.length ? uint8ArrayToBase64(bytes) : '',
+          isEof: offset >= total,
+          totalBytes: total,
+          fileMeta
+        });
+        updateTransferProgress(tr, offset);
+        await new Promise((r) => setTimeout(r, 20));
+      } while (offset < total);
+      finishSend(tr, null, transferId, targetTag);
+    } catch (err) {
+      setTransferStatus(tr, tr.cancelled ? 'cancelled' : 'error', { error: err.message });
+    }
+  }
+
+  // Recebe um arquivo enviado em blocos pela malha (remetente atrás de CGNAT)
+  function handleRelayChunk(from, transferId, payload) {
+    const tr = transfers[transferId];
+    // Só aceita dados de uma transferência que ESTE dispositivo aceitou (sem push não solicitado)
+    if (!tr || tr.type !== 'receive' || !['connecting', 'transferring'].includes(tr.status)) return;
+    if (payload.fileMeta && payload.fileMeta.name && tr.fileName === 'arquivo_recebido') tr.fileName = payload.fileMeta.name;
+    tr.route = 'RELAY';
+    let st = relayIncoming.get(transferId);
+    if (!st) {
+      st = { chunks: new Map(), received: 0, total: payload.totalChunks || 0 };
+      relayIncoming.set(transferId, st);
+      tr.status = 'transferring';
+    }
+    if (payload.totalChunks) st.total = Math.max(st.total, payload.totalChunks);
+    if (typeof payload.chunkSeq === 'number' && !st.chunks.has(payload.chunkSeq)) {
+      const bytes = payload.chunkBase64 ? base64ToUint8Array(payload.chunkBase64) : new Uint8Array(0);
+      st.chunks.set(payload.chunkSeq, bytes);
+      st.received += bytes.length;
+      updateTransferProgress(tr, st.received, payload.totalBytes);
+    }
+    if (st.total && st.chunks.size >= st.total) {
+      relayIncoming.delete(transferId);
+      const sink = createReceiveSink(transferId, tr);
+      for (let s = 1; s <= st.total; s++) sink.write(st.chunks.get(s) || new Uint8Array(0));
+      sink.finish();
+      completeReceive(tr, from);
+    }
+  }
+
+  function renderShares() {
+    const list = document.getElementById('shares-list');
+    if (!list) return;
+    const shares = Object.values(publicShares).sort((a, b) => b.createdAt - a.createdAt);
+    if (!shares.length) {
+      list.innerHTML = '<div class="text-center py-10 text-slate-500 text-xs">Nenhum link público ativo. Use "Criar Link" na aba Início.</div>';
+      return;
+    }
+    list.innerHTML = shares.map((s) => {
+      const bad = shareUnavailableReason(s);
+      const active = Object.values(transfers).filter((t) => t.shareId === s.shareId && ['connecting', 'transferring'].includes(t.status)).length;
+      const expTxt = s.expiresAt ? `Expira ${formatTime(s.expiresAt)}` : 'Sem expiração';
+      return `
+        <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <span class="text-xs font-bold text-white block truncate">🔗 ${escapeHtml(s.packName)}</span>
+              <span class="text-[10px] text-slate-400 font-mono">${formatBytes(s.totalSize)} • ${s.files.length} arquivo(s) • ${expTxt}</span>
+            </div>
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${bad ? 'bg-slate-800 text-slate-400' : 'bg-emerald-500/20 text-emerald-400'}">${bad ? 'encerrado' : (active ? `${active} baixando` : 'ativo')}</span>
+          </div>
+          <div class="text-[10px] text-slate-500">Downloads concluídos: <b class="text-slate-300">${s.downloads || 0}</b> • O app precisa ficar aberto para o link funcionar.</div>
+          <div class="flex gap-2">
+            <button type="button" onclick="window.psShareAction('copy','${s.shareId}')" class="flex-1 py-1.5 rounded-lg bg-slate-800 text-white text-[10px] font-bold">Copiar link</button>
+            <button type="button" onclick="window.psShareAction('share','${s.shareId}')" class="flex-1 py-1.5 rounded-lg bg-indigo-600 text-white text-[10px] font-bold">Compartilhar</button>
+            ${bad ? '' : `<button type="button" onclick="window.psShareAction('stop','${s.shareId}')" class="py-1.5 px-2.5 rounded-lg bg-rose-600/80 text-white text-[10px] font-bold">Encerrar</button>`}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  window.psShareAction = function (action, shareId) {
+    const s = publicShares[shareId];
+    if (!s) return;
+    if (action === 'copy') {
+      Native.copy(s.shareUrl);
+      Native.toast('Link copiado!');
+    } else if (action === 'share') {
+      Native.shareText('PulseShare', formatShareMessage(s));
+    } else if (action === 'stop') {
+      s.status = 'cancelled';
+      Object.values(transfers).forEach((t) => {
+        if (t.shareId === shareId && ['connecting', 'transferring'].includes(t.status)) t.cancelled = true;
+      });
+      renderShares();
+    }
+  };
+
+  function formatShareMessage(s) {
+    const files = s.files.map((f) => `  • ${f.name} (${formatBytes(f.size)})`).join('\n');
+    const exp = (s.password ? `\n🔑 Senha: ${s.password}` : '') + (s.expiresAt ? `\n⏳ Expira às ${formatTime(s.expiresAt)}` : '');
+    return `📦 PulseShare — Compartilhamento de Arquivos P2P\n🔗 Link: ${s.shareUrl}${exp}\n📁 Arquivos (${s.files.length}):\n${files}\n\n⚡ Baixe direto pelo navegador (WebRTC P2P), sem instalar nada!`;
   }
 
   // ==========================================================================
   // 8. CHAT-FIRST UI, CONVERSAS & EDGE-TO-EDGE FULL SCREEN
   // ==========================================================================
+  const peerTypingState = {}; // tag -> { status, at }
+
+  function isLinkVisitor(tag) {
+    return String(tag || '').startsWith('@link_');
+  }
+
+  function displayNameFor(tag) {
+    if (isLinkVisitor(tag)) return 'Visitante do link ' + tag.slice(6, 10);
+    return tag.replace(/^@/, '').split('_')[0];
+  }
+
+  function updateChatHeaderTyping() {
+    const el = document.getElementById('chat-contact-tag');
+    if (!el || !activeChatPeer) return;
+    const st = peerTypingState[activeChatPeer];
+    const typing = st && st.status && st.status !== 'idle' && Date.now() - st.at < 6000;
+    el.textContent = typing ? (st.status === 'recording' ? '🎤 gravando áudio...' : 'digitando...') : activeChatPeer;
+    if (typing) setTimeout(updateChatHeaderTyping, 6000);
+  }
+
   function handleIncomingChatMessage(payload) {
     if (!payload || !payload.senderTag) return;
     const from = normalizeTag(payload.senderTag);
@@ -1208,33 +1741,40 @@
     if (!chatMessages[from]) chatMessages[from] = [];
     const msgId = payload.id || ('msg_' + Date.now());
 
-    if (!chatMessages[from].some(m => m.id === msgId)) {
-      chatMessages[from].push({
-        id: msgId,
-        sender: from,
-        text: payload.text || '',
-        timestamp: payload.timestamp || Date.now(),
-        status: 'RECEIVED',
-        transferId: payload.transferId || (payload.media ? payload.media.transferId : null),
-        media: payload.media || payload.fileMeta || null
-      });
-      saveChatMessagesToStorage();
+    // Confirma entrega ao remetente (✓✓) — mesmo para duplicatas, pois o ACK anterior pode ter se perdido
+    sendSignal(from, msgId, 'CHAT_ACK', { msgId, senderTag: myTag, status: activeChatPeer === from ? 'READ' : 'DELIVERED' });
 
-      // Se contém anexo
-      if (payload.media || payload.fileMeta) {
-        const fileMeta = payload.media || payload.fileMeta;
-        const mediaTid = payload.transferId || fileMeta.transferId;
-        const willAutoDownload = Boolean(chatAutoDownload);
+    if (chatMessages[from].some(m => m.id === msgId)) return;
 
+    const fileMeta = payload.media || payload.fileMeta || null;
+    const mediaTid = fileMeta ? (payload.transferId || fileMeta.transferId) : null;
+    chatMessages[from].push({
+      id: msgId,
+      sender: from,
+      text: payload.text || '',
+      timestamp: payload.timestamp || Date.now(),
+      status: 'RECEIVED',
+      transferId: mediaTid,
+      media: fileMeta,
+      forwarded: Boolean(payload.forwarded || payload.isForwarded)
+    });
+    chatMessages[from].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    saveChatMessagesToStorage();
+
+    // Mídia anexada: registra em Transferências (aguardando aceite ou já conectando)
+    if (mediaTid) {
+      const existing = transfers[mediaTid];
+      if (!existing) {
         transfers[mediaTid] = {
           id: mediaTid,
           type: 'receive',
           sender: from,
+          offerFrom: from,
           fileName: fileMeta.name || fileMeta.fileName || 'arquivo_chat',
           totalBytes: fileMeta.size || fileMeta.fileSize || 0,
           fileType: fileMeta.type || fileMeta.fileType || '*/*',
           transferredBytes: 0,
-          status: willAutoDownload ? 'connecting' : 'awaiting_accept',
+          status: 'awaiting_accept',
           speed: '0 KB/s',
           progress: 0,
           isChatMedia: true,
@@ -1242,41 +1782,40 @@
           startTime: Date.now(),
           savedPath: null
         };
-        renderTransfers();
-
-        if (willAutoDownload) {
-          sendSignal(from, mediaTid, 'FILE_ACCEPT', {
-            isChatMedia: true,
-            chatMsgId: msgId,
-            roster: Object.values(peerRegistry)
-          });
-        }
+      } else if (!existing.chatMsgId) {
+        existing.chatMsgId = msgId;
       }
-
-      if (activeChatPeer === from) {
-        renderChatMessages(from);
-      } else {
-        const badge = document.getElementById('badge-chat-unread');
-        if (badge) {
-          badge.textContent = parseInt(badge.textContent || '0', 10) + 1;
-          badge.classList.remove('hidden');
-        }
-      }
-
-      renderConversationsList();
+      renderTransfers();
     }
+
+    if (activeChatPeer === from) {
+      renderChatMessages(from);
+    } else {
+      const badge = document.getElementById('badge-chat-unread');
+      if (badge) {
+        badge.textContent = parseInt(badge.textContent || '0', 10) + 1;
+        badge.classList.remove('hidden');
+      }
+      if (document.hidden || currentTab !== 'chat') {
+        Native.toast(`💬 ${displayNameFor(from)}: ${payload.text ? payload.text.slice(0, 60) : '📎 arquivo'}`);
+      }
+    }
+
+    renderConversationsList();
   }
 
   function sendChatMessage(targetTag, text) {
+    targetTag = normalizeTag(targetTag);
     if (!targetTag || !text) return;
     if (!chatMessages[targetTag]) chatMessages[targetTag] = [];
 
-    const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    const msgId = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+    const ts = Date.now();
     chatMessages[targetTag].push({
       id: msgId,
       sender: myTag,
       text,
-      timestamp: Date.now(),
+      timestamp: ts,
       status: 'SENT'
     });
     saveChatMessagesToStorage();
@@ -1285,134 +1824,194 @@
       id: msgId,
       senderTag: myTag,
       text,
-      timestamp: Date.now()
+      msgType: 'text',
+      type: 'text',
+      timestamp: ts
     };
 
-    // 1. Rota Direta LAN WebRTC (se DataChannel estiver aberto)
-    const directDc = directDataChannels.get(targetTag);
-    if (directDc && directDc.readyState === 'open') {
-      try {
-        directDc.send(JSON.stringify({ type: 'CHAT_DIRECT', payload }));
-        renderChatMessages(targetTag);
-        renderConversationsList();
-        return;
-      } catch (e) {}
-    }
-
-    // 2. Rota Bluetooth BLE (se peer estiver no alcance do rádio BLE)
+    // Rota Bluetooth BLE (se peer estiver no alcance do rádio BLE) + malha MQTT.
+    // (O antigo atalho pelo DataChannel de arquivo foi removido: a extensão ignora
+    //  mensagens CHAT_DIRECT e a conversa sumia após qualquer transferência.)
     if (peerTransports[targetTag] === 'BLE' && Native.isBleAvailable()) {
-      const bleOk = Native.sendBleMessage(targetTag, JSON.stringify(payload));
-      if (bleOk) {
-        renderChatMessages(targetTag);
-        renderConversationsList();
-        return;
-      }
+      Native.sendBleMessage(targetTag, JSON.stringify(payload));
     }
-
-    // 3. Fallback: Sinalização P2P na malha global
     sendSignal(targetTag, msgId, 'CHAT_MESSAGE', payload);
+    scheduleChatRetry(targetTag, msgId, payload);
 
     renderChatMessages(targetTag);
     renderConversationsList();
   }
 
+  // Reenvia mensagens sem ACK (perda em broker público); o destino deduplica pelo id
+  function scheduleChatRetry(targetTag, msgId, payload, attempt = 1) {
+    if (attempt > 3) return;
+    setTimeout(() => {
+      const m = (chatMessages[targetTag] || []).find((x) => x.id === msgId);
+      if (m && m.status === 'SENT') {
+        sendSignal(targetTag, msgId, 'CHAT_MESSAGE', payload);
+        scheduleChatRetry(targetTag, msgId, payload, attempt + 1);
+      }
+    }, 4000 * attempt);
+  }
+
   function sendChatMessageWithMedia(targetTag, text, transferId, fileItem) {
+    targetTag = normalizeTag(targetTag);
     if (!targetTag || !fileItem) return;
     if (!chatMessages[targetTag]) chatMessages[targetTag] = [];
 
-    const msgId = 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    const msgId = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+    const mime = fileItem.mimeType || fileItem.type || 'application/octet-stream';
+    const msgType = mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'file';
     const fileMeta = {
       name: fileItem.name,
       fileName: fileItem.name,
       size: fileItem.size,
       fileSize: fileItem.size,
-      type: fileItem.mimeType || fileItem.type || '*/*',
-      fileType: fileItem.mimeType || fileItem.type || '*/*',
+      type: mime,
+      fileType: mime,
       transferId
     };
+    const ts = Date.now();
+
+    if (transfers[transferId]) transfers[transferId].chatMsgId = msgId;
 
     chatMessages[targetTag].push({
       id: msgId,
       sender: myTag,
       text,
-      timestamp: Date.now(),
+      timestamp: ts,
       status: 'SENT',
       transferId,
       media: fileMeta
     });
     saveChatMessagesToStorage();
 
-    sendSignal(targetTag, msgId, 'CHAT_MESSAGE', {
+    const payload = {
       id: msgId,
       senderTag: myTag,
       text,
-      timestamp: Date.now(),
+      msgType,
+      type: msgType,
+      timestamp: ts,
       transferId,
       fileMeta,
       media: fileMeta
-    });
+    };
+    sendSignal(targetTag, msgId, 'CHAT_MESSAGE', payload);
+    scheduleChatRetry(targetTag, msgId, payload);
 
     sendSignal(targetTag, transferId, 'FILE_OFFER', {
       isChatMedia: true,
       chatMsgId: msgId,
       fileName: fileItem.name,
       fileSize: fileItem.size,
-      fileType: fileItem.mimeType || fileItem.type || '*/*',
-      roster: Object.values(peerRegistry)
+      fileType: mime,
+      roster: myRosterSnapshot()
     });
 
+    renderTransfers();
     renderChatMessages(targetTag);
     renderConversationsList();
+  }
+
+  // Registra um arquivo a enviar (chat ou envio direto) e dispara a oferta
+  function queueOutgoingFile(target, fileItem, text) {
+    const tid = 'chatmedia-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    stagedFilesMap.set(tid, fileItem);
+    transfers[tid] = {
+      id: tid,
+      type: 'send',
+      target: normalizeTag(target),
+      fileName: fileItem.name,
+      totalBytes: fileItem.size,
+      fileType: fileItem.mimeType || fileItem.type || '*/*',
+      transferredBytes: 0,
+      status: 'awaiting_accept',
+      progress: 0,
+      speed: '0 KB/s',
+      fileItem,
+      isChatMedia: true,
+      startTime: Date.now()
+    };
+    sendChatMessageWithMedia(target, text || '', tid, fileItem);
   }
 
   window.downloadChatMedia = function (transferId, fileName) {
     let tr = transfers[transferId];
     if (tr && tr.savedPath) {
+      if (tr.type === 'receive' && !Native.isAvailable() && tr.blob) {
+        // Web: salva o arquivo já recebido no disco
+        const a = document.createElement('a');
+        a.href = tr.savedPath;
+        a.download = tr.fileName || fileName || 'arquivo';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return;
+      }
       Native.openFile(tr.savedPath);
       return;
     }
+    if (tr && tr.type === 'send') return;
 
-    const sender = (tr && tr.sender) || activeChatPeer || '';
     if (!tr) {
       let fileMeta = null;
+      let sender = activeChatPeer || '';
+      let chatMsgId = null;
       for (const peer in chatMessages) {
         const msg = chatMessages[peer].find(m => m.transferId === transferId);
         if (msg && msg.media) {
           fileMeta = msg.media;
+          sender = peer;
+          chatMsgId = msg.id;
           break;
         }
       }
       tr = {
         id: transferId,
         type: 'receive',
-        sender: sender,
+        sender,
+        offerFrom: sender,
         fileName: (fileMeta && (fileMeta.fileName || fileMeta.name)) || fileName || 'arquivo_chat',
         totalBytes: (fileMeta && (fileMeta.fileSize || fileMeta.size)) || 0,
         fileType: (fileMeta && (fileMeta.fileType || fileMeta.type)) || '*/*',
         transferredBytes: 0,
-        status: 'connecting',
+        status: 'awaiting_accept',
         speed: '0 KB/s',
         progress: 0,
         isChatMedia: true,
+        chatMsgId,
         startTime: Date.now(),
         savedPath: null
       };
       transfers[transferId] = tr;
-    } else {
-      tr.status = 'connecting';
     }
+    if (['connecting', 'transferring'].includes(tr.status)) return;
 
+    tr.userRequested = true;
     Native.toast(`Iniciando download de ${tr.fileName}...`);
-    renderTransfers();
+    acceptIncomingTransfer(transferId);
     if (activeChatPeer) renderChatMessages(activeChatPeer);
+  };
 
-    if (sender) {
-      sendSignal(sender, transferId, 'FILE_ACCEPT', {
-        isChatMedia: true,
-        chatMsgId: tr.chatMsgId || null,
-        roster: Object.values(peerRegistry)
-      });
+  window.cancelTransfer = function (transferId) {
+    const tr = transfers[transferId];
+    if (!tr) return;
+    tr.cancelled = true;
+    const pc = activePeerConnections.get(transferId);
+    if (tr.type === 'receive') {
+      try { tr._dc && tr._dc.send(JSON.stringify({ type: 'REQUEST_CANCEL' })); } catch {}
+      if (tr.status === 'awaiting_accept') sendSignal(tr.offerFrom || tr.sender, transferId, 'TRANSFER_REJECT', {});
+      Native.cancelTransfer(transferId);
     }
+    if (pc) { setTimeout(() => { try { pc.close(); } catch {} }, 300); activePeerConnections.delete(transferId); }
+    setTransferStatus(tr, 'cancelled');
+    Native.stopKeepAlive();
+  };
+
+  window.acceptTransfer = function (transferId) {
+    const tr = transfers[transferId];
+    if (tr) { tr.userRequested = true; acceptIncomingTransfer(transferId); }
   };
 
   // Renderiza a lista de conversas ativas (Apenas contatos interagidos)
@@ -1478,7 +2077,7 @@
     listEl.innerHTML = peerTags.map(tag => {
       const contact = contacts[tag];
       const peer = peerRegistry[tag];
-      const name = (contact && contact.name) || (peer && peer.name) || tag.replace(/^@/, '').split('_')[0];
+      const name = (contact && contact.name) || (peer && peer.name) || displayNameFor(tag);
       const avatar = (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 56) : '');
       const msgs = chatMessages[tag] || [];
       const lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
@@ -1557,11 +2156,18 @@
 
   // Abre a conversa selecionada em FULL-SCREEN Edge-to-Edge
   function openActiveChat(peerTag) {
+    peerTag = normalizeTag(peerTag);
+    if (!peerTag) return;
+    if (!peerTag.startsWith('@')) peerTag = '@' + peerTag;
     activeChatPeer = peerTag;
+    // Confirmação de leitura (✓✓ azul) para quem nos enviou mensagens
+    if ((chatMessages[peerTag] || []).some(m => m.sender === peerTag)) {
+      sendSignal(peerTag, 'read-' + Date.now(), 'CHAT_READ', { readerTag: myTag });
+    }
     const contacts = (typeof PulseShareCrypto !== 'undefined') ? PulseShareCrypto.ProfilesManager.getContacts() : {};
     const contact = contacts[peerTag];
     const peer = peerRegistry[peerTag];
-    const name = (contact && contact.name) || (peer && peer.name) || peerTag.replace(/^@/, '').split('_')[0];
+    const name = (contact && contact.name) || (peer && peer.name) || displayNameFor(peerTag);
     const avatar = (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(peerTag, 40) : '');
     const transport = peerTransports[peerTag] || (peer ? peer.transport : 'P2P');
 
@@ -1597,6 +2203,8 @@
     const activePane = document.getElementById('chat-active-conversation-pane');
     if (activePane) activePane.classList.add('active');
   }
+
+  window.openActiveChat = (tag) => openActiveChat(tag);
 
   function closeActiveChat() {
     activeChatPeer = null;
@@ -1640,31 +2248,36 @@
         const fileName = (tr && tr.fileName) || (m.media && (m.media.fileName || m.media.name)) || 'Arquivo';
         const fileSize = (tr && tr.totalBytes) || (m.media && (m.media.fileSize || m.media.size)) || 0;
         const isDownloaded = tr && tr.savedPath;
-        const isTransferring = tr && tr.status === 'transferring';
+        const isTransferring = tr && ['transferring', 'connecting', 'paused'].includes(tr.status);
+        const safeName = escapeHtml(fileName);
+        const isMine = m.sender === myTag;
+        let action;
+        if (isMine) {
+          const st = tr ? tr.status : 'completed';
+          action = isTransferring ? `<span class="text-[10px] font-mono text-indigo-300 font-bold animate-pulse">${tr.progress || 0}%</span>`
+            : `<span class="text-[10px] font-bold ${st === 'completed' ? 'text-emerald-300' : st === 'error' || st === 'cancelled' ? 'text-rose-300' : 'text-slate-300'}">${st === 'completed' ? 'Enviado' : st === 'awaiting_accept' ? 'Aguardando' : st === 'error' ? 'Falhou' : st === 'cancelled' ? 'Cancelado' : st}</span>`;
+        } else if (isDownloaded) {
+          action = `<button type="button" onclick="window.downloadChatMedia('${tid}')" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow active:scale-95">${Native.isAvailable() ? 'Abrir' : 'Salvar'}</button>`;
+        } else if (isTransferring) {
+          action = `<span class="text-[10px] font-mono text-indigo-400 font-bold animate-pulse">${tr.status === 'connecting' ? 'conectando' : (tr.progress || 0) + '%'}</span>`;
+        } else {
+          action = `<button type="button" onclick="window.downloadChatMedia('${tid}')" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold shadow active:scale-95">${tr && tr.status === 'error' ? 'Tentar de novo' : 'Baixar'}</button>`;
+        }
+        const mime = (tr && tr.fileType) || (m.media && (m.media.fileType || m.media.type)) || '';
+        const preview = (isDownloaded && !Native.isAvailable() && /^image\//.test(mime)) ? `<img src="${tr.savedPath}" class="max-h-48 rounded-lg" alt="">` : '';
 
         mediaHtml = `
           <div class="mt-2 p-3 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+            ${preview}
             <div class="flex items-center justify-between gap-2">
               <div class="flex items-center gap-2 min-w-0">
                 <span class="text-lg">📁</span>
                 <div class="min-w-0">
-                  <span class="text-xs font-bold text-white block truncate">${fileName}</span>
+                  <span class="text-xs font-bold text-white block truncate">${safeName}</span>
                   <span class="text-[10px] text-slate-400 font-mono">${formatBytes(fileSize)}</span>
                 </div>
               </div>
-              <div>
-                ${isDownloaded ? `
-                  <button type="button" onclick="window.downloadChatMedia('${tid}', '${fileName}')" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow active:scale-95">
-                    Abrir
-                  </button>
-                ` : isTransferring ? `
-                  <span class="text-[10px] font-mono text-indigo-400 font-bold animate-pulse">${tr.progress || 0}%</span>
-                ` : `
-                  <button type="button" onclick="window.downloadChatMedia('${tid}', '${fileName}')" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold shadow active:scale-95">
-                    Baixar
-                  </button>
-                `}
-              </div>
+              <div>${action}</div>
             </div>
             ${isTransferring ? `
               <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
@@ -1675,14 +2288,21 @@
         `;
       }
 
+      const tick = !isMe ? '' : m.status === 'READ' ? '<span class="text-sky-300 font-bold ml-0.5">✓✓</span>'
+        : m.status === 'DELIVERED' ? '<span class="text-indigo-200 font-bold ml-0.5">✓✓</span>'
+        : '<span class="text-indigo-200 font-bold ml-0.5">✓</span>';
+      const reactions = m.reactions ? Object.values(m.reactions).join(' ') : '';
+
       return `
         <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} my-0.5">
           <div class="max-w-[80%] rounded-2xl px-3 py-1.5 shadow-sm ${isMe ? 'bg-indigo-600 text-white rounded-tr-xs' : 'bg-slate-800 border border-slate-700/60 text-slate-100 rounded-tl-xs'}">
+            ${m.forwarded ? '<span class="text-[9px] italic opacity-70 block">↪ Encaminhada</span>' : ''}
             ${m.text ? `<p class="text-[13px] leading-snug break-words select-text">${escapeHtml(m.text)}</p>` : ''}
             ${mediaHtml}
             <div class="flex items-center justify-end gap-1 mt-0.5 text-[10px] ${isMe ? 'text-indigo-200' : 'text-slate-400'} font-medium select-none">
+              ${reactions ? `<span class="mr-1">${escapeHtml(reactions)}</span>` : ''}
               <span>${timeStr}</span>
-              ${isMe ? '<span class="text-sky-300 font-bold ml-0.5">✓✓</span>' : ''}
+              ${tick}
             </div>
           </div>
         </div>
@@ -1791,10 +2411,16 @@
       ));
     }
 
+    // Permite iniciar conversa com um @usuario digitado, mesmo que ainda não visto na malha
+    const typedTag = q && /^@?[a-z0-9_]{3,}$/.test(q) ? (q.startsWith('@') ? q : '@' + q) : '';
+    if (typedTag && typedTag !== normalizeTag(myTag) && !filtered.some(p => p.tag === typedTag)) {
+      filtered.push({ tag: typedTag, name: 'Conversar com ' + typedTag, transport: 'P2P', avatar: typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(typedTag, 56) : '' });
+    }
+
     if (filtered.length === 0) {
       resultsContainer.innerHTML = `
         <div class="text-center py-8 text-slate-500 text-xs">
-          Nenhum usuário encontrado ${q ? `para "${q}"` : 'na malha no momento'}.
+          Nenhum usuário encontrado ${q ? `para "${escapeHtml(q)}"` : 'na malha no momento'}.
         </div>
       `;
       return;
@@ -1905,9 +2531,21 @@
 
   function handleAndroidSharedItems(items) {
     if (!items || !items.length) return;
-    stagedFiles = items;
-    openSendModal('p2p');
-    renderStagedFiles();
+    // Itens de texto/link não são arquivos (antes iam para a lista de envio e quebravam o envio)
+    const files = items.filter(it => !it.type || it.type === 'file');
+    const texts = items.filter(it => it.type === 'text' || it.type === 'link').map(it => String(it.content || ''));
+    const shareLink = texts.map(t => (t.match(/https?:\/\/\S*[#?&]share=\S+/) || [])[0]).find(Boolean);
+    if (shareLink) {
+      const input = document.getElementById('input-open-link');
+      if (input) input.value = shareLink;
+      switchTab('home');
+      Native.toast('Link PulseShare recebido. Toque em "Baixar" para abrir.');
+    }
+    if (files.length) {
+      stagedFiles = files;
+      openSendModal('p2p');
+      renderStagedFiles();
+    }
   }
 
   function renderStagedFiles() {
@@ -1935,7 +2573,7 @@
 
     const allTransfers = Object.values(transfers);
     const badge = document.getElementById('badge-transfers-count');
-    const activeCount = allTransfers.filter(t => ['connecting', 'transferring', 'awaiting_accept'].includes(t.status)).length;
+    const activeCount = allTransfers.filter(t => ['connecting', 'transferring', 'awaiting_accept', 'paused'].includes(t.status)).length;
     if (badge) {
       badge.textContent = activeCount;
       badge.classList.toggle('hidden', activeCount === 0);
@@ -1955,25 +2593,37 @@
       return;
     }
 
+    const STATUS_LABEL = {
+      awaiting_accept: 'aguardando', connecting: 'conectando', transferring: 'transferindo',
+      paused: 'pausado', completed: 'concluído', cancelled: 'cancelado', error: 'erro', failed: 'erro'
+    };
+    filtered.sort((x, y) => (y.startTime || 0) - (x.startTime || 0));
     container.innerHTML = filtered.map(t => {
       const isSend = t.type === 'send';
       const peerTag = isSend ? t.target : t.sender;
+      const peerLabel = t.shareId ? `🔗 Link • ${isLinkVisitor(peerTag) ? displayNameFor(peerTag) : (peerTag || '')}` : (peerTag || 'desconhecido');
+      const origin = t.shareId ? 'Link público' : (t.isChatMedia ? 'Chat' : 'Envio direto');
+      const route = t.route === 'RELAY' ? ' • 🔀 via malha' : '';
+      const safeName = escapeHtml(t.fileName || 'arquivo');
+      const isActive = ['connecting', 'transferring', 'awaiting_accept', 'paused'].includes(t.status);
       return `
         <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
           <div class="flex items-start justify-between">
             <div class="flex items-center gap-2.5 min-w-0">
               <span class="text-xl">${isSend ? '📤' : '📥'}</span>
               <div class="min-w-0">
-                <span class="text-xs font-bold text-white block truncate">${t.fileName}</span>
-                <span class="text-[10px] text-slate-400 font-mono">${formatBytes(t.totalBytes)} • ${peerTag || 'desconhecido'}</span>
+                <span class="text-xs font-bold text-white block truncate">${safeName}</span>
+                <span class="text-[10px] text-slate-400 font-mono block truncate">${formatBytes(t.totalBytes)} • ${escapeHtml(peerLabel)}</span>
+                <span class="text-[9px] text-slate-500 block">${origin}${route}${t.error ? ' • ' + escapeHtml(t.error) : ''}</span>
               </div>
             </div>
-            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
               t.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
               t.status === 'transferring' ? 'bg-indigo-500/20 text-indigo-400' :
               t.status === 'awaiting_accept' ? 'bg-amber-500/20 text-amber-400' :
+              (t.status === 'error' || t.status === 'cancelled') ? 'bg-rose-500/20 text-rose-400' :
               'bg-slate-800 text-slate-400'
-            }">${t.status}</span>
+            }">${STATUS_LABEL[t.status] || t.status}</span>
           </div>
 
           <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
@@ -1981,13 +2631,19 @@
           </div>
 
           <div class="flex items-center justify-between text-[10px] text-slate-400">
-            <span>${t.speed || '0 KB/s'}</span>
-            <div class="flex gap-2">
-              ${t.savedPath ? `
-                <button type="button" onclick="window.downloadChatMedia('${t.id}', '${t.fileName}')" class="text-emerald-400 font-bold hover:underline">Abrir Arquivo</button>
+            <span>${t.progress || 0}% • ${t.speed || '0 KB/s'}</span>
+            <div class="flex gap-3">
+              ${(!isSend && t.status === 'awaiting_accept') ? `
+                <button type="button" onclick="window.acceptTransfer('${t.id}')" class="text-emerald-400 font-bold hover:underline">Aceitar</button>
               ` : ''}
-              ${['connecting', 'transferring', 'awaiting_accept'].includes(t.status) ? `
-                <button type="button" onclick="window.cancelTransfer('${t.id}')" class="text-rose-400 font-bold hover:underline">Cancelar</button>
+              ${(!isSend && (t.status === 'error' || t.status === 'cancelled')) ? `
+                <button type="button" onclick="window.acceptTransfer('${t.id}')" class="text-indigo-400 font-bold hover:underline">Tentar de novo</button>
+              ` : ''}
+              ${t.savedPath ? `
+                <button type="button" onclick="window.downloadChatMedia('${t.id}')" class="text-emerald-400 font-bold hover:underline">${Native.isAvailable() ? 'Abrir' : 'Salvar'}</button>
+              ` : ''}
+              ${isActive ? `
+                <button type="button" onclick="window.cancelTransfer('${t.id}')" class="text-rose-400 font-bold hover:underline">${(!isSend && t.status === 'awaiting_accept') ? 'Recusar' : 'Cancelar'}</button>
               ` : ''}
             </div>
           </div>
@@ -2188,24 +2844,8 @@
       if (!text && chatAttachedFiles.length === 0) return;
 
       if (chatAttachedFiles.length > 0) {
-        chatAttachedFiles.forEach(f => {
-          const tid = 'chatmedia_' + Math.random().toString(36).slice(2, 9);
-          stagedFilesMap.set(tid, f);
-          transfers[tid] = {
-            id: tid,
-            type: 'send',
-            target: activeChatPeer,
-            fileName: f.name,
-            totalBytes: f.size,
-            fileType: f.mimeType || f.type || '*/*',
-            transferredBytes: 0,
-            status: 'awaiting_accept',
-            progress: 0,
-            fileItem: f,
-            startTime: Date.now()
-          };
-          sendChatMessageWithMedia(activeChatPeer, text, tid, f);
-        });
+        if (text) sendChatMessage(activeChatPeer, text);
+        chatAttachedFiles.forEach(f => queueOutgoingFile(activeChatPeer, f, ''));
         chatAttachedFiles = [];
         renderChatAttachmentPreview();
       } else {
@@ -2336,53 +2976,92 @@
       Native.pickFiles();
     };
 
-    document.getElementById('btn-confirm-send').onclick = () => {
+    document.getElementById('btn-confirm-send').onclick = async () => {
       if (stagedFiles.length === 0) {
         Native.toast('Selecione ao menos um arquivo!');
         return;
       }
+      const files = stagedFiles.filter(f => !f.type || f.type === 'file' || f.size !== undefined);
       if (modalMode === 'p2p') {
-        const target = document.getElementById('input-target-user').value.trim();
-        if (!target) {
+        const target = normalizeTag(document.getElementById('input-target-user').value.trim().replace(/^([^@])/, '@$1'));
+        if (!target || target === '@') {
           Native.toast('Informe o @destinatário!');
           return;
         }
         document.getElementById('modal-send').classList.add('hidden');
         openActiveChat(target);
-        stagedFiles.forEach(f => {
-          const tid = 'p2p_' + Math.random().toString(36).slice(2, 9);
-          stagedFilesMap.set(tid, f);
-          transfers[tid] = {
-            id: tid,
-            type: 'send',
-            target,
-            fileName: f.name,
-            totalBytes: f.size,
-            fileType: f.mimeType || f.type || '*/*',
-            transferredBytes: 0,
-            status: 'awaiting_accept',
-            progress: 0,
-            fileItem: f,
-            startTime: Date.now()
-          };
-          sendChatMessageWithMedia(target, '', tid, f);
-        });
+        files.forEach(f => queueOutgoingFile(target, f, ''));
         stagedFiles = [];
+        renderStagedFiles();
+        switchTab('transfers');
       } else {
-        Native.toast('Link WebRTC gerado com sucesso!');
+        const expMs = parseInt((document.getElementById('select-link-expiration') || {}).value || '1800000', 10);
+        const password = ((document.getElementById('input-link-password') || {}).value || '').trim();
+        const share = createPublicShare(files, { expiresMin: Math.round(expMs / 60000) });
+        if (password) {
+          share.passwordSalt = Math.random().toString(36).slice(2, 10);
+          const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password + share.passwordSalt));
+          share.passwordHash = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+          share.password = password;
+        }
+        stagedFiles = [];
+        renderStagedFiles();
         document.getElementById('modal-send').classList.add('hidden');
+        Native.copy(formatShareMessage(share));
+        Native.toast('Link gerado e copiado! Mantenha o app aberto enquanto baixam.');
         switchTab('shares');
       }
     };
 
-    // Baixar por link público
+    // Filtro Ativas / Histórico e limpeza (antes os botões não tinham ação)
+    const tabActive = document.getElementById('tab-transfers-active');
+    const tabHistory = document.getElementById('tab-transfers-history');
+    const setFilter = (f) => {
+      transfersFilter = f;
+      const on = 'text-xs font-bold text-orange-400 border-b-2 border-orange-500 pb-1 px-1';
+      const off = 'text-xs font-medium text-slate-400 hover:text-white pb-1 px-1';
+      if (tabActive) tabActive.className = f === 'active' ? on : off;
+      if (tabHistory) tabHistory.className = f === 'history' ? on : off;
+      renderTransfers();
+    };
+    if (tabActive) tabActive.onclick = () => setFilter('active');
+    if (tabHistory) tabHistory.onclick = () => setFilter('history');
+    const btnClear = document.getElementById('btn-clear-completed-transfers');
+    if (btnClear) btnClear.onclick = () => {
+      Object.keys(transfers).forEach((id) => {
+        if (['completed', 'cancelled', 'error', 'failed'].includes(transfers[id].status)) delete transfers[id];
+      });
+      renderTransfers();
+    };
+
+    // Indicador "digitando..." para o contato
+    let typingTimer = null;
+    document.getElementById('input-chat-text').addEventListener('input', () => {
+      if (!activeChatPeer || typingTimer) return;
+      sendSignal(activeChatPeer, 'typing-' + Date.now(), 'CHAT_TYPING', { status: 'typing' });
+      typingTimer = setTimeout(() => {
+        typingTimer = null;
+        if (activeChatPeer) sendSignal(activeChatPeer, 'typing-' + Date.now(), 'CHAT_TYPING', { status: 'idle' });
+      }, 3000);
+    });
+
+    const btnNewShare = document.getElementById('btn-new-share-link');
+    if (btnNewShare) btnNewShare.onclick = () => openSendModal('link');
+
+    // Baixar por link público: abre o portal de download (área de download + chat temporário)
     document.getElementById('btn-open-link-go').onclick = () => {
       const url = document.getElementById('input-open-link').value.trim();
       if (!url) return;
-      Native.toast('Iniciando conexão P2P com remetente do link...');
-      switchTab('transfers');
+      if (!/#share=|[?&]share=/.test(url)) {
+        Native.toast('Link inválido: cole um link PulseShare (contém #share=).');
+        return;
+      }
+      Native.openUrl(url);
     };
   }
+
+  // Inspeção para depuração/testes E2E (somente leitura)
+  window.__psDebug = () => ({ myTag, transfers, peerRegistry, publicShares, chatMessages });
 
   // Inicialização do Aplicativo
   window.addEventListener('DOMContentLoaded', async () => {
