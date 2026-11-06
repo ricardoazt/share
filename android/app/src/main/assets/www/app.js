@@ -263,6 +263,11 @@
       handleBlePeersUpdated(peersJson);
     },
     onBackPressed: () => {
+      // 0. Visualizador de imagem em tela cheia
+      if (window.PulseShareImageViewer && window.PulseShareImageViewer.isOpen()) {
+        window.PulseShareImageViewer.close();
+        return 'HANDLED';
+      }
       // 1. Modais prioritários
       const modalSearch = document.getElementById('modal-global-search');
       if (modalSearch && !modalSearch.classList.contains('hidden')) {
@@ -893,8 +898,12 @@
         const existing = transfers[transferId];
         if (existing && !['awaiting_accept', 'error', 'cancelled'].includes(existing.status)) break; // oferta repetida
 
-        // Regra de Download: Se for pelo chat, só baixa automaticamente se chatAutoDownload for true.
-        const shouldAccept = isChatMedia ? Boolean(chatAutoDownload) : Boolean(autoAccept);
+        // Regra de Download: no chat, fotos/vídeos/áudios até 16 MB são aceitos sozinhos só para
+        // pré-visualizar (ficam na memória/IndexedDB); demais arquivos só com chatAutoDownload.
+        const offerKind = chatMediaKind(payload.fileType || (existing && existing.fileType), payload.fileName || (existing && existing.fileName));
+        const offerSize = Number(payload.fileSize || (existing && existing.totalBytes) || 0);
+        const autoPreview = isChatMedia && isPreviewKind(offerKind) && offerSize > 0 && offerSize <= CHAT_PREVIEW_AUTO_MAX;
+        const shouldAccept = isChatMedia ? Boolean(chatAutoDownload || autoPreview) : Boolean(autoAccept);
 
         transfers[transferId] = Object.assign(existing || {}, {
           id: transferId,
@@ -1275,8 +1284,13 @@
     let pendingBytes = 0;
     let first = true;
     const FLUSH_AT = 256 * 1024; // agrupa chunks para reduzir chamadas à ponte JS->Kotlin
+    const kind = chatMediaKind(tr.fileType, tr.fileName);
+    // Mídia do chat (foto/vídeo/áudio) fica também na memória para a pré-visualização
+    const keepPreview = Boolean(tr.isChatMedia) && isPreviewKind(kind) && (tr.totalBytes || 0) <= CHAT_PREVIEW_KEEP_MAX;
+    const inMemory = !Native.isAvailable() || keepPreview;
+    // Android: só grava em Download/ se não for pré-visualização pura (ou se o usuário pediu)
+    const toDisk = Native.isAvailable() && (!keepPreview || chatAutoDownload || tr.userRequested);
     const flush = (isLast) => {
-      if (!Native.isAvailable()) return '';
       let merged = new Uint8Array(pendingBytes);
       let off = 0;
       pending.forEach((c) => { merged.set(c, off); off += c.length; });
@@ -1286,34 +1300,38 @@
       first = false;
       return res;
     };
+    tr._chunks = inMemory ? [] : null;
     return {
       write(bytes) {
-        if (Native.isAvailable()) {
+        if (inMemory) tr._chunks.push(bytes);
+        if (toDisk) {
           pending.push(bytes);
           pendingBytes += bytes.length;
           if (pendingBytes >= FLUSH_AT) flush(false);
-        } else {
-          if (!tr._chunks) tr._chunks = [];
-          tr._chunks.push(bytes);
         }
       },
       finish() {
-        if (Native.isAvailable()) {
+        if (toDisk) {
           const finalPath = flush(true);
           if (finalPath && finalPath !== 'CHUNK_WRITTEN') tr.savedPath = finalPath;
-        } else {
-          const blob = new Blob(tr._chunks || [], { type: tr.fileType && tr.fileType !== '*/*' ? tr.fileType : 'application/octet-stream' });
+        }
+        if (inMemory) {
+          const mime = guessMimeFor(kind, tr.fileName, tr.fileType && tr.fileType !== '*/*' ? tr.fileType : '');
+          const blob = new Blob(tr._chunks || [], { type: mime });
           tr._chunks = null;
-          tr.savedPath = URL.createObjectURL(blob);
           tr.blob = blob;
-          // Fora do chat (ou com auto-download) salva direto no disco do navegador
-          if (!tr.isChatMedia || chatAutoDownload || tr.userRequested) {
-            const a = document.createElement('a');
-            a.href = tr.savedPath;
-            a.download = tr.fileName || 'arquivo';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
+          if (keepPreview) setChatMediaBlob(transferId, blob);
+          if (!Native.isAvailable()) {
+            tr.savedPath = keepPreview ? getChatMediaUrl(transferId) : URL.createObjectURL(blob);
+            // Fora do chat (ou com auto-download / pedido do usuário) salva direto no disco do navegador
+            if (!tr.isChatMedia || chatAutoDownload || tr.userRequested) {
+              const a = document.createElement('a');
+              a.href = tr.savedPath;
+              a.download = tr.fileName || 'arquivo';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+            }
           }
         }
       },
@@ -1507,6 +1525,7 @@
       packName: list.length === 1 ? list[0].name : `Pack (${list.length} arquivos)`,
       totalSize: list.reduce((acc, f) => acc + f.size, 0),
       expiresAt,
+      allowZip: opts.allowZip !== false,
       createdAt: Date.now(),
       shareUrl,
       downloads: 0,
@@ -1540,6 +1559,7 @@
       hasPassword: Boolean(share.passwordHash),
       passwordSalt: share.passwordSalt || '',
       passwordHash: share.passwordHash || '',
+      allowZip: share.allowZip !== false,
       expiresAt: share.expiresAt,
       ownerTag: myTag
     });
@@ -1732,6 +1752,220 @@
     el.textContent = typing ? (st.status === 'recording' ? '🎤 gravando áudio...' : 'digitando...') : activeChatPeer;
     if (typing) setTimeout(updateChatHeaderTyping, 6000);
   }
+
+  // --------------------------------------------------------------------------
+  // 8a. MÍDIA DO CHAT: pré-visualização de fotos, vídeos e áudios
+  //     Recebidas até CHAT_PREVIEW_AUTO_MAX são aceitas sozinhas e ficam só na
+  //     memória/IndexedDB (não vão para Download/ até o usuário tocar em Salvar).
+  // --------------------------------------------------------------------------
+  const CHAT_PREVIEW_AUTO_MAX = 16 * 1024 * 1024; // aceita sozinho para pré-visualizar
+  const CHAT_PREVIEW_KEEP_MAX = 64 * 1024 * 1024; // mantém em memória/IndexedDB para pré-visualizar
+  const chatMediaUrls = new Map();   // transferId -> blob URL
+  const chatMediaLoading = new Set(); // transferIds sendo lidos do IndexedDB
+  const chatMediaMissing = new Set(); // transferIds que não estão no IndexedDB
+  let chatMediaDbPromise = null;
+
+  function chatMediaDb() {
+    if (chatMediaDbPromise) return chatMediaDbPromise;
+    chatMediaDbPromise = new Promise((resolve) => {
+      try {
+        const req = indexedDB.open('PulseShareChatMedia', 1);
+        req.onupgradeneeded = () => { req.result.createObjectStore('media'); };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => resolve(null);
+      } catch { resolve(null); }
+    });
+    return chatMediaDbPromise;
+  }
+
+  async function chatMediaDbOp(mode, fn) {
+    const db = await chatMediaDb();
+    if (!db) return null;
+    return new Promise((resolve) => {
+      try {
+        const tx = db.transaction('media', mode);
+        const req = fn(tx.objectStore('media'));
+        tx.oncomplete = () => resolve(req ? req.result : null);
+        tx.onerror = () => resolve(null);
+        tx.onabort = () => resolve(null);
+      } catch { resolve(null); }
+    });
+  }
+
+  function chatMediaKind(mime, name) {
+    const m = String(mime || '').toLowerCase();
+    if (m.startsWith('image/')) return 'image';
+    if (m.startsWith('video/')) return 'video';
+    if (m.startsWith('audio/')) return 'audio';
+    const ext = String(name || '').split('.').pop().toLowerCase();
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif', 'avif'].includes(ext)) return 'image';
+    if (['mp4', 'webm', 'mov', 'm4v', '3gp', 'mkv'].includes(ext)) return 'video';
+    if (['mp3', 'ogg', 'oga', 'opus', 'wav', 'm4a', 'aac', 'flac', 'amr'].includes(ext)) return 'audio';
+    return 'file';
+  }
+
+  function isPreviewKind(kind) { return kind === 'image' || kind === 'video' || kind === 'audio'; }
+
+  function guessMimeFor(kind, name, mime) {
+    if (mime && mime !== '*/*' && mime !== 'application/octet-stream') return mime;
+    const ext = String(name || '').split('.').pop().toLowerCase();
+    const map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+      heic: 'image/heic', avif: 'image/avif', mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', m4v: 'video/mp4',
+      '3gp': 'video/3gpp', mkv: 'video/x-matroska', mp3: 'audio/mpeg', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+      wav: 'audio/wav', m4a: 'audio/mp4', aac: 'audio/aac', flac: 'audio/flac', amr: 'audio/amr' };
+    return map[ext] || mime || 'application/octet-stream';
+  }
+
+  let chatMediaRerenderTimer = null;
+  function scheduleChatMediaRerender() {
+    if (chatMediaRerenderTimer) return;
+    chatMediaRerenderTimer = setTimeout(() => {
+      chatMediaRerenderTimer = null;
+      if (activeChatPeer) renderChatMessages(activeChatPeer);
+    }, 60);
+  }
+
+  // Registra o conteúdo de uma mídia do chat (memória + IndexedDB) e atualiza a conversa
+  function setChatMediaBlob(transferId, blob) {
+    if (!transferId || !blob) return;
+    const old = chatMediaUrls.get(transferId);
+    if (old) { try { URL.revokeObjectURL(old); } catch {} }
+    chatMediaUrls.set(transferId, URL.createObjectURL(blob));
+    chatMediaMissing.delete(transferId);
+    if (blob.size <= CHAT_PREVIEW_KEEP_MAX) {
+      chatMediaDbOp('readwrite', (st) => st.put(blob, transferId));
+    }
+    scheduleChatMediaRerender();
+  }
+
+  // URL da pré-visualização; se não estiver na memória, busca no IndexedDB e re-renderiza
+  function getChatMediaUrl(transferId) {
+    if (!transferId) return '';
+    const url = chatMediaUrls.get(transferId);
+    if (url) return url;
+    if (!chatMediaLoading.has(transferId) && !chatMediaMissing.has(transferId)) {
+      chatMediaLoading.add(transferId);
+      chatMediaDbOp('readonly', (st) => st.get(transferId)).then((blob) => {
+        chatMediaLoading.delete(transferId);
+        if (blob instanceof Blob) {
+          chatMediaUrls.set(transferId, URL.createObjectURL(blob));
+          scheduleChatMediaRerender();
+        } else {
+          chatMediaMissing.add(transferId);
+        }
+      });
+    }
+    return '';
+  }
+
+  function deleteChatMedia(transferId) {
+    if (!transferId) return;
+    const url = chatMediaUrls.get(transferId);
+    if (url) { try { URL.revokeObjectURL(url); } catch {} }
+    chatMediaUrls.delete(transferId);
+    chatMediaDbOp('readwrite', (st) => st.delete(transferId));
+  }
+
+  // Remetente: guarda a própria mídia enviada para mostrar a pré-visualização também do seu lado
+  async function captureOutgoingChatMedia(transferId, fileItem) {
+    const name = fileItem.name || '';
+    const kind = chatMediaKind(fileItem.mimeType || fileItem.type, name);
+    const size = fileItem.size || 0;
+    if (!isPreviewKind(kind) || !size) return;
+    const mime = guessMimeFor(kind, name, fileItem.mimeType || fileItem.type);
+    const direct = fileItem instanceof Blob ? fileItem : (fileItem.file instanceof Blob ? fileItem.file : null);
+    try {
+      if (direct) {
+        if (size <= CHAT_PREVIEW_KEEP_MAX) setChatMediaBlob(transferId, direct);
+        return;
+      }
+      // URI do Android / base64: lê em blocos de 1 MB pela ponte (limite menor para não pesar no envio)
+      if (size > CHAT_PREVIEW_AUTO_MAX) return;
+      const parts = [];
+      for (let off = 0; off < size; off += 1024 * 1024) {
+        const bytes = await readFileSlice(fileItem, off, Math.min(1024 * 1024, size - off));
+        if (!bytes || !bytes.length) break;
+        parts.push(bytes.slice ? bytes.slice() : bytes);
+      }
+      if (parts.length) setChatMediaBlob(transferId, new Blob(parts, { type: mime }));
+    } catch (e) {
+      console.warn('Pré-visualização da mídia enviada indisponível:', e);
+    }
+  }
+
+  // Android: grava no Download/ uma mídia que até então só estava na memória (pré-visualização)
+  async function saveChatMediaToDisk(tr, blob) {
+    if (!Native.isAvailable() || !blob) return '';
+    const CH = 512 * 1024;
+    let last = '';
+    if (blob.size === 0) return Native.saveChunk(tr.id, tr.fileName, '', true, true, tr.fileType || '*/*');
+    for (let off = 0, first = true; off < blob.size; off += CH, first = false) {
+      const bytes = new Uint8Array(await blob.slice(off, off + CH).arrayBuffer());
+      last = Native.saveChunk(tr.id, tr.fileName, uint8ArrayToBase64(bytes), first, off + CH >= blob.size, tr.fileType || '*/*');
+    }
+    return last && last !== 'CHUNK_WRITTEN' ? last : '';
+  }
+
+  // Abre a foto do chat em tela cheia (encaixada, com zoom por pinça e arraste)
+  window.psOpenChatImage = function (transferId) {
+    const url = getChatMediaUrl(transferId);
+    if (!url || !window.PulseShareImageViewer) return;
+    let msg = null, peer = null;
+    for (const p in chatMessages) {
+      const m = chatMessages[p].find((x) => x.transferId === transferId || (x.media && x.media.transferId === transferId));
+      if (m) { msg = m; peer = p; break; }
+    }
+    const media = (msg && msg.media) || {};
+    const name = media.fileName || media.name || 'Imagem';
+    const who = msg ? (msg.sender === myTag ? 'Você' : displayNameFor(peer)) : '';
+    const meta = [who, msg ? formatTime(msg.timestamp) : '', formatBytes(media.fileSize || media.size || 0)].filter(Boolean).join(' • ');
+    window.PulseShareImageViewer.open({
+      src: url,
+      title: name,
+      meta,
+      actions: [{ label: Native.isAvailable() ? '⬇ Salvar' : '⬇ Baixar', onClick: () => window.psSaveChatMedia(transferId) }]
+    });
+  };
+
+  // Salva a mídia do chat no aparelho (ou abre, se já estiver salva)
+  window.psSaveChatMedia = async function (transferId) {
+    let tr = transfers[transferId];
+    if (tr && tr.savedPath && Native.isAvailable()) { Native.openFile(tr.savedPath); return; }
+    const url = getChatMediaUrl(transferId);
+    if (!url) { window.downloadChatMedia(transferId); return; }
+    let name = (tr && tr.fileName) || 'arquivo';
+    let mime = (tr && tr.fileType) || '';
+    for (const p in chatMessages) {
+      const m = chatMessages[p].find((x) => x.transferId === transferId);
+      if (m && m.media) { name = m.media.fileName || m.media.name || name; mime = mime || m.media.fileType || m.media.type || ''; break; }
+    }
+    if (!Native.isAvailable()) {
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return;
+    }
+    try {
+      const blob = await (await fetch(url)).blob();
+      if (!tr) {
+        tr = transfers[transferId] = { id: transferId, type: 'receive', fileName: name, fileType: mime || blob.type || '*/*', totalBytes: blob.size, transferredBytes: blob.size, status: 'completed', progress: 100, isChatMedia: true, startTime: Date.now() };
+      }
+      const path = await saveChatMediaToDisk(tr, blob);
+      if (path) {
+        tr.savedPath = path;
+        Native.toast(`Salvo em ${Native.getDownloadDirectory()}: ${name}`);
+        renderTransfers();
+        scheduleChatMediaRerender();
+      } else {
+        Native.toast('Não foi possível salvar o arquivo.');
+      }
+    } catch (e) {
+      Native.toast('Falha ao salvar: ' + (e && e.message ? e.message : e));
+    }
+  };
 
   function handleIncomingChatMessage(payload) {
     if (!payload || !payload.senderTag) return;
@@ -1934,10 +2168,16 @@
       startTime: Date.now()
     };
     sendChatMessageWithMedia(target, text || '', tid, fileItem);
+    captureOutgoingChatMedia(tid, fileItem);
   }
 
   window.downloadChatMedia = function (transferId, fileName) {
     let tr = transfers[transferId];
+    // Já está na memória (pré-visualização) mas ainda não no disco: só salva
+    if ((!tr || !tr.savedPath || !Native.isAvailable()) && chatMediaUrls.has(transferId) && !(tr && tr.type === 'send')) {
+      window.psSaveChatMedia(transferId);
+      return;
+    }
     if (tr && tr.savedPath) {
       if (tr.type === 'receive' && !Native.isAvailable() && tr.blob) {
         // Web: salva o arquivo já recebido no disco
@@ -2217,12 +2457,110 @@
     renderConversationsList();
   }
 
+  // Bolha de mídia: pré-visualização (foto/vídeo/áudio) ou cartão de arquivo com ação
+  function renderChatMediaHtml(m, isMe) {
+    const tid = m.transferId || (m.media && m.media.transferId);
+    const tr = transfers[tid];
+    const fileName = (tr && tr.fileName) || (m.media && (m.media.fileName || m.media.name)) || 'Arquivo';
+    const fileSize = (tr && tr.totalBytes) || (m.media && (m.media.fileSize || m.media.size)) || 0;
+    const mime = (tr && tr.fileType && tr.fileType !== '*/*' ? tr.fileType : '') || (m.media && (m.media.fileType || m.media.type)) || '';
+    const kind = chatMediaKind(mime, fileName);
+    const previewUrl = isPreviewKind(kind) ? getChatMediaUrl(tid) : '';
+    const isDownloaded = Boolean(tr && tr.savedPath);
+    const isTransferring = Boolean(tr && ['transferring', 'connecting', 'paused'].includes(tr.status));
+    const safeName = escapeHtml(fileName);
+    const safeTid = escapeHtml(String(tid || ''));
+    const progressBar = isTransferring ? `
+      <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+        <div class="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style="width: ${tr.progress || 0}%"></div>
+      </div>` : '';
+
+    let action;
+    if (isMe) {
+      const st = tr ? tr.status : 'completed';
+      action = isTransferring ? `<span class="text-[10px] font-mono text-indigo-300 font-bold animate-pulse">${tr.progress || 0}%</span>`
+        : `<span class="text-[10px] font-bold ${st === 'completed' ? 'text-emerald-300' : st === 'error' || st === 'cancelled' ? 'text-rose-300' : 'text-slate-300'}">${st === 'completed' ? 'Enviado' : st === 'awaiting_accept' ? 'Aguardando' : st === 'error' ? 'Falhou' : st === 'cancelled' ? 'Cancelado' : st}</span>`;
+    } else if (isDownloaded && Native.isAvailable()) {
+      action = `<button type="button" onclick="window.downloadChatMedia('${safeTid}')" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow active:scale-95">Abrir</button>`;
+    } else if (previewUrl || isDownloaded) {
+      action = `<button type="button" onclick="window.psSaveChatMedia('${safeTid}')" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow active:scale-95">Salvar</button>`;
+    } else if (isTransferring) {
+      action = `<span class="text-[10px] font-mono text-indigo-400 font-bold animate-pulse">${tr.status === 'connecting' ? 'conectando' : (tr.progress || 0) + '%'}</span>`;
+    } else {
+      action = `<button type="button" onclick="window.downloadChatMedia('${safeTid}')" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold shadow active:scale-95">${tr && tr.status === 'error' ? 'Tentar de novo' : 'Baixar'}</button>`;
+    }
+
+    if (previewUrl) {
+      let preview = '';
+      if (kind === 'image') {
+        preview = `<img src="${previewUrl}" alt="${safeName}" onclick="window.psOpenChatImage('${safeTid}')" class="block rounded-xl cursor-zoom-in" style="max-width:100%;max-height:18rem;min-width:7rem;object-fit:cover;background:#020617" />`;
+      } else if (kind === 'video') {
+        preview = `<video src="${previewUrl}" controls playsinline preload="metadata" class="block w-full rounded-xl" style="max-height:18rem;background:#000"></video>`;
+      } else {
+        preview = `<audio src="${previewUrl}" controls preload="metadata" class="block w-full" style="min-width:14rem;height:40px"></audio>`;
+      }
+      const icon = kind === 'image' ? '📷' : kind === 'video' ? '🎥' : '🎵';
+      return `
+        <div class="mt-1 space-y-1.5" style="max-width:min(20rem, 72vw)">
+          ${preview}
+          <div class="flex items-center justify-between gap-2 px-0.5">
+            <span class="text-[10px] ${isMe ? 'text-indigo-200' : 'text-slate-400'} truncate min-w-0">${icon} ${safeName} • ${formatBytes(fileSize)}</span>
+            <div class="shrink-0">${action}</div>
+          </div>
+          ${progressBar}
+        </div>`;
+    }
+
+    const icon = kind === 'image' ? '📷' : kind === 'video' ? '🎥' : kind === 'audio' ? '🎵' : '📁';
+    return `
+      <div class="mt-2 p-3 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 min-w-0">
+            <span class="text-lg">${icon}</span>
+            <div class="min-w-0">
+              <span class="text-xs font-bold text-white block truncate">${safeName}</span>
+              <span class="text-[10px] text-slate-400 font-mono">${formatBytes(fileSize)}</span>
+            </div>
+          </div>
+          <div>${action}</div>
+        </div>
+        ${progressBar}
+      </div>`;
+  }
+
+  function renderChatMessageHtml(m) {
+    const isMe = m.sender === myTag;
+    const timeStr = formatTime(m.timestamp);
+    const mediaHtml = (m.media || m.transferId) ? renderChatMediaHtml(m, isMe) : '';
+    const tick = !isMe ? '' : m.status === 'READ' ? '<span class="text-sky-300 font-bold ml-0.5">✓✓</span>'
+      : m.status === 'DELIVERED' ? '<span class="text-indigo-200 font-bold ml-0.5">✓✓</span>'
+      : '<span class="text-indigo-200 font-bold ml-0.5">✓</span>';
+    const reactions = m.reactions ? Object.values(m.reactions).join(' ') : '';
+    return `
+        <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} my-0.5">
+          <div class="max-w-[80%] rounded-2xl ${mediaHtml ? 'px-1.5 pt-1.5 pb-1' : 'px-3 py-1.5'} shadow-sm ${isMe ? 'bg-indigo-600 text-white rounded-tr-xs' : 'bg-slate-800 border border-slate-700/60 text-slate-100 rounded-tl-xs'}">
+            ${m.forwarded ? '<span class="text-[9px] italic opacity-70 block px-1.5">↪ Encaminhada</span>' : ''}
+            ${mediaHtml}
+            ${m.text ? `<p class="text-[13px] leading-snug break-words select-text ${mediaHtml ? 'px-1.5 pt-1' : ''}">${escapeHtml(m.text)}</p>` : ''}
+            <div class="flex items-center justify-end gap-1 mt-0.5 text-[10px] ${isMe ? 'text-indigo-200' : 'text-slate-400'} font-medium select-none ${mediaHtml ? 'px-1.5' : ''}">
+              ${reactions ? `<span class="mr-1">${escapeHtml(reactions)}</span>` : ''}
+              <span>${timeStr}</span>
+              ${tick}
+            </div>
+          </div>
+        </div>`;
+  }
+
+  let lastChatRenderPeer = null;
+  let chatStickToBottom = true;
+
   function renderChatMessages(peerTag) {
     const container = document.getElementById('chat-messages-container');
     if (!container || !peerTag) return;
 
     const msgs = chatMessages[peerTag] || [];
     if (msgs.length === 0) {
+      lastChatRenderPeer = null;
       container.innerHTML = `
         <div class="h-full flex flex-col items-center justify-center text-center text-slate-500 py-12">
           <div class="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-2">
@@ -2237,79 +2575,56 @@
       return;
     }
 
-    container.innerHTML = msgs.map(m => {
-      const isMe = m.sender === myTag;
-      const timeStr = formatTime(m.timestamp);
-
-      let mediaHtml = '';
-      if (m.media || m.transferId) {
-        const tid = m.transferId || (m.media && m.media.transferId);
-        const tr = transfers[tid];
-        const fileName = (tr && tr.fileName) || (m.media && (m.media.fileName || m.media.name)) || 'Arquivo';
-        const fileSize = (tr && tr.totalBytes) || (m.media && (m.media.fileSize || m.media.size)) || 0;
-        const isDownloaded = tr && tr.savedPath;
-        const isTransferring = tr && ['transferring', 'connecting', 'paused'].includes(tr.status);
-        const safeName = escapeHtml(fileName);
-        const isMine = m.sender === myTag;
-        let action;
-        if (isMine) {
-          const st = tr ? tr.status : 'completed';
-          action = isTransferring ? `<span class="text-[10px] font-mono text-indigo-300 font-bold animate-pulse">${tr.progress || 0}%</span>`
-            : `<span class="text-[10px] font-bold ${st === 'completed' ? 'text-emerald-300' : st === 'error' || st === 'cancelled' ? 'text-rose-300' : 'text-slate-300'}">${st === 'completed' ? 'Enviado' : st === 'awaiting_accept' ? 'Aguardando' : st === 'error' ? 'Falhou' : st === 'cancelled' ? 'Cancelado' : st}</span>`;
-        } else if (isDownloaded) {
-          action = `<button type="button" onclick="window.downloadChatMedia('${tid}')" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow active:scale-95">${Native.isAvailable() ? 'Abrir' : 'Salvar'}</button>`;
-        } else if (isTransferring) {
-          action = `<span class="text-[10px] font-mono text-indigo-400 font-bold animate-pulse">${tr.status === 'connecting' ? 'conectando' : (tr.progress || 0) + '%'}</span>`;
+    // Atualiza só as mensagens que mudaram: assim um vídeo/áudio tocando não reinicia
+    // quando chega progresso de outra transferência.
+    const peerChanged = lastChatRenderPeer !== peerTag;
+    lastChatRenderPeer = peerTag;
+    const nearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    const existing = new Map();
+    Array.from(container.children).forEach((el) => {
+      if (el.dataset && el.dataset.mid && !peerChanged) existing.set(el.dataset.mid, el);
+      else el.remove();
+    });
+    let added = false;
+    let cursor = container.firstChild;
+    msgs.forEach((m) => {
+      const html = renderChatMessageHtml(m);
+      let el = existing.get(m.id);
+      existing.delete(m.id);
+      if (!el || el._psHtml !== html) {
+        if (el) {
+          if (el === cursor) cursor = cursor.nextSibling;
+          el.remove();
         } else {
-          action = `<button type="button" onclick="window.downloadChatMedia('${tid}')" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold shadow active:scale-95">${tr && tr.status === 'error' ? 'Tentar de novo' : 'Baixar'}</button>`;
+          added = true;
         }
-        const mime = (tr && tr.fileType) || (m.media && (m.media.fileType || m.media.type)) || '';
-        const preview = (isDownloaded && !Native.isAvailable() && /^image\//.test(mime)) ? `<img src="${tr.savedPath}" class="max-h-48 rounded-lg" alt="">` : '';
-
-        mediaHtml = `
-          <div class="mt-2 p-3 rounded-xl bg-slate-950/70 border border-slate-800 space-y-2">
-            ${preview}
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex items-center gap-2 min-w-0">
-                <span class="text-lg">📁</span>
-                <div class="min-w-0">
-                  <span class="text-xs font-bold text-white block truncate">${safeName}</span>
-                  <span class="text-[10px] text-slate-400 font-mono">${formatBytes(fileSize)}</span>
-                </div>
-              </div>
-              <div>${action}</div>
-            </div>
-            ${isTransferring ? `
-              <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                <div class="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style="width: ${tr.progress || 0}%"></div>
-              </div>
-            ` : ''}
-          </div>
-        `;
+        el = document.createElement('div');
+        el.dataset.mid = m.id;
+        el.innerHTML = html;
+        el._psHtml = html;
       }
+      if (el === cursor) cursor = cursor.nextSibling;
+      else container.insertBefore(el, cursor);
+    });
+    existing.forEach((el) => el.remove());
 
-      const tick = !isMe ? '' : m.status === 'READ' ? '<span class="text-sky-300 font-bold ml-0.5">✓✓</span>'
-        : m.status === 'DELIVERED' ? '<span class="text-indigo-200 font-bold ml-0.5">✓✓</span>'
-        : '<span class="text-indigo-200 font-bold ml-0.5">✓</span>';
-      const reactions = m.reactions ? Object.values(m.reactions).join(' ') : '';
+    if (peerChanged || nearBottom || added) {
+      chatStickToBottom = true;
+      container.scrollTop = container.scrollHeight;
+    }
+  }
 
-      return `
-        <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} my-0.5">
-          <div class="max-w-[80%] rounded-2xl px-3 py-1.5 shadow-sm ${isMe ? 'bg-indigo-600 text-white rounded-tr-xs' : 'bg-slate-800 border border-slate-700/60 text-slate-100 rounded-tl-xs'}">
-            ${m.forwarded ? '<span class="text-[9px] italic opacity-70 block">↪ Encaminhada</span>' : ''}
-            ${m.text ? `<p class="text-[13px] leading-snug break-words select-text">${escapeHtml(m.text)}</p>` : ''}
-            ${mediaHtml}
-            <div class="flex items-center justify-end gap-1 mt-0.5 text-[10px] ${isMe ? 'text-indigo-200' : 'text-slate-400'} font-medium select-none">
-              ${reactions ? `<span class="mr-1">${escapeHtml(reactions)}</span>` : ''}
-              <span>${timeStr}</span>
-              ${tick}
-            </div>
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    container.scrollTop = container.scrollHeight;
+  // Imagens/vídeos que terminam de carregar mudam a altura: mantém a conversa no fim
+  function initChatAutoScroll() {
+    const container = document.getElementById('chat-messages-container');
+    if (!container || container._psScrollInit) return;
+    container._psScrollInit = true;
+    container.addEventListener('scroll', () => {
+      chatStickToBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 120;
+    }, { passive: true });
+    const stick = () => { if (chatStickToBottom) container.scrollTop = container.scrollHeight; };
+    container.addEventListener('load', stick, true);
+    container.addEventListener('loadedmetadata', stick, true);
   }
 
   function escapeHtml(text) {
@@ -2509,6 +2824,7 @@
   function handleDeleteChatAction() {
     if (!activeMenuTargetTag) return;
     if (confirm(`Deseja realmente excluir a conversa com ${activeMenuTargetTag}?`)) {
+      (chatMessages[activeMenuTargetTag] || []).forEach((m) => deleteChatMedia(m.transferId || (m.media && m.media.transferId)));
       delete chatMessages[activeMenuTargetTag];
       saveChatMessagesToStorage();
       if (activeChatPeer === activeMenuTargetTag) {
@@ -2749,6 +3065,7 @@
   // 13. INICIALIZAÇÃO DE EVENTOS DO DOM
   // ==========================================================================
   function initEvents() {
+    initChatAutoScroll();
     // Abas de navegação
     document.getElementById('nav-chat').onclick = () => switchTab('chat');
     document.getElementById('nav-home').onclick = () => switchTab('home');
@@ -2757,7 +3074,7 @@
     document.getElementById('nav-mesh').onclick = () => switchTab('mesh');
 
     // Ações Rápidas na Home
-    document.getElementById('btn-action-send-p2p').onclick = () => openSendModal('p2p');
+    // (Ação rápida "Enviar para @peer" removida: o envio direto é feito pelo chat)
     document.getElementById('btn-action-create-link').onclick = () => openSendModal('link');
 
     // Botões de Busca Global
@@ -2997,7 +3314,8 @@
       } else {
         const expMs = parseInt((document.getElementById('select-link-expiration') || {}).value || '1800000', 10);
         const password = ((document.getElementById('input-link-password') || {}).value || '').trim();
-        const share = createPublicShare(files, { expiresMin: Math.round(expMs / 60000) });
+        const allowZipEl = document.getElementById('input-link-allow-zip');
+        const share = createPublicShare(files, { expiresMin: Math.round(expMs / 60000), allowZip: allowZipEl ? allowZipEl.checked : true });
         if (password) {
           share.passwordSalt = Math.random().toString(36).slice(2, 10);
           const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password + share.passwordSalt));

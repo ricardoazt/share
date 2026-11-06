@@ -439,6 +439,8 @@ async function startServerlessP2PLinkShare(params) {
   const password = params.password || '';
   const passwordSalt = params.passwordSalt || '';
   const passwordHash = params.passwordHash || '';
+  // O destinatário pode escolher baixar em .zip? (padrão: sim)
+  const allowZip = params.allowZip !== false;
 
   const stored = await chrome.storage.local.get(['portalUrl']);
   const basePortalUrl = (stored.portalUrl || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
@@ -456,6 +458,7 @@ async function startServerlessP2PLinkShare(params) {
     hasPassword,
     passwordSalt,
     passwordHash,
+    allowZip,
     expiresAt,
     createdAt: Date.now()
   };
@@ -498,6 +501,7 @@ async function startServerlessP2PLinkShare(params) {
     password, // Armazenada localmente para remetente copiar formatado
     passwordSalt,
     passwordHash,
+    allowZip,
     expiresAt,
     createdAt: Date.now(),
     updatedAt: Date.now()
@@ -1943,6 +1947,7 @@ async function handleIncomingSignal(msg) {
       hasPassword: transfer.hasPassword,
       passwordSalt: transfer.passwordSalt,
       passwordHash: transfer.passwordHash,
+      allowZip: transfer.allowZip !== false,
       expiresAt: transfer.expiresAt,
       ownerTag: state.myTag
     });

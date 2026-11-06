@@ -131,58 +131,31 @@
       flex-direction: column;
       gap: 10px;
     }
-    .zip-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .zip-title {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      font-weight: 700;
-      color: #cbd5e1;
-    }
-    .zip-toggle-wrap {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      color: #94a3b8;
-      cursor: pointer;
-    }
-    .zip-toggle-wrap input {
-      cursor: pointer;
-      accent-color: #f97316;
-    }
-    .zip-options {
+    .dl-choice {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      padding-top: 8px;
+      padding-top: 10px;
       border-top: 1px solid #1e293b;
     }
-    .zip-field {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 11px;
-      color: #94a3b8;
+    .dl-choice.hidden { display: none; }
+    .dl-choice-title { font-size: 12px; font-weight: 700; color: #cbd5e1; }
+    .dl-choice-btn {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; text-align: left;
+      background: #0f172a; border: 1px solid #334155; border-radius: 12px;
+      padding: 10px 12px; color: #f1f5f9; cursor: pointer; font-family: inherit;
+      transition: border-color .15s, background .15s;
     }
-    .zip-select, .zip-input {
-      background: #0f172a;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 6px 10px;
-      color: #f1f5f9;
-      font-size: 11px;
-      font-family: inherit;
-      outline: none;
+    .dl-choice-btn:hover, .dl-choice-btn:focus-visible { border-color: #f97316; background: rgba(249,115,22,.08); outline: none; }
+    .dl-choice-icon { font-size: 20px; }
+    .dl-choice-text { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+    .dl-choice-text small { font-size: 10.5px; color: #94a3b8; }
+    .dl-choice-cancel {
+      background: transparent; border: none; color: #94a3b8; font-size: 11px;
+      cursor: pointer; padding: 4px; font-family: inherit;
     }
-    .zip-select:focus, .zip-input:focus {
-      border-color: #f97316;
-    }
+    .dl-choice-cancel:hover { color: #f1f5f9; }
 
     .files-list {
       display: flex;
@@ -520,42 +493,27 @@
         </div>
       </div>
 
-      <!-- SEÇÃO DE COMPACTAÇÃO E DOWNLOAD EM .ZIP -->
+      <!-- DOWNLOAD: um único botão; se o remetente permitiu, oferece .zip ao clicar -->
       <div class="zip-section">
-        <div class="zip-header">
-          <div class="zip-title">
-            <span>🗜️</span>
-            <span>Opções de Compactação (.ZIP)</span>
-          </div>
-          <label class="zip-toggle-wrap">
-            <span>Empacotar em .ZIP</span>
-            <input id="toggle-zip-mode" type="checkbox" checked />
-          </label>
-        </div>
-
-        <div id="zip-options-panel" class="zip-options">
-          <div class="zip-field">
-            <label for="zip-level">Nível de compressão:</label>
-            <select id="zip-level" class="zip-select">
-              <option value="0">0 - Sem compressão (Store - mais rápido)</option>
-              <option value="1">1 - Mais rápido</option>
-              <option value="6" selected>6 - Normal equilibrado (Recomendado)</option>
-              <option value="9">9 - Máxima compressão</option>
-            </select>
-          </div>
-          <div class="zip-field">
-            <label for="zip-filename">Nome do arquivo compactado:</label>
-            <input id="zip-filename" type="text" class="zip-input" placeholder="Pacote_Compartilhado.zip" />
-          </div>
-        </div>
-
-        <!-- Botão Principal de Download -->
         <button id="btn-download-all" type="button" class="btn-all">
           <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M7.5 12L12 16.5m0 0l4.5-4.5M12 16.5V3" />
           </svg>
-          <span id="btn-download-all-text">⬇ Baixar Todos (.ZIP)</span>
+          <span id="btn-download-all-text">Baixar</span>
         </button>
+
+        <div id="dl-choice" class="dl-choice hidden">
+          <span class="dl-choice-title">Como deseja baixar?</span>
+          <button id="dl-choice-zip" type="button" class="dl-choice-btn">
+            <span class="dl-choice-icon">📦</span>
+            <span class="dl-choice-text"><strong>Compactado (.zip)</strong><small>Um único arquivo com tudo dentro</small></span>
+          </button>
+          <button id="dl-choice-files" type="button" class="dl-choice-btn">
+            <span class="dl-choice-icon">📄</span>
+            <span class="dl-choice-text"><strong>Arquivos separados</strong><small>Cada arquivo é salvo individualmente</small></span>
+          </button>
+          <button id="dl-choice-cancel" type="button" class="dl-choice-cancel">Cancelar</button>
+        </div>
       </div>
 
       <!-- Barra de Progresso Geral de Todos os Arquivos -->
@@ -689,10 +647,10 @@
     const tunnelStatusText = document.getElementById('tunnel-status-text');
     const expBadge = document.getElementById('exp-badge');
 
-    const toggleZipMode = document.getElementById('toggle-zip-mode');
-    const zipOptionsPanel = document.getElementById('zip-options-panel');
-    const zipLevelSelect = document.getElementById('zip-level');
-    const zipFilenameInput = document.getElementById('zip-filename');
+    const dlChoicePanel = document.getElementById('dl-choice');
+    const dlChoiceZip = document.getElementById('dl-choice-zip');
+    const dlChoiceFiles = document.getElementById('dl-choice-files');
+    const dlChoiceCancel = document.getElementById('dl-choice-cancel');
     const btnDownloadAll = document.getElementById('btn-download-all');
     const btnDownloadAllText = document.getElementById('btn-download-all-text');
     const filesList = document.getElementById('files-list');
@@ -1122,6 +1080,7 @@
           activeDownloads.delete(dl.fileId);
           const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
           if (btnDl) {
+        btnDl.classList.remove('hidden');
             btnDl.disabled = false;
             btnDl.textContent = '⬇ Tentar Novamente';
           }
@@ -1324,11 +1283,6 @@
       const totalSize = packData.totalSize || (packData.files || []).reduce((acc, f) => acc + (f.size || 0), 0);
       packSummary.textContent = `${(packData.files || []).length} arquivo(s) • ${formatBytes(totalSize)}`;
 
-      if (zipFilenameInput && !zipFilenameInput.value) {
-        const defaultZip = (packData.packName || 'Pacote_Compartilhado').replace(/\.zip$/i, '') + '.zip';
-        zipFilenameInput.value = defaultZip;
-      }
-
       updateExpirationCountdown();
       clearInterval(countdownTimer);
       countdownTimer = setInterval(updateExpirationCountdown, 1000);
@@ -1352,18 +1306,6 @@
       const min = Math.floor(remainingSec / 60);
       const sec = remainingSec % 60;
       expBadge.textContent = `⏳ Expira em: ${min}m ${sec < 10 ? '0' : ''}${sec}s`;
-    }
-
-    if (toggleZipMode) {
-      toggleZipMode.addEventListener('change', () => {
-        if (toggleZipMode.checked) {
-          zipOptionsPanel.classList.remove('hidden');
-          btnDownloadAllText.textContent = '⬇ Baixar Todos (.ZIP)';
-        } else {
-          zipOptionsPanel.classList.add('hidden');
-          btnDownloadAllText.textContent = '⬇ Baixar Todos os Arquivos';
-        }
-      });
     }
 
     function renderFilesList() {
@@ -1433,7 +1375,7 @@
               <button
                 id="btn-dl-${file.fileId}"
                 type="button"
-                class="file-btn"
+                class="file-btn hidden"
                 data-file-id="${file.fileId}"
               >
                 ⬇ Baixar
@@ -1500,13 +1442,31 @@
       }
     });
 
-    btnDownloadAll.addEventListener('click', async () => {
+    // Um único botão "Baixar": se o remetente permitiu .zip, pergunta neste momento
+    function packAllowsZip() {
+      return Boolean(packData) && packData.allowZip !== false;
+    }
+
+    btnDownloadAll.addEventListener('click', () => {
+      const files = (packData && packData.files) || [];
+      if (files.length === 0) return;
+      if (packAllowsZip()) {
+        dlChoicePanel.classList.toggle('hidden');
+        if (!dlChoicePanel.classList.contains('hidden')) dlChoiceZip.focus();
+        return;
+      }
+      runDownloadAll(false);
+    });
+    dlChoiceZip.addEventListener('click', () => { dlChoicePanel.classList.add('hidden'); runDownloadAll(true); });
+    dlChoiceFiles.addEventListener('click', () => { dlChoicePanel.classList.add('hidden'); runDownloadAll(false); });
+    dlChoiceCancel.addEventListener('click', () => dlChoicePanel.classList.add('hidden'));
+
+    async function runDownloadAll(isZipMode) {
       const files = packData.files || [];
       if (files.length === 0) return;
 
-      const isZipMode = Boolean(toggleZipMode && toggleZipMode.checked);
-      const compressLevel = zipLevelSelect ? Number(zipLevelSelect.value) : 6;
-      const customZipName = zipFilenameInput ? zipFilenameInput.value.trim() : '';
+      const compressLevel = 6;
+      const customZipName = '';
 
       btnDownloadAll.disabled = true;
 
@@ -1529,7 +1489,7 @@
           }
         }
 
-        btnDownloadAllText.textContent = `Compactando em .ZIP (Nível ${compressLevel})...`;
+        btnDownloadAllText.textContent = 'Compactando em .zip...';
 
         try {
           if (typeof fflate === 'undefined' || !fflate.zip) {
@@ -1578,9 +1538,9 @@
 
       setTimeout(() => {
         btnDownloadAll.disabled = false;
-        btnDownloadAllText.textContent = isZipMode ? '⬇ Baixar Todos (.ZIP)' : '⬇ Baixar Todos os Arquivos';
+        btnDownloadAllText.textContent = 'Baixar';
       }, 3000);
-    });
+    }
 
     function clearDownloadTimers(dl) {
       if (!dl) return;
@@ -1631,6 +1591,7 @@
       const btnDl = document.getElementById(`btn-dl-${fileId}`);
       if (progSection) progSection.classList.remove('hidden');
       if (btnDl) {
+        btnDl.classList.remove('hidden');
         btnDl.disabled = true;
         btnDl.textContent = 'Baixando...';
       }
@@ -1806,6 +1767,7 @@
                 activeDownloads.delete(dl.fileId);
                 const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
                 if (btnDl) {
+        btnDl.classList.remove('hidden');
                   btnDl.disabled = false;
                   btnDl.textContent = '⬇ Tentar Novamente';
                 }
@@ -1910,6 +1872,7 @@
 
       const btnDl = document.getElementById(`btn-dl-${fileId}`);
       if (btnDl) {
+        btnDl.classList.remove('hidden');
         btnDl.disabled = false;
         btnDl.textContent = '⬇ Tentar Novamente';
       }
@@ -1979,6 +1942,7 @@
 
       const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
       if (btnDl) {
+        btnDl.classList.remove('hidden');
         btnDl.textContent = '✓ Salvo';
         btnDl.disabled = false;
       }

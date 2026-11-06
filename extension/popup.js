@@ -447,6 +447,7 @@ const modalTunnelOptions = document.getElementById('modal-tunnel-options');
 const modalExpirationSelect = document.getElementById('modal-expiration-select');
 const modalDownloadLimitSelect = document.getElementById('modal-download-limit-select');
 const modalPasswordInput = document.getElementById('modal-password-input');
+const modalAllowZipInput = document.getElementById('modal-allow-zip');
 const btnModalGenPassword = document.getElementById('btn-modal-gen-password');
 const btnModalClearPassword = document.getElementById('btn-modal-clear-password');
 
@@ -3739,6 +3740,7 @@ if (btnModalConfirm) {
             password,
             passwordSalt,
             passwordHash,
+            allowZip: modalAllowZipInput ? modalAllowZipInput.checked : true,
             maxDownloads,
             expiresAt
           },
@@ -4315,7 +4317,8 @@ if (homeDropZone) {
       const files = await getFilesFromDataTransfer(e.dataTransfer?.items, e.dataTransfer?.files);
       if (files && files.length > 0) {
         handleSelectedFiles(files);
-        openModalForP2P(targetTagInput ? targetTagInput.value : '');
+        // Envio direto para um usuário agora é feito pelo chat: a tela inicial gera link
+        openModalForTunnel();
       }
     } catch (err) {
       console.error('Erro no drop da tela inicial:', err);
@@ -4323,7 +4326,7 @@ if (homeDropZone) {
   });
 
   homeDropZone.addEventListener('click', () => {
-    openModalForP2P(targetTagInput ? targetTagInput.value : '');
+    openModalForTunnel();
   });
 }
 
@@ -4419,6 +4422,7 @@ let activeVoiceRecorder = null;
 let chatForwardSelectedMsgIds = [];
 const chatForwardSelectedPeerTags = new Set();
 let activeLightboxItem = null;
+let lightboxZoomCtrl = null; // controlador de zoom/arraste da imagem aberta
 let currentEmojiCategory = 'recent';
 let typingDebounceTimer = null;
 
@@ -6364,8 +6368,7 @@ function openMediaLightbox(msgId) {
 
   activeLightboxItem = foundMsg;
   const media = foundMsg.media;
-  const blob = activeSessionFiles.get(media.transferId);
-  const blobUrl = blob ? URL.createObjectURL(blob) : null;
+  const blobUrl = getChatMediaBlobUrl(media.transferId) || null;
 
   if (lightboxMediaTitle) lightboxMediaTitle.textContent = media.fileName || 'Mídia do Chat';
   if (lightboxMediaMeta) {
@@ -6374,8 +6377,13 @@ function openMediaLightbox(msgId) {
   }
 
   if (lightboxMediaStage) {
+    if (lightboxZoomCtrl) { lightboxZoomCtrl.destroy(); lightboxZoomCtrl = null; }
     lightboxMediaStage.innerHTML = '';
-    if (foundMsg.type === 'image' && blobUrl) {
+    if (foundMsg.type === 'image' && blobUrl && window.PulseShareImageViewer) {
+      // Abre encaixada na tela; pinça/roda do mouse amplia e arrastar mostra o resto
+      lightboxZoomCtrl = window.PulseShareImageViewer.attach(lightboxMediaStage, blobUrl, { alt: media.fileName || '' });
+      lightboxMediaStage.appendChild(window.PulseShareImageViewer.buildZoomBar(lightboxZoomCtrl));
+    } else if (foundMsg.type === 'image' && blobUrl) {
       const img = document.createElement('img');
       img.src = blobUrl;
       img.className = 'max-w-full max-h-[75vh] object-contain rounded-xl shadow-2xl';
@@ -6400,6 +6408,7 @@ function openMediaLightbox(msgId) {
 }
 
 function closeMediaLightbox() {
+  if (lightboxZoomCtrl) { lightboxZoomCtrl.destroy(); lightboxZoomCtrl = null; }
   if (lightboxMediaStage) {
     const video = lightboxMediaStage.querySelector('video');
     if (video) video.pause();
@@ -6412,6 +6421,16 @@ function closeMediaLightbox() {
 if (btnLightboxClose) {
   btnLightboxClose.addEventListener('click', closeMediaLightbox);
 }
+
+// Teclado no lightbox: Esc fecha, + / - / 0 controlam o zoom
+document.addEventListener('keydown', (e) => {
+  if (!chatMediaLightbox || chatMediaLightbox.classList.contains('hidden')) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeMediaLightbox(); return; }
+  if (!lightboxZoomCtrl) return;
+  if (e.key === '+' || e.key === '=') lightboxZoomCtrl.zoomIn();
+  else if (e.key === '-') lightboxZoomCtrl.zoomOut();
+  else if (e.key === '0') lightboxZoomCtrl.reset();
+});
 
 if (btnLightboxDownload) {
   btnLightboxDownload.addEventListener('click', () => {

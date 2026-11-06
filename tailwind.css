@@ -990,3 +990,8 @@ body.expanded-view #btn-chat-back-list {
 .accent-emerald-500 { accent-color: #10b981; }
 .accent-indigo-500 { accent-color: #6366f1; }
 .nav-tab { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+
+/* --- utilitárias adicionadas manualmente (2026-11-06) --- */
+.grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+.object-cover { object-fit: cover; }
+.cursor-zoom-in { cursor: zoom-in; }

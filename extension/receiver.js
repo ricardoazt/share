@@ -88,10 +88,10 @@ const packSummary = document.getElementById('pack-summary');
 const tunnelStatusText = document.getElementById('tunnel-status-text');
 const expBadge = document.getElementById('exp-badge');
 
-const toggleZipMode = document.getElementById('toggle-zip-mode');
-const zipOptionsPanel = document.getElementById('zip-options-panel');
-const zipLevelSelect = document.getElementById('zip-level');
-const zipFilenameInput = document.getElementById('zip-filename');
+const dlChoicePanel = document.getElementById('dl-choice');
+const dlChoiceZip = document.getElementById('dl-choice-zip');
+const dlChoiceFiles = document.getElementById('dl-choice-files');
+const dlChoiceCancel = document.getElementById('dl-choice-cancel');
 const btnDownloadAll = document.getElementById('btn-download-all');
 const btnDownloadAllText = document.getElementById('btn-download-all-text');
 const filesList = document.getElementById('files-list');
@@ -520,6 +520,7 @@ function handleIncomingPacket(pkt) {
       activeDownloads.delete(dl.fileId);
       const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
       if (btnDl) {
+        btnDl.classList.remove('hidden');
         btnDl.disabled = false;
         btnDl.textContent = '⬇ Tentar Novamente';
       }
@@ -721,10 +722,6 @@ function showPackUI() {
   const totalSize = packData.totalSize || (packData.files || []).reduce((acc, f) => acc + (f.size || 0), 0);
   packSummary.textContent = `${(packData.files || []).length} arquivo(s) • ${formatBytes(totalSize)}`;
 
-  if (zipFilenameInput && !zipFilenameInput.value) {
-    const defaultZip = (packData.packName || 'Pacote_Compartilhado').replace(/\.zip$/i, '') + '.zip';
-    zipFilenameInput.value = defaultZip;
-  }
 
   updateExpirationCountdown();
   clearInterval(countdownTimer);
@@ -749,18 +746,6 @@ function updateExpirationCountdown() {
   const min = Math.floor(remainingSec / 60);
   const sec = remainingSec % 60;
   expBadge.textContent = `⏳ Expira em: ${min}m ${sec < 10 ? '0' : ''}${sec}s`;
-}
-
-if (toggleZipMode) {
-  toggleZipMode.addEventListener('change', () => {
-    if (toggleZipMode.checked) {
-      zipOptionsPanel.classList.remove('hidden');
-      btnDownloadAllText.textContent = '⬇ Baixar Todos (.ZIP)';
-    } else {
-      zipOptionsPanel.classList.add('hidden');
-      btnDownloadAllText.textContent = '⬇ Baixar Todos os Arquivos';
-    }
-  });
 }
 
 function renderFilesList() {
@@ -830,7 +815,7 @@ function renderFilesList() {
           <button
             id="btn-dl-${file.fileId}"
             type="button"
-            class="file-btn"
+            class="file-btn hidden"
             data-file-id="${file.fileId}"
           >
             ⬇ Baixar
@@ -897,13 +882,27 @@ filesList.addEventListener('click', (e) => {
   }
 });
 
-btnDownloadAll.addEventListener('click', async () => {
+// Um único botão "Baixar": se o remetente permitiu .zip, pergunta neste momento
+btnDownloadAll.addEventListener('click', () => {
+  const files = (packData && packData.files) || [];
+  if (files.length === 0) return;
+  if (packData.allowZip !== false) {
+    dlChoicePanel.classList.toggle('hidden');
+    if (!dlChoicePanel.classList.contains('hidden')) dlChoiceZip.focus();
+    return;
+  }
+  runDownloadAll(false);
+});
+dlChoiceZip.addEventListener('click', () => { dlChoicePanel.classList.add('hidden'); runDownloadAll(true); });
+dlChoiceFiles.addEventListener('click', () => { dlChoicePanel.classList.add('hidden'); runDownloadAll(false); });
+dlChoiceCancel.addEventListener('click', () => dlChoicePanel.classList.add('hidden'));
+
+async function runDownloadAll(isZipMode) {
   const files = packData.files || [];
   if (files.length === 0) return;
 
-  const isZipMode = Boolean(toggleZipMode && toggleZipMode.checked);
-  const compressLevel = zipLevelSelect ? Number(zipLevelSelect.value) : 6;
-  const customZipName = zipFilenameInput ? zipFilenameInput.value.trim() : '';
+  const compressLevel = 6;
+  const customZipName = '';
 
   btnDownloadAll.disabled = true;
 
@@ -926,7 +925,7 @@ btnDownloadAll.addEventListener('click', async () => {
       }
     }
 
-    btnDownloadAllText.textContent = `Compactando em .ZIP (Nível ${compressLevel})...`;
+    btnDownloadAllText.textContent = 'Compactando em .zip...';
 
     try {
       if (typeof fflate === 'undefined' || !fflate.zip) {
@@ -974,9 +973,9 @@ btnDownloadAll.addEventListener('click', async () => {
 
   setTimeout(() => {
     btnDownloadAll.disabled = false;
-    btnDownloadAllText.textContent = isZipMode ? '⬇ Baixar Todos (.ZIP)' : '⬇ Baixar Todos os Arquivos';
+    btnDownloadAllText.textContent = 'Baixar';
   }, 3000);
-});
+}
 
 function clearDownloadTimers(dl) {
   if (!dl) return;
@@ -1027,6 +1026,7 @@ function startFileDownload(fileId, onCompleteCallback, returnBufferOnly = false)
   const btnDl = document.getElementById(`btn-dl-${fileId}`);
   if (progSection) progSection.classList.remove('hidden');
   if (btnDl) {
+    btnDl.classList.remove('hidden');
     btnDl.disabled = true;
     btnDl.textContent = 'Baixando...';
   }
@@ -1198,6 +1198,7 @@ async function handleWebRtcOffer(transferId, sdpOffer, remoteIceServers = null) 
             activeDownloads.delete(dl.fileId);
             const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
             if (btnDl) {
+              btnDl.classList.remove('hidden');
               btnDl.disabled = false;
               btnDl.textContent = '⬇ Tentar Novamente';
             }
@@ -1301,6 +1302,7 @@ function cancelDownload(fileId) {
 
   const btnDl = document.getElementById(`btn-dl-${fileId}`);
   if (btnDl) {
+    btnDl.classList.remove('hidden');
     btnDl.disabled = false;
     btnDl.textContent = '⬇ Tentar Novamente';
   }
@@ -1370,6 +1372,7 @@ function finishDownload(dl) {
 
   const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
   if (btnDl) {
+    btnDl.classList.remove('hidden');
     btnDl.textContent = '✓ Salvo';
     btnDl.disabled = false;
   }

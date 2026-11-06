@@ -1,7 +1,7 @@
 # PulseShare — Guia de Referência do Projeto (para o Claude)
 
 > Mapa do código para continuar o desenvolvimento sem varrer o repositório inteiro.
-> Gerado em 2026-11-01, atualizado em 2026-11-05 (correções de chat/link/transferências; download de mídia do chat na extensão e layout responsivo). **Atualize este arquivo quando mudar arquitetura, protocolos ou a estrutura de arquivos.**
+> Gerado em 2026-11-01, atualizado em 2026-11-06 (pré-visualização de mídia no chat do app, visualizador de imagem com zoom, opção .zip no link, remoção do "Enviar para" da tela inicial). **Atualize este arquivo quando mudar arquitetura, protocolos ou a estrutura de arquivos.**
 > Idioma do projeto: português (UI, comentários, commits). Responder ao usuário em português.
 
 ## 1. O que é
@@ -24,6 +24,7 @@ Sem build JS, sem npm, sem framework: JS puro (IIFE / scripts globais), Tailwind
 | `404.html` | | Cópia idêntica de `index.html` (fallback do GitHub Pages) |
 | `pulseshare-crypto-identity.js` | ~460 | `window.PulseShareCrypto`: mnemônico, derivação, PIN/2FA, perfis, contatos, identicon, QR |
 | `pulseshare-mesh-engine.js` | ~1775 | `PulseShareMeshEngine` + CRDT, Kademlia, AODV, Reticulum, Yggdrasil, libp2p relay/gossipsub, DTN, Onion, Double Ratchet |
+| `pulseshare-media-viewer.js` | ~330 | `window.PulseShareImageViewer`: visualizador de imagem com zoom (pinça/roda/duplo toque) e arraste. `open({src,title,meta,actions})` (tela cheia, app) e `attach(stage, src)` + `buildZoomBar` (lightbox da extensão) |
 | `fflate.min.js`, `tailwind.css` | — | libs vendorizadas |
 | `extension/` | | Extensão Chrome MV3 (ver §5) |
 | `android/` | | Projeto Gradle Kotlin (ver §6) |
@@ -33,19 +34,19 @@ Sem build JS, sem npm, sem framework: JS puro (IIFE / scripts globais), Tailwind
 
 ### ⚠️ Arquivos DUPLICADOS (cópia manual, sem script de sync)
 Ao editar um, **copie para os outros** (hoje estão idênticos byte a byte):
-- `app.js`, `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `fflate.min.js`, `tailwind.css` → raiz **e** `android/app/src/main/assets/www/`
+- `app.js`, `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `pulseshare-media-viewer.js`, `fflate.min.js`, `tailwind.css` → raiz **e** `android/app/src/main/assets/www/`
 - `app.html` (raiz) → `android/app/src/main/assets/www/index.html` (**nome diferente!**)
 - `index.html` (portal) → `404.html`
-- `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `fflate.min.js`, `tailwind.css` → também em `extension/`
+- `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `pulseshare-media-viewer.js`, `fflate.min.js`, `tailwind.css` → também em `extension/`
   - ⚠️ `extension/tailwind.css` **já diverge** da raiz (tem regras extras do chat da extensão: layout responsivo, progresso de mídia, utilitárias que faltavam). Não copie a raiz por cima; adicione classes novas no fim do arquivo certo (o Tailwind é pré-compilado — classe que não está no CSS simplesmente não funciona).
 - portal (`index.html`) ≈ `extension/receiver.html` + `extension/receiver.js` (lógica equivalente, divergem; o receiver da extensão NÃO tem o chat temporário)
 
 Comando de sync sugerido:
 ```bash
-for f in app.js pulseshare-crypto-identity.js pulseshare-mesh-engine.js fflate.min.js tailwind.css; do cp $f android/app/src/main/assets/www/; done
+for f in app.js pulseshare-crypto-identity.js pulseshare-mesh-engine.js pulseshare-media-viewer.js fflate.min.js tailwind.css; do cp $f android/app/src/main/assets/www/; done
 cp app.html android/app/src/main/assets/www/index.html
 cp index.html 404.html
-for f in pulseshare-crypto-identity.js pulseshare-mesh-engine.js fflate.min.js tailwind.css; do cp $f extension/; done
+for f in pulseshare-crypto-identity.js pulseshare-mesh-engine.js pulseshare-media-viewer.js fflate.min.js; do cp $f extension/; done  # tailwind.css da extensão diverge
 ```
 
 ## 3. Protocolo de rede (comum a todos os clientes)
@@ -72,7 +73,7 @@ for f in pulseshare-crypto-identity.js pulseshare-mesh-engine.js fflate.min.js t
 - **Chat:** `CHAT_MESSAGE`, `CHAT_ACK` (`{msgId,status:'DELIVERED'|'READ',mediaReady?}`), `CHAT_READ`, `CHAT_TYPING`, `CHAT_REACTION` — implementados na extensão, no app e no portal. Quem recebe `CHAT_MESSAGE` responde `CHAT_ACK`; app/portal reenviam até 3x sem ACK (destino deduplica por `id`).
 - **Mídia de chat:** `transferId` sempre com prefixo **`chatmedia-`** (hífen! o offscreen da extensão usa esse prefixo para guardar a mídia em vez de baixar). Fluxo: `CHAT_MESSAGE` (com `transferId`+`fileMeta`+`media`) + `FILE_OFFER {isChatMedia}` → receptor aceita (`FILE_ACCEPT`) → WebRTC. A extensão aceita mídia de chat automaticamente e pode mandar **dois** `FILE_ACCEPT` (um do CHAT_MESSAGE e outro do FILE_OFFER): o remetente deve ignorar o duplicado.
 - **Relay mesh:** `MESH_RELAY_REQUEST/ACCEPTED/REJECT/CHUNK/DATA` (extensão). `MESH_RELAY_CHUNK` = `{chunkSeq (1..N), totalChunks, chunkBase64 (12 KB), isEof, totalBytes, fileMeta}` — o app envia (link via `TUNNEL_RELAY_PULL`) e recebe. Regra: **só aceitar dados de transferência que o usuário aceitou** (sem push não solicitado).
-- **Link público:** `PACK_INFO_REQUEST` → `PACK_INFO_RESPONSE`, `PACK_FILE_PULL`/`PUBLIC_LINK_PULL` (transferId `${shareId}_${fileId}_NNNN`), `PACK_DOWNLOAD_COMPLETE`, `TUNNEL_RELAY_PULL` (portal cai para relay se o DataChannel não abrir em 9 s). Servido pela extensão **e pelo app** (`publicShares` em `app.js`, só enquanto o app estiver aberto). Senha: `passwordHash = sha256(senha + passwordSalt)` verificado no portal.
+- **Link público:** `PACK_INFO_REQUEST` → `PACK_INFO_RESPONSE`, `PACK_FILE_PULL`/`PUBLIC_LINK_PULL` (transferId `${shareId}_${fileId}_NNNN`), `PACK_DOWNLOAD_COMPLETE`, `TUNNEL_RELAY_PULL` (portal cai para relay se o DataChannel não abrir em 9 s). Servido pela extensão **e pelo app** (`publicShares` em `app.js`, só enquanto o app estiver aberto). Senha: `passwordHash = sha256(senha + passwordSalt)` verificado no portal. `PACK_INFO_RESPONSE.allowZip` (ausente = true): portal/receiver têm **um único botão Baixar**; se `allowZip`, ao clicar oferece "Compactado (.zip)" ou "Arquivos separados", senão baixa separado. O remetente escolhe no modal do link (`input-link-allow-zip` no app, `modal-allow-zip` na extensão).
 
 ### DataChannel (`pulseshare-file-channel`, ordered)
 Mensagens JSON de controle + frames binários de **16 KB**:
@@ -95,14 +96,15 @@ Extensão (rico): adiciona `msgType/type`, `direction`, `forwarded`, `replyTo`, 
 | 6 | ~800 | `handleDirectSignal` (switch de todos os signalType), `setTransferStatus`/`updateTransferProgress`, `acceptIncomingTransfer`, `readFileSlice` (Blob / URI SAF / base64), helpers |
 | 7 | ~1100 | `startSenderWebRTC(tid, target, opts)` (ignora FILE_ACCEPT duplicado), `finishSend`, `createReceiveSink` (Android: `saveChunk` em blocos de 256 KB; web: Blob), `startReceiverWebRTC` (ignora offer não aceita), fila `pendingIce` |
 | 7b | ~1500 | Link público do app: `createPublicShare`, `handlePackInfoRequest`, `handlePackFilePull`, `startRelaySend`, `handleRelayChunk`, `renderShares`, `window.psShareAction` |
-| 8 | ~1730 | Chat: `handleIncomingChatMessage` (envia CHAT_ACK), `sendChatMessage` (BLE + MQTT; **sem** atalho CHAT_DIRECT), `scheduleChatRetry`, `sendChatMessageWithMedia`, `queueOutgoingFile`, `window.downloadChatMedia/cancelTransfer/acceptTransfer`, `renderChatMessages` (ticks ✓/✓✓/azul) |
+| 8a | ~1750 | Mídia do chat: `chatMediaKind`, IndexedDB, `setChatMediaBlob`/`getChatMediaUrl`, `captureOutgoingChatMedia`, `saveChatMediaToDisk`, `window.psOpenChatImage/psSaveChatMedia` |
+| 8 | ~2000 | Chat: `handleIncomingChatMessage` (envia CHAT_ACK), `sendChatMessage` (BLE + MQTT; **sem** atalho CHAT_DIRECT), `scheduleChatRetry`, `sendChatMessageWithMedia`, `queueOutgoingFile`, `window.downloadChatMedia/cancelTransfer/acceptTransfer`, `renderChatMessages` (ticks ✓/✓✓/azul) |
 | 9 | 1734 | Busca global de usuários (`openGlobalSearchModal`, `renderGlobalSearchResults`) |
 | 10 | 1840 | Menu do contato (salvar, listas/categorias, excluir conversa) |
 | 11 | 1897 | Transferências: `handleFilesSelected`, `handleAndroidSharedItems`, `renderStagedFiles`, `renderTransfers` |
 | 12 | 1999 | Abas: `currentTab` (padrão `'chat'`), `switchTab`, `updateHeaderStatus`, `renderMeshPeers`, `openSendModal('p2p'|'link')` |
 | 13 | 2092 | `initEvents()` (todos os `onclick` por id) + `DOMContentLoaded` → `initCryptoIdentity → initEvents → connectBrokers → switchTab('chat')` |
 
-**Regras de download:** mídia do chat só baixa sozinha se `ps_chat_auto_download === 'true'` (padrão false); arquivos fora do chat seguem `ps_auto_accept` (padrão true).
+**Regras de download:** foto/vídeo/áudio do chat ≤ 16 MB (`CHAT_PREVIEW_AUTO_MAX`) é aceito sozinho **só para pré-visualizar**: fica na memória + IndexedDB `PulseShareChatMedia/media` (chave = transferId, até 64 MB `CHAT_PREVIEW_KEEP_MAX`) e só vai para Download/ ao tocar em Salvar (`psSaveChatMedia`) ou com `ps_chat_auto_download === 'true'`. Demais arquivos do chat só baixam com auto-download ou clique; fora do chat segue `ps_auto_accept` (padrão true). O remetente guarda a própria mídia enviada (`captureOutgoingChatMedia`). `renderChatMessages` atualiza só as bolhas que mudaram (diff por `data-mid`) para vídeo/áudio não reiniciarem; foto abre em `psOpenChatImage` (visualizador com zoom; o botão voltar fecha).
 
 **IDs principais em `app.html`:** views `view-chat|home|transfers|shares|mesh`; nav `nav-*`; chat `chat-list-pane`, `chat-active-conversation-pane` (classe `active` = aberto), `chat-messages-container`, `chat-conversations-list`, `chat-categories-bar`, `input-chat-text`, `btn-chat-send`, `btn-chat-attach`; modais `modal-send`, `modal-settings`, `modal-global-search`, `modal-identity-profile`, `modal-qr-pair-scanner`, `modal-contact-menu`, `modal-add-category-list` (mostrar/ocultar com a classe `hidden`). Ao criar modal novo, adicioná-lo também em `onBackPressed`.
 
@@ -135,6 +137,8 @@ Na extensão o `meshEngine.init()` **é** chamado (DTN de chat, CRDT, Kademlia a
 - `FILE_ACCEPT` de mídia de chat sai no máximo 1× a cada 20 s (`acceptChatMediaOnce`); o offscreen não reinicia um WebRTC já aberto ao receber `FILE_ACCEPT`/`WEBRTC_OFFER` duplicado. Fallback para relay após aceite: 15 s (chat) / 8 s (demais).
 - `broadcastState()` tem throttle (250 ms) e persistência no storage a cada 1,5 s (`flushBroadcastState` força imediato).
 - Popup: `renderActiveChatConversation` compara uma assinatura (`buildChatRenderSignature`) e, se só mudou progresso, atualiza as barras no lugar (`updateChatMediaProgressInPlace`); blob URLs são cacheados (`getChatMediaBlobUrl`) e recarregados do IndexedDB ao reabrir o popup.
+- Lightbox de imagem usa `PulseShareImageViewer.attach` (zoom/arraste, teclas Esc/+/−/0).
+- Tela inicial: o botão "Enviar para Usuário" (`btn-send`) está oculto (envio direto é pelo chat); a área de arrastar abre o modal de link.
 - Layout do chat: abaixo de 760 px de largura (ou no popup) mostra só a lista OU a conversa (classe `chat-mobile-hidden`, botão ← volta e fecha a conversa); acima disso, lado a lado.
 
 Link público gerado: `https://ricardoazt.github.io/share/#share=<id>&owner=@tag&exp=<ts>` (base configurável; `DEFAULT_PORTAL_URL` em `popup.js`).
@@ -148,7 +152,7 @@ Link público gerado: `https://ricardoazt.github.io/share/#share=<id>&owner=@tag
 - `FileHelper.kt`: grava em `Download/<pasta>` (padrão `PulseShare`), streaming de chunks, MediaScanner, FileProvider.
 - `BluetoothMeshHelper.kt`: BLE GATT server + advertising + scan; service UUID `0000fe55-…`, characteristic `0000fe56-…`.
 - `PulseShareService.kt`: foreground service (dataSync) com WakeLock/WifiLock. `NotificationHelper.kt`: canais e notificações.
-- Build (JDK em `~/.local/jdk`, SDK em `~/Android/Sdk`): `JAVA_HOME=~/.local/jdk ANDROID_HOME=~/Android/Sdk ./gradlew assembleRelease --offline -x lintVitalAnalyzeRelease -x lintVitalReportRelease -x lintVitalRelease` (o lint não está no cache offline) → `app/build/outputs/apk/release/app-release.apk` (copiar para `PulseShare.apk` na raiz se for publicar).
+- Build (JDK 21 em `/usr/lib/jvm/java-21-openjdk-amd64` — `~/.local/jdk` não existe mais; SDK em `~/Android/Sdk`): `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ANDROID_HOME=~/Android/Sdk ./gradlew assembleRelease --offline -x lintVitalAnalyzeRelease -x lintVitalReportRelease -x lintVitalRelease` (o lint não está no cache offline) → `app/build/outputs/apk/release/app-release.apk` (copiar para `PulseShare.apk` na raiz se for publicar).
 
 ## 7. Portal público — `index.html` (cópia em `404.html`)
 

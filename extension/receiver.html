@@ -131,58 +131,31 @@
       flex-direction: column;
       gap: 10px;
     }
-    .zip-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-    .zip-title {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      font-weight: 700;
-      color: #cbd5e1;
-    }
-    .zip-toggle-wrap {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      color: #94a3b8;
-      cursor: pointer;
-    }
-    .zip-toggle-wrap input {
-      cursor: pointer;
-      accent-color: #f97316;
-    }
-    .zip-options {
+    .dl-choice {
       display: flex;
       flex-direction: column;
       gap: 8px;
-      padding-top: 8px;
+      padding-top: 10px;
       border-top: 1px solid #1e293b;
     }
-    .zip-field {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      font-size: 11px;
-      color: #94a3b8;
+    .dl-choice.hidden { display: none; }
+    .dl-choice-title { font-size: 12px; font-weight: 700; color: #cbd5e1; }
+    .dl-choice-btn {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%; text-align: left;
+      background: #0f172a; border: 1px solid #334155; border-radius: 12px;
+      padding: 10px 12px; color: #f1f5f9; cursor: pointer; font-family: inherit;
+      transition: border-color .15s, background .15s;
     }
-    .zip-select, .zip-input {
-      background: #0f172a;
-      border: 1px solid #334155;
-      border-radius: 8px;
-      padding: 6px 10px;
-      color: #f1f5f9;
-      font-size: 11px;
-      font-family: inherit;
-      outline: none;
+    .dl-choice-btn:hover, .dl-choice-btn:focus-visible { border-color: #f97316; background: rgba(249,115,22,.08); outline: none; }
+    .dl-choice-icon { font-size: 20px; }
+    .dl-choice-text { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+    .dl-choice-text small { font-size: 10.5px; color: #94a3b8; }
+    .dl-choice-cancel {
+      background: transparent; border: none; color: #94a3b8; font-size: 11px;
+      cursor: pointer; padding: 4px; font-family: inherit;
     }
-    .zip-select:focus, .zip-input:focus {
-      border-color: #f97316;
-    }
+    .dl-choice-cancel:hover { color: #f1f5f9; }
 
     .files-list {
       display: flex;
@@ -471,42 +444,27 @@
         </div>
       </div>
 
-      <!-- SEÇÃO DE COMPACTAÇÃO E DOWNLOAD EM .ZIP -->
+      <!-- DOWNLOAD: um único botão; se o remetente permitiu, oferece .zip ao clicar -->
       <div class="zip-section">
-        <div class="zip-header">
-          <div class="zip-title">
-            <span>🗜️</span>
-            <span>Opções de Compactação (.ZIP)</span>
-          </div>
-          <label class="zip-toggle-wrap">
-            <span>Empacotar em .ZIP</span>
-            <input id="toggle-zip-mode" type="checkbox" checked />
-          </label>
-        </div>
-
-        <div id="zip-options-panel" class="zip-options">
-          <div class="zip-field">
-            <label for="zip-level">Nível de compressão:</label>
-            <select id="zip-level" class="zip-select">
-              <option value="0">0 - Sem compressão (Store - mais rápido)</option>
-              <option value="1">1 - Mais rápido</option>
-              <option value="6" selected>6 - Normal equilibrado (Recomendado)</option>
-              <option value="9">9 - Máxima compressão</option>
-            </select>
-          </div>
-          <div class="zip-field">
-            <label for="zip-filename">Nome do arquivo compactado:</label>
-            <input id="zip-filename" type="text" class="zip-input" placeholder="Pacote_Compartilhado.zip" />
-          </div>
-        </div>
-
-        <!-- Botão Principal de Download -->
         <button id="btn-download-all" type="button" class="btn-all">
           <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M7.5 12L12 16.5m0 0l4.5-4.5M12 16.5V3" />
           </svg>
-          <span id="btn-download-all-text">⬇ Baixar Todos (.ZIP)</span>
+          <span id="btn-download-all-text">Baixar</span>
         </button>
+
+        <div id="dl-choice" class="dl-choice hidden">
+          <span class="dl-choice-title">Como deseja baixar?</span>
+          <button id="dl-choice-zip" type="button" class="dl-choice-btn">
+            <span class="dl-choice-icon">📦</span>
+            <span class="dl-choice-text"><strong>Compactado (.zip)</strong><small>Um único arquivo com tudo dentro</small></span>
+          </button>
+          <button id="dl-choice-files" type="button" class="dl-choice-btn">
+            <span class="dl-choice-icon">📄</span>
+            <span class="dl-choice-text"><strong>Arquivos separados</strong><small>Cada arquivo é salvo individualmente</small></span>
+          </button>
+          <button id="dl-choice-cancel" type="button" class="dl-choice-cancel">Cancelar</button>
+        </div>
       </div>
 
       <!-- Barra de Progresso Geral de Todos os Arquivos -->
