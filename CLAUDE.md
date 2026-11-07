@@ -1,7 +1,7 @@
 # PulseShare — Guia de Referência do Projeto (para o Claude)
 
 > Mapa do código para continuar o desenvolvimento sem varrer o repositório inteiro.
-> Gerado em 2026-11-01, atualizado em 2026-11-06 (pré-visualização de mídia no chat do app, visualizador de imagem com zoom, opção .zip no link, remoção do "Enviar para" da tela inicial). **Atualize este arquivo quando mudar arquitetura, protocolos ou a estrutura de arquivos.**
+> Gerado em 2026-11-01, atualizado em 2026-11-07 (2ª rodada: **a extensão passou a rodar o mesmo app do celular**, tela de entrada com chave de acesso/QR/.txt, QR real, foto de perfil com editor, notificações com som/vibração e segundo plano). **Atualize este arquivo quando mudar arquitetura, protocolos ou a estrutura de arquivos.**
 > Idioma do projeto: português (UI, comentários, commits). Responder ao usuário em português.
 
 ## 1. O que é
@@ -10,21 +10,24 @@ Rede social / mensageiro + transferência de arquivos **100% serverless P2P**:
 - Sinalização via **MQTT 3.1.1 binário sobre WebSocket** em brokers públicos (todos publicam/assinam um único tópico global).
 - Dados via **WebRTC DataChannel** (STUN Google/Cloudflare; TURN opcional configurável).
 - Identidade `@nome_hash6` derivada de 7 palavras mnemônicas (estilo Nostr).
-- Três clientes que compartilham a mesma malha: **Extensão Chrome MV3**, **App Android (WebView + Kotlin)** e **Portal web de download** (GitHub Pages).
+- **Um único app** (`app.html` + `app.js`) roda em três lugares com a mesma aparência e funções: **App Android** (WebView + Kotlin), **Extensão Chrome MV3** (janela + documento de fundo) e navegador. Diferenças só onde a plataforma exige (câmera/leitor de QR, Bluetooth, vibração, pasta de downloads: só Android → classe `android-only`). Além dele, o **Portal web de download** (GitHub Pages) para links públicos.
 
-Sem build JS, sem npm, sem framework: JS puro (IIFE / scripts globais), Tailwind pré-compilado em `tailwind.css`, `fflate.min.js` para ZIP.
+Sem build JS, sem npm, sem framework: JS puro (IIFE / scripts globais), Tailwind pré-compilado em `tailwind.css`, `fflate.min.js` para ZIP, `qrcode-core.js` (gerador de QR, núcleo do pacote `qrcode` 1.5.4 MIT empacotado → `window.PulseShareQR`) e `jsQR.js` (leitor de QR 1.4.0 Apache-2.0, carregado sob demanda só ao abrir a câmera).
 
 ## 2. Mapa de arquivos
 
 | Caminho | Linhas | Papel |
 |---|---|---|
-| `app.js` | ~3000 | **Núcleo do app Android/web chat-first** (UI + MQTT + WebRTC + chat + links públicos). Roda na WebView. |
-| `app.html` | ~800 | UI do app (chat-first, abas, modais). Carrega crypto → mesh → fflate → app.js. **No Android vira `assets/www/index.html`** |
+| `app.js` | ~4500 | **O app** (UI + MQTT + WebRTC + chat + links públicos + conta + notificações). Roda na WebView do Android, na extensão e no navegador. Flags `IS_ANDROID`, `IS_EXTENSION`, `IS_BACKGROUND_PAGE` (`?bg=1`) |
+| `app.html` | ~1000 | UI do app (chat-first, abas, modais, tela de entrada, editor de foto). Carrega qrcode-core → crypto → mesh → fflate → media-viewer → app.js. **No Android vira `assets/www/index.html`**; na extensão é `extension/app.html`. **Sem `onclick` inline** (CSP da extensão): botões gerados usam `data-ps-call`/`data-ps-args` |
 | `index.html` | ~2500 | **Portal público do link** (`#share=`): abas 📥 Download + 💬 Chat temporário com o dono do link. Script inline |
 | `404.html` | | Cópia idêntica de `index.html` (fallback do GitHub Pages) |
-| `pulseshare-crypto-identity.js` | ~460 | `window.PulseShareCrypto`: mnemônico, derivação, PIN/2FA, perfis, contatos, identicon, QR |
+| `pulseshare-crypto-identity.js` | ~470 | `window.PulseShareCrypto`: mnemônico, derivação, PIN/2FA, perfis, contatos, identicon, `generateQRCodeSVG` (QR real via `PulseShareQR`), **chave de acesso** `wordsToAccessKey`/`accessKeyToWords`, `isValidMnemonic` |
+| `qrcode-core.js`, `jsQR.js` | — | gerador e leitor de QR vendorizados |
+| `sounds/*.wav` | — | 5 sons de notificação sintetizados (pulso, sino, bipe, marimba, alerta); cópias em `extension/sounds/`, `assets/www/sounds/` e `android/.../res/raw/ps_*.wav` |
+| `icons/icon*.png` | — | ícone (16/32/48/128); cópia em `extension/icons/` |
 | `pulseshare-mesh-engine.js` | ~1775 | `PulseShareMeshEngine` + CRDT, Kademlia, AODV, Reticulum, Yggdrasil, libp2p relay/gossipsub, DTN, Onion, Double Ratchet |
-| `pulseshare-media-viewer.js` | ~330 | `window.PulseShareImageViewer`: visualizador de imagem com zoom (pinça/roda/duplo toque) e arraste. `open({src,title,meta,actions})` (tela cheia, app) e `attach(stage, src)` + `buildZoomBar` (lightbox da extensão) |
+| `pulseshare-media-viewer.js` | ~330 | `window.PulseShareImageViewer`: visualizador de imagem com zoom (pinça/roda/duplo toque) e arraste. `open({src,title,meta,actions})` |
 | `fflate.min.js`, `tailwind.css` | — | libs vendorizadas |
 | `extension/` | | Extensão Chrome MV3 (ver §5) |
 | `android/` | | Projeto Gradle Kotlin (ver §6) |
@@ -34,24 +37,22 @@ Sem build JS, sem npm, sem framework: JS puro (IIFE / scripts globais), Tailwind
 
 ### ⚠️ Arquivos DUPLICADOS (cópia manual, sem script de sync)
 Ao editar um, **copie para os outros** (hoje estão idênticos byte a byte):
-- `app.js`, `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `pulseshare-media-viewer.js`, `fflate.min.js`, `tailwind.css` → raiz **e** `android/app/src/main/assets/www/`
-- `app.html` (raiz) → `android/app/src/main/assets/www/index.html` (**nome diferente!**)
+- `app.js`, `qrcode-core.js`, `jsQR.js`, `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `pulseshare-media-viewer.js`, `fflate.min.js`, `tailwind.css`, `sounds/` → raiz, `android/app/src/main/assets/www/` **e** `extension/`
+- `app.html` (raiz) → `android/app/src/main/assets/www/index.html` (**nome diferente!**) e `extension/app.html`
 - `index.html` (portal) → `404.html`
-- `pulseshare-crypto-identity.js`, `pulseshare-mesh-engine.js`, `pulseshare-media-viewer.js`, `fflate.min.js`, `tailwind.css` → também em `extension/`
-  - ⚠️ `extension/tailwind.css` **já diverge** da raiz (tem regras extras do chat da extensão: layout responsivo, progresso de mídia, utilitárias que faltavam). Não copie a raiz por cima; adicione classes novas no fim do arquivo certo (o Tailwind é pré-compilado — classe que não está no CSS simplesmente não funciona).
-- portal (`index.html`) ≈ `extension/receiver.html` + `extension/receiver.js` (lógica equivalente, divergem; o receiver da extensão NÃO tem o chat temporário)
+- `sounds/*.wav` → também `android/app/src/main/res/raw/ps_<nome>.wav`; `icons/` → `extension/icons/`
+- `tailwind.css` é **pré-compilado**: classe que não está nele não funciona. Utilitárias novas vão no fim do arquivo (há blocos "adicionadas manualmente").
 
-Comando de sync sugerido:
+Comando de sync:
 ```bash
-for f in app.js pulseshare-crypto-identity.js pulseshare-mesh-engine.js pulseshare-media-viewer.js fflate.min.js tailwind.css; do cp $f android/app/src/main/assets/www/; done
-cp app.html android/app/src/main/assets/www/index.html
-cp index.html 404.html
-for f in pulseshare-crypto-identity.js pulseshare-mesh-engine.js pulseshare-media-viewer.js fflate.min.js; do cp $f extension/; done  # tailwind.css da extensão diverge
+for d in android/app/src/main/assets/www extension; do for f in app.js qrcode-core.js jsQR.js pulseshare-crypto-identity.js pulseshare-mesh-engine.js pulseshare-media-viewer.js fflate.min.js tailwind.css; do cp $f $d/; done; mkdir -p $d/sounds; cp sounds/*.wav $d/sounds/; done
+cp app.html android/app/src/main/assets/www/index.html; cp app.html extension/app.html
+cp index.html 404.html; cp icons/*.png extension/icons/
 ```
 
 ## 3. Protocolo de rede (comum a todos os clientes)
 
-- Brokers: `wss://broker.hivemq.com:8884/mqtt`, `wss://broker.emqx.io:8084/mqtt`, `wss://test.mosquitto.org:8081/mqtt` (a extensão `background.js` usa só os 2 primeiros).
+- Brokers: `wss://broker.hivemq.com:8884/mqtt`, `wss://broker.emqx.io:8084/mqtt`, `wss://test.mosquitto.org:8081/mqtt` .
 - Tópico único: **`pulseshare/v2/p2p_mesh_global`**. Todo mundo recebe tudo; filtragem por `to`.
 - Cliente MQTT é implementado à mão (CONNECT/SUBSCRIBE/PUBLISH) em cada arquivo — funções `encodeRemainingLength`, `encodeUTF8String`, `buildMqttPublishPacket`.
 - Pacote JSON publicado (envelope adicionado por `broadcastToMesh`):
@@ -62,18 +63,23 @@ for f in pulseshare-crypto-identity.js pulseshare-mesh-engine.js pulseshare-medi
 | meshType | Quem envia | Observação |
 |---|---|---|
 | `DIRECT_SIGNAL` | todos | `{to, transferId, signalType, payload}` — sinal ponto a ponto |
-| `PRESENCE_ANNOUNCE` | **App** (`app.js` a cada 15 s) | `{tag, reghash, nodeId, avatar, clientType:'android', relayMode}` — a extensão também trata (merge no roster) |
+| `PRESENCE_ANNOUNCE` | **App** (`app.js` a cada 15 s) | `{tag, reghash, nodeId, photoHash, clientType:'android'\|'extension-app'\|'web', relayMode}`. O campo `avatar` (HTML) **não é mais enviado nem aceito** da rede: identicon é gerado localmente (antes era injeção de HTML) |
 | `PEER_ANNOUNCE` / `ROSTER_GOSSIP_SYNC` | **Extensão** | `{roster:[...]}` gossip do catálogo de peers — o app também trata (`mergeRosterIntoRegistry`) |
-| `PROBE_USER_EXISTS` / `_REPLY`, `USER_REGISTERED`, `USER_CONFLICT_ALERT` | Extensão | registro/unicidade de `@usuario` |
+| `PROBE_USER_EXISTS` / `_REPLY`, `USER_REGISTERED`, `USER_CONFLICT_ALERT` | App (e a extensão antiga) | registro/unicidade de `@usuario`. `USER_REGISTERED.previousTag` = **troca de nome**: quem recebe migra conversa/contato só se verificar (mesmo `nodeId` já conhecido para a tag antiga, ou mesmo sufixo `_hash6` + `pubKeyHex`) |
 
 > Presença é interoperável desde 2026-11-05 (antes app e extensão não se viam). Visitantes do portal usam tag `@link_xxxxxx` e são ignorados nos rosters.
 
 ### `signalType` (dentro de `DIRECT_SIGNAL`)
 - **Transferência:** `FILE_OFFER` → `FILE_ACCEPT` (receptor) → `WEBRTC_OFFER` (remetente) → `WEBRTC_ANSWER` → `ICE_CANDIDATE`… ; `FILE_REJECT`, `TRANSFER_REJECT`.
+- **Foto do perfil:** `AVATAR_REQUEST {photoHash}` → `AVATAR_RESPONSE {photoHash, image}` (data URL JPEG 256×256, validada por `isSafeImageDataUrl`, ≤ 120 KB). Só contatos pedem (quando o `photoHash` da presença difere do salvo), no máximo 1×/min; resposta no máximo 1× a cada 20 s por pedinte.
+- **Troca de nome:** `USER_RENAMED {tag, previousTag, nodeId, pubKeyHex?}` enviado ponto a ponto a contatos/conversas após renomear (complementa o broadcast `USER_REGISTERED`). Mesma verificação acima.
 - **Chat:** `CHAT_MESSAGE`, `CHAT_ACK` (`{msgId,status:'DELIVERED'|'READ',mediaReady?}`), `CHAT_READ`, `CHAT_TYPING`, `CHAT_REACTION` — implementados na extensão, no app e no portal. Quem recebe `CHAT_MESSAGE` responde `CHAT_ACK`; app/portal reenviam até 3x sem ACK (destino deduplica por `id`).
 - **Mídia de chat:** `transferId` sempre com prefixo **`chatmedia-`** (hífen! o offscreen da extensão usa esse prefixo para guardar a mídia em vez de baixar). Fluxo: `CHAT_MESSAGE` (com `transferId`+`fileMeta`+`media`) + `FILE_OFFER {isChatMedia}` → receptor aceita (`FILE_ACCEPT`) → WebRTC. A extensão aceita mídia de chat automaticamente e pode mandar **dois** `FILE_ACCEPT` (um do CHAT_MESSAGE e outro do FILE_OFFER): o remetente deve ignorar o duplicado.
 - **Relay mesh:** `MESH_RELAY_REQUEST/ACCEPTED/REJECT/CHUNK/DATA` (extensão). `MESH_RELAY_CHUNK` = `{chunkSeq (1..N), totalChunks, chunkBase64 (12 KB), isEof, totalBytes, fileMeta}` — o app envia (link via `TUNNEL_RELAY_PULL`) e recebe. Regra: **só aceitar dados de transferência que o usuário aceitou** (sem push não solicitado).
-- **Link público:** `PACK_INFO_REQUEST` → `PACK_INFO_RESPONSE`, `PACK_FILE_PULL`/`PUBLIC_LINK_PULL` (transferId `${shareId}_${fileId}_NNNN`), `PACK_DOWNLOAD_COMPLETE`, `TUNNEL_RELAY_PULL` (portal cai para relay se o DataChannel não abrir em 9 s). Servido pela extensão **e pelo app** (`publicShares` em `app.js`, só enquanto o app estiver aberto). Senha: `passwordHash = sha256(senha + passwordSalt)` verificado no portal. `PACK_INFO_RESPONSE.allowZip` (ausente = true): portal/receiver têm **um único botão Baixar**; se `allowZip`, ao clicar oferece "Compactado (.zip)" ou "Arquivos separados", senão baixa separado. O remetente escolhe no modal do link (`input-link-allow-zip` no app, `modal-allow-zip` na extensão).
+- **Link público:** `PACK_INFO_REQUEST` → `PACK_INFO_RESPONSE`, `PACK_FILE_PULL`/`PUBLIC_LINK_PULL` (transferId `${shareId}_${fileId}_NNNN`), `PACK_DOWNLOAD_COMPLETE`, `TUNNEL_RELAY_PULL` (portal cai para relay se o DataChannel não abrir em 9 s). Servido pelo app (Android, extensão ou navegador) (`publicShares` em `app.js`, só enquanto o app estiver aberto). Senha: `passwordHash = sha256(senha + passwordSalt)` verificado no portal. `PACK_INFO_RESPONSE.allowZip` (ausente = true): o portal tem **um único botão Baixar**; se `allowZip`, ao clicar oferece "Compactado (.zip)" ou "Arquivos separados", senão baixa separado. O remetente escolhe no modal do link (`input-link-allow-zip`).
+
+### Quadro Bluetooth (app Android ↔ app Android)
+`Native.sendBleMessage(tagAnunciada, JSON)` com `{psf:1, ttl, h (saltos), p: <pacote da malha completo>}`. No Kotlin cada mensagem vira fragmentos `PSF|<id>|<i>|<n>|<bytes>` (MTU negociado até 517) remontados no GATT server; mensagens sem o prefixo (versões antigas) são entregues cruas. O anúncio BLE carrega só **24 bytes** da tag (sem lista de UUID; o scan filtra por service data): tags maiores são resolvidas pelo prefixo em `resolveBleTag` (app.js).
 
 ### DataChannel (`pulseshare-file-channel`, ordered)
 Mensagens JSON de controle + frames binários de **16 KB**:
@@ -92,67 +98,60 @@ Extensão (rico): adiciona `msgType/type`, `direction`, `forwarded`, `replyTo`, 
 | 2 | 26 | Estado global: `nodeId`, `myTag`, `peerRegistry`, `peerTransports` (`LAN`/`BLE`/`P2P`), `directDataChannels`, `blePeers`, `transfers`, `publicShares`, `chatMessages`, `activePeerConnections`, helpers `normalizeTag/formatBytes/formatTime` |
 | 3 | 112 | Objeto **`Native`** (wrapper de `window.PulseShareNative` com fallback web) e **`window.PulseShareNativeCallback`** (`onFilesPicked`, `onSharedFilesReceived`, `onBleMessageReceived`, `onBlePeersUpdated`, `onBackPressed` → retorna `'HANDLED'`/`'EXIT'`) |
 | 4 | 314 | Identidade: `initCryptoIdentity`, `updateIdentityUI`, `renderIdentityModal` |
-| 5 | ~453 | MQTT: `broadcastToMesh`, `sendSignal`, `connectSingleBroker`/`connectBrokers` (reconexão por broker + PINGREQ), `handleIncomingMqttBytes(ws, bytes)` (buffer por socket, vários pacotes por frame), `announcePresence`, `handleIncomingPacket`, `mergeRosterIntoRegistry`, BLE |
+| 4b | ~460 | **Troca de nome** (Configurações → 👤 Nome de Usuário): `startUsernameChange` → verificação pedindo 1 das 7 palavras → `probeUserExists` (2,5 s) → `applyUsernameChange` (re-deriva com as mesmas palavras: sufixo `_hash6` fixo, migra `sender` das minhas mensagens, reinicia BLE, `USER_REGISTERED` + `USER_RENAMED`). Tags antigas ficam em `myPreviousTags` (`isMyTag`) para sinais/links antigos ainda chegarem |
+| 5 | ~560 | MQTT: `buildMeshPacket`, `publishRawToBrokers`, `broadcastToMesh`, `sendSignal(to,tid,type,payload,{allRoutes})`, `connectSingleBroker`/`connectBrokers` (reconexão por broker + PINGREQ), `handleIncomingMqttBytes(ws, bytes)` (buffer por socket, vários pacotes por frame), `announcePresence`, `handleIncomingPacket(packet, via)` (`via` = `mqtt`/`ble`/`mesh`; trata `PROBE_USER_EXISTS`, `USER_REGISTERED`→`handleRemoteRename`), `mergeRosterIntoRegistry`, BLE (`handleBleIncomingMessage`, `resolveBleTag`) |
+| 5b | ~570 | **Roteamento inteligente**: `rankRoutes(tag)` ordena `ble` (vizinho Bluetooth, custo por RSSI), `mqtt` (internet, mais barato se o destino tem presença MQTT recente) e `mesh` (inunda vizinhos BLE com TTL 3; quem tem internet faz ponte) + latência medida por `CHAT_ACK` (`trackRttSent/Ack`, média móvel) + falhas (`trackRouteFailure`). Chat vai pelas 2 melhores rotas, retentativas por todas; sinalização WebRTC prefere internet. Pontes: `handleBleFrame` (BLE→internet/BLE) e `maybeBridgeToBle` (internet→vizinho BLE sem internet). `detectWebRtcPath` marca LAN quando o par ICE é host↔host. Selo na UI: `routeBadgeHtml` (🟢 LAN / 📶 BLE / 🔀 Malha / 🌐 Internet) |
 | 6 | ~800 | `handleDirectSignal` (switch de todos os signalType), `setTransferStatus`/`updateTransferProgress`, `acceptIncomingTransfer`, `readFileSlice` (Blob / URI SAF / base64), helpers |
 | 7 | ~1100 | `startSenderWebRTC(tid, target, opts)` (ignora FILE_ACCEPT duplicado), `finishSend`, `createReceiveSink` (Android: `saveChunk` em blocos de 256 KB; web: Blob), `startReceiverWebRTC` (ignora offer não aceita), fila `pendingIce` |
 | 7b | ~1500 | Link público do app: `createPublicShare`, `handlePackInfoRequest`, `handlePackFilePull`, `startRelaySend`, `handleRelayChunk`, `renderShares`, `window.psShareAction` |
 | 8a | ~1750 | Mídia do chat: `chatMediaKind`, IndexedDB, `setChatMediaBlob`/`getChatMediaUrl`, `captureOutgoingChatMedia`, `saveChatMediaToDisk`, `window.psOpenChatImage/psSaveChatMedia` |
 | 8 | ~2000 | Chat: `handleIncomingChatMessage` (envia CHAT_ACK), `sendChatMessage` (BLE + MQTT; **sem** atalho CHAT_DIRECT), `scheduleChatRetry`, `sendChatMessageWithMedia`, `queueOutgoingFile`, `window.downloadChatMedia/cancelTransfer/acceptTransfer`, `renderChatMessages` (ticks ✓/✓✓/azul) |
-| 9 | 1734 | Busca global de usuários (`openGlobalSearchModal`, `renderGlobalSearchResults`) |
+| 14 | ~3900 | **Conta, QR, foto, notificações** (antes do §13): `showOnboarding` / `initOnboardingEvents` (tela `view-onboarding`: chave de acesso, 7 palavras, importar .txt, ler QR [só Android], criar conta → `view-account-created` mostra chave+palavras), `loginWithWords/Key/FromParsed`, `parseLoginText` (aceita .txt exportado, `pulseshare://login?k=…&n=…` e o JSON antigo de pareamento), `exportRecoveryTxt` (`saveTextFileOnDevice`: Android → Download/, PC → download), `showMyLoginQr` (QR de login, ⚠️ dá acesso à conta), leitor `openQrScanner`/`closeQrScanner` (getUserMedia + jsQR), editor de foto (`openPhotoEditor`, pinça/arraste/roda, saída 256 px JPEG em `profile.photo`/`photoHash`), fotos de contatos (`maybeRequestPeerPhoto`, `handleAvatarResponse`), `notifyIncoming` (não avisa se a conversa está aberta e visível), `playNotifySound` (`sounds/<som>.wav` na web/extensão), configurações 🔔 (`ps_notify_enabled`, `ps_notify_sound`, `ps_notify_vibration`, `ps_background_mode`), `acquireCoreLock` (extensão), `migrateLegacyExtensionChats` (chat da extensão antiga em `chrome.storage` → app, uma vez), `openChatFromLaunch` (`?chat=` ou toque na notificação do Android) |
+| 9 | ~3300 | **Busca universal** (lupa do topo, `modal-global-search`): `renderGlobalSearchResults` agrupa 👤 Usuários (contatos/conversas; @tag completo digitado → "+ Adicionar"), 💬 Mensagens (trecho com destaque, sem acento) e 📎 Arquivos (mídia do chat, transferências, links). Clique numa mensagem abre a conversa e rola até ela (`scrollToChatMessage`) |
 | 10 | 1840 | Menu do contato (salvar, listas/categorias, excluir conversa) |
 | 11 | 1897 | Transferências: `handleFilesSelected`, `handleAndroidSharedItems`, `renderStagedFiles`, `renderTransfers` |
 | 12 | 1999 | Abas: `currentTab` (padrão `'chat'`), `switchTab`, `updateHeaderStatus`, `renderMeshPeers`, `openSendModal('p2p'|'link')` |
-| 13 | 2092 | `initEvents()` (todos os `onclick` por id) + `DOMContentLoaded` → `initCryptoIdentity → initEvents → connectBrokers → switchTab('chat')` |
+| 13 | ~4400 | `initEvents()` (todos os `onclick` por id + delegação `data-ps-call` com lista permitida `PS_CALLS`) + `DOMContentLoaded` → `acquireCoreLock` → `initCryptoIdentity` (false = sem conta → tela de entrada) → `initEvents` → `connectBrokers` → `switchTab('chat')` → `Native.setBackgroundMode` → `openChatFromLaunch` |
+
+**Contatos (sem descoberta automática):** a UI só mostra contatos adicionados (`getContacts`/`isContact`/`addContact`, catálogo `ps_contacts_catalog_v2`) e conversas existentes; a presença dos demais fica no `peerRegistry` só para rotear. Mensagem de quem não é contato aparece como "✉️ Pedido" com banner Adicionar/Bloquear (`chat-contact-request-banner`, `ps_blocked_tags`). Não-contatos **nunca** recebem aceite automático de arquivo (exceto visitantes `@link_`). A aba "Usuários" (`view-mesh`) lista só contatos com o selo da rota.
 
 **Regras de download:** foto/vídeo/áudio do chat ≤ 16 MB (`CHAT_PREVIEW_AUTO_MAX`) é aceito sozinho **só para pré-visualizar**: fica na memória + IndexedDB `PulseShareChatMedia/media` (chave = transferId, até 64 MB `CHAT_PREVIEW_KEEP_MAX`) e só vai para Download/ ao tocar em Salvar (`psSaveChatMedia`) ou com `ps_chat_auto_download === 'true'`. Demais arquivos do chat só baixam com auto-download ou clique; fora do chat segue `ps_auto_accept` (padrão true). O remetente guarda a própria mídia enviada (`captureOutgoingChatMedia`). `renderChatMessages` atualiza só as bolhas que mudaram (diff por `data-mid`) para vídeo/áudio não reiniciarem; foto abre em `psOpenChatImage` (visualizador com zoom; o botão voltar fecha).
 
-**IDs principais em `app.html`:** views `view-chat|home|transfers|shares|mesh`; nav `nav-*`; chat `chat-list-pane`, `chat-active-conversation-pane` (classe `active` = aberto), `chat-messages-container`, `chat-conversations-list`, `chat-categories-bar`, `input-chat-text`, `btn-chat-send`, `btn-chat-attach`; modais `modal-send`, `modal-settings`, `modal-global-search`, `modal-identity-profile`, `modal-qr-pair-scanner`, `modal-contact-menu`, `modal-add-category-list` (mostrar/ocultar com a classe `hidden`). Ao criar modal novo, adicioná-lo também em `onBackPressed`.
+**Perfil:** saiu da barra superior (o cabeçalho tem só "PulseShare", status, lupa e engrenagem). Fica no topo das **Configurações** (`settings-avatar-slot`, `btn-settings-open-identity` → modal de chaves com chave de acesso, 7 palavras, exportar .txt, QR; `btn-settings-change-photo` → editor). A conta não é mais criada sozinha: sem perfil ativo aparece a tela de entrada.
 
-**localStorage (app):** `ps_node_id`, `ps_my_tag`, `ps_my_reghash`, `ps_auto_accept`, `ps_chat_auto_download`, `ps_download_folder`, `ps_mesh_relay`, `ps_relay_bw`, `ps_turn_config`, `ps_chat_messages`, `ps_custom_categories`; crypto: `ps_profiles_v2`, `ps_active_profile_id_v2`, `ps_contacts_catalog_v2`.
+**IDs principais em `app.html`:** views `view-chat|home|transfers|shares|mesh`; nav `nav-*`; chat `chat-list-pane`, `chat-active-conversation-pane` (classe `active` = aberto), `chat-messages-container`, `chat-conversations-list`, `chat-categories-bar`, `input-chat-text`, `btn-chat-send`, `btn-chat-attach`; modais `modal-send`, `modal-settings`, `modal-global-search`, `modal-identity-profile`, `modal-qr-pair-scanner`, `modal-contact-menu`, `modal-add-category-list`, `modal-photo-editor`, `view-onboarding`, `view-account-created`, `view-other-window` (mostrar/ocultar com a classe `hidden`). Ao criar modal novo, adicioná-lo também em `onBackPressed`.
+
+**localStorage (app):** `ps_node_id`, `ps_my_tag`, `ps_previous_tags`, `ps_blocked_tags`, `ps_notify_enabled`, `ps_notify_sound`, `ps_notify_vibration`, `ps_background_mode`, `ps_legacy_migrated`, `ps_my_reghash`, `ps_auto_accept`, `ps_chat_auto_download`, `ps_download_folder`, `ps_mesh_relay`, `ps_relay_bw`, `ps_turn_config`, `ps_chat_messages`, `ps_custom_categories`; crypto: `ps_profiles_v2`, `ps_active_profile_id_v2`, `ps_contacts_catalog_v2`.
 
 **Depuração:** `window.__psDebug()` devolve `{myTag, transfers, peerRegistry, publicShares, chatMessages}`; `window.__psTrace = true` loga cada sinal recebido.
 
 **Observação:** `app.js` instancia `PulseShareMeshEngine` mas **não chama `init()`** — os algoritmos avançados (DTN, ratchet etc.) não estão ativos no Android.
 
-## 5. Extensão Chrome MV3 — `extension/`
+## 5. Extensão Chrome MV3 — `extension/` (desde 2026-11-07: **o mesmo app do celular**)
 
-Arquitetura: **popup (UI) ↔ service worker (`background.js`, estado + MQTT) ↔ offscreen document (`offscreen.js`, WebRTC)**. Service worker não tem WebRTC, por isso o offscreen.
+A extensão não tem mais UI própria: roda `extension/app.html` + `app.js` (cópias idênticas da raiz).
 
-| Arquivo | Linhas | Papel |
-|---|---|---|
-| `manifest.json` | | v3.0.0; perms `storage, downloads, notifications, offscreen`; host perms para os brokers |
-| `background.js` | ~3440 | Estado `state` (persistido em `chrome.storage.local`), MQTT multi-broker, registro de usuário, gossip, relay multi-hop/failover, roteador de mensagens. Seções: 1 janela persistente (233), 2 link público (414), 3 MQTT (514), 4 malha/gossip/relay (636–1415, `handleMeshPacket` 1209), 5 offscreen/estado (1423, `broadcastState`, `updateTransfer`), 6 negociação (`sendSignal` 1674, `handleIncomingSignal` 1769), 7 roteador `chrome.runtime.onMessage` (2507), 8 init (3289) |
-| `offscreen.js` | ~1435 | WebRTC sender/receiver (`startSenderWebRTC` 909, `startReceiverWebRTC` 1242), relay stream, IndexedDB `PulseShareDB/staged_files`, chunk 16 KB / leitura 1 MB |
-| `popup.html` / `popup.js` | 1550 / ~6280 | UI completa. Abas `nav-btn-chat|home|transfers|shares|mesh`. Chat completo (voz, emojis, reações, encaminhamento, lightbox) a partir da linha ~4337 |
-| `receiver.html/js` | | Receptor de link embutido na extensão (equivalente ao portal `index.html`) |
+| Arquivo | Papel |
+|---|---|
+| `manifest.json` | v4.0.0; perms `storage, notifications, offscreen, alarms`; host perms dos brokers; ação **sem popup** |
+| `sw.js` | Service worker (~120 linhas): clique no ícone → `openAppWindow` (janela tipo popup 430×880 com `app.html`, ou foca a existente); documento offscreen `app.html?bg=1` (reasons `WEB_RTC`, `LOCAL_STORAGE`) quando `backgroundMode` (chrome.storage) está ligado, recriado por `chrome.alarms` a cada 1 min; mensagens do app: `PS_NOTIFY` → `chrome.notifications` (silenciosa: o som é tocado pelo app) + contador no ícone, `PS_UI_OPEN` → zera contador, `PS_SET_BACKGROUND` → cria/fecha offscreen; clique na notificação → abre a janela em `app.html?chat=@tag` |
+| `app.html`, `app.js`, libs, `sounds/`, `icons/` | cópias da raiz |
 
-**Mensagens popup → background (`msg.type`):** `GET_STATE`, `SET_MY_TAG`, `REGISTER_USER`, `START_SEND_FILE`, `START_PUBLIC_LINK_SHARE`, `RESPOND_INCOMING`, `PAUSE/RESUME/CANCEL/DELETE_TRANSFER`, `SEND_CHAT_MESSAGE`, `SEND_CHAT_TYPING`, `SEND_CHAT_REACTION`, `MARK_CHAT_READ`, `DOWNLOAD_CHAT_MEDIA`, `DELETE_CHAT_MESSAGES`, `CLEAR_CHAT_CONVERSATION`, `TOGGLE_*`, `SET_RELAY_BANDWIDTH_LIMIT`, `DELETE_PEER`, `CLEAR_*`, `*_STAGED_TUNNEL_FILE(S)`, `GET_MESH_ENGINE_SUMMARY`, `ENSURE_OFFSCREEN`.
-**background ↔ offscreen (`action`):** `OFFSCREEN_SIGNAL`, `OFFSCREEN_CONTROL`, `OFFSCREEN_SET_TURN_CONFIG`, `OFFSCREEN_DOWNLOAD_CHAT_MEDIA`, `OFFSCREEN_RECEIVE_RELAY_CHUNK`, `START_MESH_RELAY_STREAM`, `STAGE_FILE_MEMORY`, `REVOKE_BLOB_URL`, `STATE_UPDATED`.
-Arquivos grandes passam do popup ao offscreen por `BroadcastChannel('pulseshare_file_bridge')` + IndexedDB.
-Na extensão o `meshEngine.init()` **é** chamado (DTN de chat, CRDT, Kademlia ativos).
+**Uma conexão por vez** (`acquireCoreLock` em app.js, Web Lock `pulseshare-core`): a janela pega o lock com `steal` (e relê `ps_chat_messages`); o documento de fundo que perde o lock recarrega e fica esperando; quando a janela fecha, o fundo recebe o lock, recarrega (para ler o estado novo) e conecta. Uma segunda janela toma o controle e a anterior mostra "Aberto em outra janela / Usar aqui" (`view-other-window`).
 
-**Mídia do chat na extensão (desde 2026-11-05):**
-- Receptor só aceita sozinho imagem/áudio/voz/vídeo ≤ 16 MB (`isAutoPreviewChatMedia` em `background.js`, ficam só na memória/IndexedDB para pré-visualizar). Demais arquivos ficam `AWAITING_ACCEPT` com botão **Baixar**.
-- Clique em Baixar → `DOWNLOAD_CHAT_MEDIA` → marca `saveToDisk:true`, envia `FILE_ACCEPT` (ou, se o arquivo já é local, pede ao offscreen) → ao concluir `OFFSCREEN_CHAT_MEDIA_READY` → `OFFSCREEN_DOWNLOAD_CHAT_MEDIA` → `chrome.downloads` em `PulseShare/` e grava `downloadId`. A bolha mostra progresso → 📂 (mostrar na pasta) / Abrir; a transferência aparece em Transferências (filtro `isTransferVisibleInList`). O offscreen **não** salva mais mídia de chat em disco por conta própria.
-- `FILE_ACCEPT` de mídia de chat sai no máximo 1× a cada 20 s (`acceptChatMediaOnce`); o offscreen não reinicia um WebRTC já aberto ao receber `FILE_ACCEPT`/`WEBRTC_OFFER` duplicado. Fallback para relay após aceite: 15 s (chat) / 8 s (demais).
-- `broadcastState()` tem throttle (250 ms) e persistência no storage a cada 1,5 s (`flushBroadcastState` força imediato).
-- Popup: `renderActiveChatConversation` compara uma assinatura (`buildChatRenderSignature`) e, se só mudou progresso, atualiza as barras no lugar (`updateChatMediaProgressInPlace`); blob URLs são cacheados (`getChatMediaBlobUrl`) e recarregados do IndexedDB ao reabrir o popup.
-- Lightbox de imagem usa `PulseShareImageViewer.attach` (zoom/arraste, teclas Esc/+/−/0).
-- Tela inicial: o botão "Enviar para Usuário" (`btn-send`) está oculto (envio direto é pelo chat); a área de arrastar abre o modal de link.
-- Layout do chat: abaixo de 760 px de largura (ou no popup) mostra só a lista OU a conversa (classe `chat-mobile-hidden`, botão ← volta e fecha a conversa); acima disso, lado a lado.
-
-Link público gerado: `https://ricardoazt.github.io/share/#share=<id>&owner=@tag&exp=<ts>` (base configurável; `DEFAULT_PORTAL_URL` em `popup.js`).
+A extensão antiga (popup.js/background.js/offscreen.js/receiver.*, ~10 mil linhas) foi removida em 2026-11-07; está no histórico do git (commit `d05585e`). O histórico de chat dela é migrado uma vez por `migrateLegacyExtensionChats`; os contatos já ficavam no mesmo localStorage da origem da extensão. Perdeu-se: relay multi-hop da extensão, receptor interno de link (links abrem o portal) e links públicos que sobrevivem ao fechar a janela (os arquivos do link ficam só na memória da página que criou).
 
 ## 6. Android nativo — `android/` (pacote `com.ricardo.pulseshare`)
 
-- minSdk 24, target/compile 36, Java/Kotlin 17, só AndroidX core/activity/lifecycle. Release assinado com chave **debug**.
-- `MainActivity.kt`: WebView carregando `file:///android_asset/www/index.html`, interface JS `PulseShareNative`, permissões (câmera, BLE, localização, notificação), intents `SEND`/`SEND_MULTIPLE`/`VIEW`, back → `PulseShareNativeCallback.onBackPressed()`, `evaluateJs()` para chamar callbacks.
-- `PulseShareBridge.kt`: métodos `@JavascriptInterface` — `openUrl` (abre link do portal no navegador), `pickFiles`, `getPendingSharedFiles`, `readFileBase64`, `readUriChunkBase64`, `saveFile`, `saveChunk(id,name,b64,isFirst,isLast,mime)`, `cancelTransfer`, `get/setDownloadDirectory`, `openDownloadFolder`, `openDownloadedFile`, `shareDownloadedFile`, `shareText`, `copyToClipboard`, `showToast`, `showNotification`, `start/stopKeepAlive`, `isBleAvailable`, `start/stopBleMesh`, `getNearbyBlePeers`, `sendBleMessage`.
+- minSdk 24, target/compile 36, Java/Kotlin 17, só AndroidX core/activity/lifecycle. Release assinado com chave **debug** (`~/.android/debug.keystore`, SHA-256 `fe:e5:98:d8…`). A chave antiga (`aa:df:b9:3e…`) foi perdida em 2026-11-07: aparelho com APK antigo precisa desinstalar (fazer backup do localStorage antes pela depuração da WebView: `adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>` + CDP, e restaurar depois).
+- `MainActivity.kt`: edge-to-edge — o padding do container soma o **teclado** (`WindowInsetsCompat.Type.ime()`), pois com target 35+ o `adjustResize` não encolhe a WebView (antes o teclado cobria a barra do chat e a busca). WebView carregando `file:///android_asset/www/index.html`, interface JS `PulseShareNative`, permissões (câmera, BLE, localização, notificação), intents `SEND`/`SEND_MULTIPLE`/`VIEW`, back → `PulseShareNativeCallback.onBackPressed()`, `evaluateJs()` para chamar callbacks.
+- `PulseShareBridge.kt`: métodos `@JavascriptInterface` — `notifyMessage(title, body, peerTag, sound, vibration)`, `previewNotification(sound, vibration)`, `setBackgroundMode(bool)`, `requestBatteryExemption`, `consumePendingOpenChat`, `openUrl` (abre link do portal no navegador), `pickFiles`, `getPendingSharedFiles`, `readFileBase64`, `readUriChunkBase64`, `saveFile`, `saveChunk(id,name,b64,isFirst,isLast,mime)`, `cancelTransfer`, `get/setDownloadDirectory`, `openDownloadFolder`, `openDownloadedFile`, `shareDownloadedFile`, `shareText`, `copyToClipboard`, `showToast`, `showNotification`, `start/stopKeepAlive`, `isBleAvailable`, `start/stopBleMesh`, `getNearbyBlePeers`, `sendBleMessage`.
   **Para nova função nativa:** adicionar aqui + wrapper no objeto `Native` em `app.js` (com fallback web).
 - `FileHelper.kt`: grava em `Download/<pasta>` (padrão `PulseShare`), streaming de chunks, MediaScanner, FileProvider.
-- `BluetoothMeshHelper.kt`: BLE GATT server + advertising + scan; service UUID `0000fe55-…`, characteristic `0000fe56-…`.
-- `PulseShareService.kt`: foreground service (dataSync) com WakeLock/WifiLock. `NotificationHelper.kt`: canais e notificações.
-- Build (JDK 21 em `/usr/lib/jvm/java-21-openjdk-amd64` — `~/.local/jdk` não existe mais; SDK em `~/Android/Sdk`): `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64 ANDROID_HOME=~/Android/Sdk ./gradlew assembleRelease --offline -x lintVitalAnalyzeRelease -x lintVitalReportRelease -x lintVitalRelease` (o lint não está no cache offline) → `app/build/outputs/apk/release/app-release.apk` (copiar para `PulseShare.apk` na raiz se for publicar).
+- `BluetoothMeshHelper.kt`: BLE GATT server + advertising + scan; service UUID `0000fe55-…`, characteristic `0000fe56-…`. Envio com fila por destino (`drainQueue`: uma conexão GATT por vez, `requestMtu(517)`, até 8 mensagens por conexão, fragmentos `PSF|…`), servidor remonta fragmentos e escritas longas (`onExecuteWrite`). Anúncio sem lista de UUID (24 bytes de tag).
+- `PulseShareService.kt`: foreground service **`remoteMessaging|dataSync`** (Android 14+; sem o limite de 6 h do dataSync). Modo "rodar em segundo plano" (`setBackgroundMode`, SharedPreferences `pulseshare_prefs/background_mode`): notificação fixa "PulseShare ativo" + WakeLock sem prazo; sem ele, o serviço só sobe durante transferências (WakeLock 1 h). `stopKeepAlive` do JS não derruba o serviço quando o modo está ligado. A WebView não é pausada em segundo plano (MainActivity não chama `onPause`/`pauseTimers`).
+- `NotificationHelper.kt`: `showMessage` usa um **canal por combinação som+vibração** (`ps_msg_<som>_<vibração>`; os canais antigos `ps_msg_*` são apagados ao trocar, porque o Android não deixa mudar o som de um canal). Sons: `res/raw/ps_<som>.wav`, `sistema` (padrão do aparelho) ou `nenhum`. Vibrações: `dupla`, `curta`, `longa`, `tripla`, `batida`, `nenhuma`. Um aviso por contato (id fixo por tag); toque abre `MainActivity` com `EXTRA_OPEN_CHAT` → `PulseShareNativeCallback.onOpenChat(tag)`. `preview` toca o som (MediaPlayer) e vibra na hora.
+- Build (JDK 17 em `~/.local/jdk` — em 2026-11-07 `/usr/lib/jvm` não existia; SDK em `~/Android/Sdk`): `JAVA_HOME=~/.local/jdk ANDROID_HOME=~/Android/Sdk ./gradlew assembleRelease --offline -x lintVitalAnalyzeRelease -x lintVitalReportRelease -x lintVitalRelease` (o lint não está no cache offline) → `app/build/outputs/apk/release/app-release.apk` (copiar para `PulseShare.apk` na raiz se for publicar).
 
 ## 7. Portal público — `index.html` (cópia em `404.html`)
 
@@ -172,13 +171,18 @@ Página standalone (script inline, sem `app.js`) que lê `#share=&owner=&exp=&tu
 4. `chatMessages` inteiro serializado no localStorage a cada mensagem (limite ~5 MB).
 5. Arquivos duplicados sem sync automático (§2); APK binário commitado.
 6. Sem testes unitários. E2E manuais com Chrome+puppeteer (ver §10).
-7. `extension/receiver.html/js` (receptor interno) não tem o chat temporário do portal.
+7. Links públicos e relay multi-hop: a extensão nova serve links só enquanto a janela/página que criou o link estiver aberta, e nenhum cliente atua mais como relay `MESH_RELAY_*`.
+8. O ícone do app Android ainda é o robô padrão (só a extensão ganhou `icons/`). O PIN/2FA do modal de identidade não tem ação ligada.
+9. Rota BLE testada só com ponte nativa simulada (falta teste em 2 aparelhos reais). Arquivos não passam por BLE (só sinalização/chat ≤ 3,5 KB por quadro).
+10. Após trocar o nome, o **chat temporário** de links públicos antigos não funciona (o portal compara `senderTag` com o `owner` do link); o download continua (tags antigas aceitas via `isMyTag`). Na extensão, a tag antiga fica livre para outros.
 
 ## 9. Checklist ao fazer alterações
 
 - Mudou JS/HTML compartilhado? → sincronizar cópias (§2).
-- Mudou protocolo (meshType/signalType/campos)? → atualizar **app.js, background.js/offscreen.js, index.html (portal) e receiver.js** e a tabela §3 deste arquivo.
-- Mudou ponte nativa? → `PulseShareBridge.kt` + `Native` em `app.js`.
+- Mudou protocolo (meshType/signalType/campos)? → atualizar **app.js (e suas cópias) e index.html (portal)** e a tabela §3 deste arquivo.
+- Mudou ponte nativa? → `PulseShareBridge.kt` + `Native` em `app.js` (com fallback web/extensão).
+- Botão em HTML gerado? → `data-ps-call="fn" data-ps-args="a|b"` e incluir `fn` em `PS_CALLS` (nada de `onclick` inline: a extensão bloqueia).
+- Recurso só de celular (câmera, BLE, vibração)? → classe `android-only` (e `desktop-only` para o inverso).
 - Novo modal no app → registrar em `onBackPressed`.
 - Teste rápido de protocolo: `node test_chat_media_e2e.mjs` / `node test_p2p_real_e2e.mjs` (usam brokers públicos reais; o segundo tem um `@tag` de dispositivo fixo no código).
 - Commits em português no estilo `feat(escopo): …` / `fix: …`.
@@ -186,4 +190,4 @@ Página standalone (script inline, sem `app.js`) que lê `#share=&owner=&exp=&tu
 
 ## 10. Testes E2E (como foram feitos em 2026-11-05)
 
-Chrome real (`/usr/bin/google-chrome`) via `puppeteer-core` com a extensão carregada (`enableExtensions`, `pipe: true`), servindo uma **cópia** do projeto com o tópico MQTT trocado para um tópico de teste (nunca testar no tópico global real — nós reais do usuário, ex. `@flo_ricardo`, participam como relay). Cenários cobertos: chat texto+mídia ext↔ext, app↔ext, app↔app; envio direto ext→ext; link da extensão e do app → portal (download, ZIP, relay forçado) e chat temporário com arquivos nos dois sentidos. Para comandar o popup: `chrome.runtime.sendMessage({action: ...})` e funções globais do `popup.js` (`openChatConversation`, `addChatStagedAttachment`, `sendChatMessage`, `saveStagedFile`).
+Chrome real (`/usr/bin/google-chrome`) via `puppeteer-core` com a extensão carregada (`enableExtensions`, `pipe: true`), servindo uma **cópia** do projeto com o tópico MQTT trocado para um tópico de teste (nunca testar no tópico global real — nós reais do usuário, ex. `@flo_ricardo`, participam como relay). Cenários cobertos: chat texto+mídia ext↔ext, app↔ext, app↔app; envio direto ext→ext; link da extensão e do app → portal (download, ZIP, relay forçado) e chat temporário com arquivos nos dois sentidos. (Esses cenários eram da extensão antiga.) Na extensão nova, abra `chrome-extension://<id>/app.html` e use as mesmas funções globais do app (`openActiveChat`, `__psDebug`); o documento de fundo é o alvo `app.html?bg=1` e o service worker é `sw.js` (`chrome.notifications.getAll`, `chrome.action.getBadgeText`). No celular: `adb forward tcp:9333 localabstract:webview_devtools_remote_<pid>` + puppeteer `connect({browserURL:'http://localhost:9333'})`.

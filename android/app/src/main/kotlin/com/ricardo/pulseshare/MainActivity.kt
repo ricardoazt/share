@@ -197,7 +197,10 @@ class MainActivity : ComponentActivity() {
             val systemBars = windowInsets.getInsets(
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
-            view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            // Edge-to-edge (target 35+) ignora adjustResize: desconta o teclado manualmente
+            // para a WebView encolher e a barra de digitação / busca não ficarem cobertas.
+            val ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+            view.setPadding(systemBars.left, systemBars.top, systemBars.right, maxOf(systemBars.bottom, ime.bottom))
             windowInsets
         }
 
@@ -234,8 +237,25 @@ class MainActivity : ComponentActivity() {
         deliverPendingSharedFiles()
     }
 
+    // Toque numa notificação de mensagem → abre a conversa
+    private var pendingOpenChat: String = ""
+    fun consumePendingOpenChat(): String {
+        val t = pendingOpenChat
+        pendingOpenChat = ""
+        return t
+    }
+
     private fun handleIntent(intent: Intent?) {
         if (intent == null) return
+        intent.getStringExtra(NotificationHelper.EXTRA_OPEN_CHAT)?.let { tag ->
+            intent.removeExtra(NotificationHelper.EXTRA_OPEN_CHAT)
+            val safe = tag.replace(Regex("[^a-z0-9_@]"), "")
+            if (safe.isNotEmpty()) {
+                pendingOpenChat = safe
+                // App já carregado: avisa o JS direto
+                evaluateJs("window.PulseShareNativeCallback && window.PulseShareNativeCallback.onOpenChat && window.PulseShareNativeCallback.onOpenChat('$safe')")
+            }
+        }
         val action = intent.action
         val type = intent.type
 

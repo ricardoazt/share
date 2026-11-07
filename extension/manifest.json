@@ -1,33 +1,31 @@
 {
   "manifest_version": 3,
-  "name": "PulseShare - Rede P2P Serverless & Link WebRTC",
-  "version": "3.0.0",
-  "description": "Transferência 100% P2P sem servidor para arquivos grandes (+100MB / +1GB) via WebRTC DataChannel, malha MQTT e Link Público direto.",
-  "permissions": [
-    "storage",
-    "downloads",
-    "downloads.open",
-    "notifications",
-    "offscreen"
-  ],
+  "name": "PulseShare",
+  "version": "4.0.0",
+  "description": "O mesmo app PulseShare do celular no computador: mensagens e arquivos P2P sem servidor, com notificações e recebimento em segundo plano.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["storage", "notifications", "offscreen", "alarms"],
   "host_permissions": [
     "wss://broker.emqx.io/*",
     "wss://broker.hivemq.com/*",
     "wss://test.mosquitto.org/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "sw.js"
   },
   "action": {
-    "default_title": "PulseShare P2P"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["receiver.html", "receiver.js", "tailwind.css", "fflate.min.js", "pulseshare-mesh-engine.js", "pulseshare-crypto-identity.js"],
-      "matches": ["<all_urls>"]
+    "default_title": "Abrir PulseShare",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
     }
-  ],
+  },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; media-src 'self' blob: data:; img-src 'self' blob: data: https:;"
+    "extension_pages": "script-src 'self'; object-src 'self'; media-src 'self' blob: data:; img-src 'self' blob: data:;"
   }
 }

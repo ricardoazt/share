@@ -384,65 +384,68 @@
     }
   };
 
-  // 5. GERADOR COMPACTO AUTÔNOMO DE QR CODE (SVG PURO)
-  // Implementação Reed-Solomon Byte-Mode QR Code Minimalista para Pareamento
+  // 5. QR CODE REAL (usa o gerador vendorizado qrcode-core.js → window.PulseShareQR)
+  // O gerador antigo só desenhava um padrão parecido com QR e nenhum leitor conseguia ler.
   function generateQRCodeSVG(text, size = 220) {
-    // Codifica payload base64 seguro para URL
-    const safeData = encodeURIComponent(text);
-    // Renderiza SVG elegante com padrão visual QR de alta legibilidade
-    const svgHeader = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="${size}" height="${size}" shape-rendering="crispEdges">
-      <rect width="256" height="256" fill="#ffffff" rx="16"/>
-      <g fill="#0f172a">`;
-
-    // Matriz simplificada baseada em hash pseudo-aleatório dos bytes do texto
-    const bytes = textEncoder.encode(text);
-    const gridSize = 25;
-    const cellSize = 8;
-    const offset = 28;
-
-    let rects = '';
-    
-    // Função auxiliar para desenhar cantos de posicionamento (Finder Patterns padrão QR)
-    function drawFinder(rX, rY) {
-      return `<path d="M ${rX} ${rY} h 56 v 56 h -56 Z M ${rX+8} ${rY+8} v 40 h 40 v -40 Z M ${rX+16} ${rY+16} h 24 v 24 h -24 Z" fill-rule="evenodd"/>`;
+    const QR = global.PulseShareQR;
+    if (!QR || typeof QR.create !== 'function') {
+      return `<div style="width:${size}px;padding:12px;font:12px sans-serif;color:#0f172a">Gerador de QR indisponível (qrcode-core.js não carregado).</div>`;
     }
-
-    rects += drawFinder(offset, offset);
-    rects += drawFinder(offset + 144, offset);
-    rects += drawFinder(offset, offset + 144);
-
-    // Gera bits de dados baseados no payload
-    let seed = 0;
-    for (let i = 0; i < bytes.length; i++) seed = (seed * 31 + bytes[i]) >>> 0;
-
-    for (let r = 0; r < gridSize; r++) {
-      for (let c = 0; c < gridSize; c++) {
-        // Pula os 3 localizadores nos cantos
-        const inFinder1 = r < 7 && c < 7;
-        const inFinder2 = r < 7 && c >= gridSize - 7;
-        const inFinder3 = r >= gridSize - 7 && c < 7;
-        if (inFinder1 || inFinder2 || inFinder3) continue;
-
-        // Padrão de temporização
-        if (r === 6 || c === 6) {
-          if ((r + c) % 2 === 0) {
-            rects += `<rect x="${offset + c * cellSize}" y="${offset + r * cellSize}" width="${cellSize}" height="${cellSize}"/>`;
-          }
-          continue;
-        }
-
-        // Pseudo-PRNG determinístico com byte array interleaving
-        seed = (seed * 1664525 + 1013904223) >>> 0;
-        const bitIndex = (r * gridSize + c) % bytes.length;
-        const bit = (bytes[bitIndex] ^ (seed >>> 24)) & 1;
-
-        if (bit === 1) {
-          rects += `<rect x="${offset + c * cellSize}" y="${offset + r * cellSize}" width="${cellSize}" height="${cellSize}"/>`;
-        }
+    const qr = QR.create(String(text), { errorCorrectionLevel: 'M' });
+    const n = qr.modules.size;
+    const data = qr.modules.data;
+    const quiet = 4;
+    const dim = n + quiet * 2;
+    let path = '';
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        if (data[r * n + c]) path += `M${c + quiet} ${r + quiet}h1v1h-1z`;
       }
     }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${dim} ${dim}" width="${size}" height="${size}" shape-rendering="crispEdges">` +
+      `<rect width="${dim}" height="${dim}" fill="#ffffff"/><path d="${path}" fill="#0f172a"/></svg>`;
+  }
 
-    return svgHeader + rects + `</g></svg>`;
+  // 6. CHAVE DE ACESSO ÚNICA ("hash" da conta)
+  // Codifica as 7 palavras (índices de 10 bits na lista) + 10 bits de verificação
+  // (SHA-256 das palavras) em 20 dígitos hex: ps-XXXXX-XXXXX-XXXXX-XXXXX.
+  // É reversível de propósito: quem tem a chave entra na conta; quem tem as 7
+  // palavras recalcula a mesma chave. Trate como senha.
+  async function checksum10(words) {
+    const buf = await crypto.subtle.digest('SHA-256', textEncoder.encode(words.join(' ')));
+    const b = new Uint8Array(buf);
+    return ((b[0] << 2) | (b[1] >> 6)) & 0x3ff;
+  }
+
+  async function wordsToAccessKey(seedPhrase) {
+    const words = String(seedPhrase || '').trim().toLowerCase().split(/\s+/);
+    if (words.length !== 7) return null;
+    const idx = words.map((w) => MNEMONIC_WORDS.indexOf(w));
+    if (idx.some((i) => i < 0 || i > 1023)) return null;
+    let big = 0n;
+    idx.forEach((i) => { big = (big << 10n) | BigInt(i); });
+    big = (big << 10n) | BigInt(await checksum10(words));
+    const hex = big.toString(16).padStart(20, '0');
+    return 'ps-' + hex.match(/.{5}/g).join('-');
+  }
+
+  async function accessKeyToWords(key) {
+    const hex = String(key || '').toLowerCase().replace(/^ps-?/, '').replace(/[^0-9a-f]/g, '');
+    if (hex.length !== 20) return null;
+    let big = BigInt('0x' + hex);
+    const check = Number(big & 0x3ffn);
+    big >>= 10n;
+    const idx = [];
+    for (let i = 0; i < 7; i++) { idx.unshift(Number(big & 0x3ffn)); big >>= 10n; }
+    if (idx.some((i) => i >= MNEMONIC_WORDS.length)) return null;
+    const words = idx.map((i) => MNEMONIC_WORDS[i]);
+    if ((await checksum10(words)) !== check) return null;
+    return words.join(' ');
+  }
+
+  function isValidMnemonic(seedPhrase) {
+    const words = String(seedPhrase || '').trim().toLowerCase().split(/\s+/);
+    return words.length === 7 && words.every((w) => MNEMONIC_WORDS.includes(w));
   }
 
   // Exporta para o escopo global
@@ -453,6 +456,9 @@
     decryptWithPIN,
     generateIdenticonSvg,
     generateQRCodeSVG,
+    wordsToAccessKey,
+    accessKeyToWords,
+    isValidMnemonic,
     ProfilesManager
   };
 

@@ -233,6 +233,44 @@ class PulseShareBridge(
         }
     }
 
+    // Notificação de mensagem/arquivo com o som e a vibração escolhidos
+    @JavascriptInterface
+    fun notifyMessage(title: String, body: String, peerTag: String, sound: String, vibration: String) {
+        mainHandler.post { NotificationHelper.showMessage(activity, title, body, peerTag, sound, vibration) }
+    }
+
+    @JavascriptInterface
+    fun previewNotification(sound: String, vibration: String) {
+        mainHandler.post { NotificationHelper.preview(activity, sound, vibration) }
+    }
+
+    @JavascriptInterface
+    fun setBackgroundMode(enabled: Boolean) {
+        mainHandler.post { PulseShareService.setBackgroundMode(activity, enabled) }
+    }
+
+    // Abre a tela do sistema para tirar o app da otimização de bateria (Samsung mata apps em segundo plano)
+    @JavascriptInterface
+    fun requestBatteryExemption() {
+        mainHandler.post {
+            try {
+                val pm = activity.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                val intent = if (!pm.isIgnoringBatteryOptimizations(activity.packageName)) {
+                    Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${activity.packageName}"))
+                } else {
+                    Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                }
+                activity.startActivity(intent)
+            } catch (e: Exception) {
+                Toast.makeText(activity, "Abra Configurações → Bateria → PulseShare → Sem restrições", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    // Conversa a abrir quando o app foi aberto pelo toque numa notificação
+    @JavascriptInterface
+    fun consumePendingOpenChat(): String = activity.consumePendingOpenChat()
+
     @JavascriptInterface
     fun startKeepAlive(status: String) {
         PulseShareService.start(activity, status)

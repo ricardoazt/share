@@ -85,8 +85,20 @@
       align-items: center !important;
       justify-content: center !important;
     }
+    /* Fotos de perfil (img) ocupam o slot inteiro, como os identicons SVG */
+    .ps-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    /* Plataforma: html.is-android mostra .android-only; os demais escondem */
+    html:not(.is-android) .android-only { display: none !important; }
+    html.is-android .desktop-only { display: none !important; }
+    /* Editor de foto */
+    #photo-editor-stage { touch-action: none; cursor: grab; }
+    #photo-editor-stage:active { cursor: grabbing; }
+    #photo-editor-stage img { position: absolute; top: 0; left: 0; transform-origin: 0 0; user-select: none; -webkit-user-drag: none; max-width: none; }
+    .photo-editor-mask { box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.72); border-radius: 9999px; border: 2px solid rgba(255,255,255,0.85); }
+    /* Leitor de QR */
+    #qr-scan-video { width: 100%; height: 100%; object-fit: cover; }
+    .qr-scan-frame { border: 3px solid #6366f1; border-radius: 1.25rem; box-shadow: 0 0 0 9999px rgba(2, 6, 23, 0.55); }
     #chat-contact-avatar svg,
-    #header-avatar-slot svg,
     .chat-avatar svg,
     .avatar-slot svg {
       width: 100% !important;
@@ -111,28 +123,31 @@
     .chat-slide-pane.active {
       transform: translateX(0);
     }
+    /* Utilitárias que faltavam no tailwind.css pré-compilado */
+    .max-h-\[65vh\] { max-height: 65vh; }
+    .border-indigo-500\/50 { border-color: rgb(99 102 241 / 0.5); }
+    .focus\:border-amber-500:focus { border-color: #f59e0b; }
+    .px-0\.5 { padding-left: 0.125rem; padding-right: 0.125rem; }
+    .break-words { overflow-wrap: break-word; }
+    .max-h-full { max-height: 100%; }
+    .rounded-b-3xl { border-bottom-left-radius: 1.5rem; border-bottom-right-radius: 1.5rem; }
+    /* Mensagem encontrada pela busca */
+    .search-hit > div > div { outline: 2px solid #f59e0b; outline-offset: 2px; transition: outline-color 0.4s; }
   </style>
 </head>
 <body class="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden relative">
 
   <!-- CABEÇALHO NATIVO SUPERIOR -->
   <header class="px-4 py-2.5 bg-slate-900/95 border-b border-slate-800/80 flex items-center justify-between shrink-0 z-30 shadow-md">
-    <div class="flex items-center gap-2.5 cursor-pointer" id="header-profile-btn" title="Perfil Criptográfico & Chaves">
-      <div id="header-avatar-slot" class="w-8 h-8 rounded-xl overflow-hidden bg-slate-800 border border-slate-700/80 flex items-center justify-center shrink-0">
-        <!-- Avatar SVG ou Identicon do perfil ativo -->
-      </div>
-      <div>
-        <div class="flex items-center gap-1.5">
-          <span id="header-profile-name" class="text-sm font-black tracking-wide text-white">PulseShare</span>
-          <span id="header-mesh-dot" class="w-2 h-2 rounded-full bg-amber-400 pulse-dot" title="Sincronizando malha..."></span>
-        </div>
-        <span id="header-user-tag" class="text-[11px] font-mono text-indigo-400 font-bold block leading-none">@conectando...</span>
-      </div>
+    <!-- Marca + status da malha (o perfil fica em Configurações) -->
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="text-sm font-black tracking-wide text-white">PulseShare</span>
+      <span id="header-mesh-dot" class="w-2 h-2 rounded-full bg-amber-400 pulse-dot" title="Sincronizando malha..."></span>
     </div>
 
     <!-- BOTÕES DO TOPO (Busca Global, Status e Configurações) -->
     <div class="flex items-center gap-1.5">
-      <button id="btn-header-search" type="button" title="Busca Global de Usuários" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
+      <button id="btn-header-search" type="button" title="Buscar conversas, mensagens, arquivos e usuários" class="p-2 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/80 transition-all active:scale-95">
         <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
         </svg>
@@ -170,11 +185,6 @@
               <span id="chat-conversations-count" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-indigo-300 border border-slate-700">0</span>
             </div>
             <div class="flex items-center gap-1.5">
-              <button id="btn-chat-global-search" type="button" title="Busca Global na Malha" class="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 active:scale-95 transition-all">
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                  <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-                </svg>
-              </button>
               <button id="btn-chat-qr-sync" type="button" title="Conectar Dispositivo / QR Code" class="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700/80 active:scale-95 transition-all">
                 <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                   <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 013.75 9.375v-4.5zM3.75 14.625c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5a1.125 1.125 0 01-1.125-1.125v-4.5zM13.5 4.875c0-.621.504-1.125 1.125-1.125h4.5c.621 0 1.125.504 1.125 1.125v4.5c0 .621-.504 1.125-1.125 1.125h-4.5A1.125 1.125 0 0113.5 9.375v-4.5z" />
@@ -233,6 +243,15 @@
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" />
               </svg>
             </button>
+          </div>
+        </div>
+
+        <!-- Aviso: remetente que não está nos contatos (pedido de mensagem) -->
+        <div id="chat-contact-request-banner" class="hidden px-3 py-2 bg-amber-500/10 border-b border-amber-500/30 flex items-center justify-between gap-2 shrink-0">
+          <span class="text-[11px] text-amber-300 min-w-0">Este usuário não está nos seus contatos.</span>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button id="btn-chat-request-add" type="button" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold active:scale-95">Adicionar</button>
+            <button id="btn-chat-request-block" type="button" class="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[10px] font-bold active:scale-95">Bloquear</button>
           </div>
         </div>
 
@@ -385,14 +404,17 @@
     <section id="view-mesh" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
       <div class="flex items-center justify-between pb-2 border-b border-slate-800">
         <div>
-          <h3 class="text-sm font-bold text-white">🌐 Dispositivos Conectados</h3>
-          <p class="text-[10px] text-slate-400">Rede Local (LAN), Bluetooth (BLE) e Malha P2P</p>
+          <h3 class="text-sm font-bold text-white">👥 Meus Contatos</h3>
+          <p class="text-[10px] text-slate-400">Só usuários adicionados • melhor rota: Bluetooth, LAN, Internet ou via malha</p>
         </div>
+        <div class="flex items-center gap-1.5">
+        <button id="btn-mesh-add-contact" type="button" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold active:scale-95">+ Adicionar</button>
         <button id="btn-refresh-mesh" type="button" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300">
           <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
           </svg>
         </button>
+        </div>
       </div>
       <div id="mesh-peers-list" class="space-y-2">
         <!-- preenchido dinamicamente -->
@@ -455,22 +477,23 @@
   <!-- ===================================================================== -->
   <!-- MODAL 1: BUSCA GLOBAL DE USUÁRIOS (LAN / BLE / MESH) -->
   <!-- ===================================================================== -->
-  <div id="modal-global-search" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
-    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+  <div id="modal-global-search" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-start">
+    <!-- Ancorado no topo: o teclado do celular não cobre os resultados -->
+    <div class="bg-slate-900 border-b border-slate-700/80 rounded-b-3xl p-5 space-y-4 max-h-full overflow-y-auto custom-scroll shadow-2xl relative">
       <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
         <h3 class="text-sm font-bold text-white flex items-center gap-2">
-          <span>🔍 Busca Global de Usuários</span>
+          <span>🔍 Buscar no PulseShare</span>
         </h3>
         <button id="btn-close-global-search" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
       </div>
 
       <!-- Campo de Busca -->
       <div class="relative">
-        <input id="input-global-search" type="text" placeholder="Buscar por @tag, nome ou hash..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 font-mono outline-none focus:border-indigo-500" />
+        <input id="input-global-search" type="search" spellcheck="false" autocomplete="off" placeholder="Conversas, mensagens, arquivos ou @usuário..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500" />
       </div>
 
-      <!-- Lista de Resultados da Busca -->
-      <div id="global-search-results" class="space-y-2 max-h-72 overflow-y-auto custom-scroll">
+      <!-- Resultados agrupados (Usuários, Conversas, Mensagens, Arquivos) -->
+      <div id="global-search-results" class="space-y-3 max-h-[65vh] overflow-y-auto custom-scroll">
         <!-- Renderizado dinamicamente -->
       </div>
     </div>
@@ -498,12 +521,20 @@
         </div>
       </div>
 
-      <!-- 7 Palavras-Chave de Recuperação (Seed Phrase) -->
+      <!-- Chave de acesso única + 7 palavras (recuperação) -->
       <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
-        <div class="flex items-center justify-between">
+        <div class="flex items-center justify-between gap-2">
+          <div class="min-w-0">
+            <span class="text-xs font-bold text-white block">🔑 Chave de Acesso da Conta</span>
+            <span class="text-[10px] text-slate-400">Entra na sua conta em qualquer dispositivo. Trate como senha.</span>
+          </div>
+          <button id="btn-copy-access-key" type="button" class="text-xs font-bold text-indigo-400 hover:text-indigo-300 px-2 py-1 bg-indigo-500/10 rounded border border-indigo-500/20 active:scale-95 shrink-0">Copiar</button>
+        </div>
+        <div id="access-key-display" class="p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-center font-mono text-sm font-bold text-emerald-300 select-text break-words">ps-...</div>
+        <div class="flex items-center justify-between pt-1">
           <div>
-            <span class="text-xs font-bold text-white block">7 Palavras de Recuperação (Seed Phrase)</span>
-            <span class="text-[10px] text-slate-400">Guarde para restaurar sua conta em qualquer dispositivo</span>
+            <span class="text-xs font-bold text-white block">7 Palavras de Recuperação</span>
+            <span class="text-[10px] text-slate-400">Recriam a chave de acesso se você a perder</span>
           </div>
           <button id="btn-copy-seed-words" type="button" class="text-xs font-bold text-indigo-400 hover:text-indigo-300 px-2 py-1 bg-indigo-500/10 rounded border border-indigo-500/20 active:scale-95">
             Copiar
@@ -512,6 +543,7 @@
         <div id="seed-words-chips-grid" class="grid grid-cols-4 gap-1.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 text-center font-mono text-xs text-white">
           <!-- chips das 7 palavras -->
         </div>
+        <button id="btn-export-recovery-txt" type="button" class="w-full py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold active:scale-95">⬇️ Exportar chave e palavras (.txt)</button>
       </div>
 
       <!-- Proteção 2FA por PIN (AES-256-GCM) -->
@@ -529,18 +561,19 @@
         </div>
       </div>
 
-      <!-- Sincronização de Dispositivos (QR Code) -->
+      <!-- Entrar em outro dispositivo (QR Code) -->
       <div class="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
-        <span class="text-xs font-bold text-white block">Sincronização entre Dispositivos</span>
+        <span class="text-xs font-bold text-white block">Usar esta conta em outro dispositivo</span>
+        <span class="text-[10px] text-slate-400 block">No celular, toque em "Ler QR Code" e aponte para este código. No computador, entre com a chave de acesso.</span>
         <div class="grid grid-cols-2 gap-2">
           <button id="btn-show-my-qr" type="button" class="py-2.5 px-3 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 text-xs font-bold active:scale-95 transition-all text-center">
             📱 Meu QR Code
           </button>
-          <button id="btn-scan-device-qr" type="button" class="py-2.5 px-3 rounded-xl bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 border border-orange-500/30 text-xs font-bold active:scale-95 transition-all text-center">
-            📷 Parear Dispositivo
+          <button id="btn-scan-device-qr" type="button" class="android-only py-2.5 px-3 rounded-xl bg-orange-600/20 hover:bg-orange-600/30 text-orange-300 border border-orange-500/30 text-xs font-bold active:scale-95 transition-all text-center">
+            📷 Ler QR Code
           </button>
         </div>
-        <div id="qr-code-display-area" class="hidden flex flex-col items-center justify-center p-3 bg-white rounded-xl">
+        <div id="qr-code-display-area" class="hidden flex-col items-center justify-center p-3 bg-white rounded-xl">
           <!-- SVG QR Code do perfil -->
         </div>
       </div>
@@ -561,23 +594,34 @@
   </div>
 
   <!-- ===================================================================== -->
-  <!-- MODAL 3: PAREAR DISPOSITIVO / SCANNER DE QR CODE -->
+  <!-- MODAL 3: LER QR CODE (câmera, só no celular) / COLAR CHAVE -->
   <!-- ===================================================================== -->
-  <div id="modal-qr-pair-scanner" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
-    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+  <div id="modal-qr-pair-scanner" class="hidden fixed inset-0 bg-slate-950/90 backdrop-blur-sm z-50 flex flex-col justify-start">
+    <div class="bg-slate-900 border-b border-slate-700/80 rounded-b-3xl p-5 space-y-4 max-h-full overflow-y-auto custom-scroll shadow-2xl relative">
       <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
         <h3 class="text-sm font-bold text-white flex items-center gap-2">
-          <span>📷 Parear com Extensão / Outro Dispositivo</span>
+          <span id="qr-scanner-title">📷 Entrar com outra conta</span>
         </h3>
         <button id="btn-close-qr-scanner-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
       </div>
 
-      <!-- Opção 1: Colar Texto de Pareamento -->
+      <!-- Câmera (Android) -->
+      <div class="android-only space-y-2">
+        <div class="relative w-full rounded-2xl overflow-hidden bg-black" style="aspect-ratio: 1 / 1;">
+          <video id="qr-scan-video" playsinline muted></video>
+          <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div class="qr-scan-frame w-2/3 h-2/3"></div>
+          </div>
+        </div>
+        <p id="qr-scan-status" class="text-[11px] text-slate-400 text-center">Aponte para o QR Code mostrado no outro dispositivo.</p>
+      </div>
+
+      <!-- Colar chave de acesso / código -->
       <div class="space-y-1.5">
-        <label class="text-xs font-semibold text-white">Código de Pareamento (Texto ou QR)</label>
-        <textarea id="input-pairing-payload" rows="3" placeholder="Cole o payload ou escaneie o QR gerado na Extensão..." class="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs text-white font-mono outline-none"></textarea>
+        <label class="text-xs font-semibold text-white">Ou cole a chave de acesso (ps-…)</label>
+        <input id="input-pairing-payload" type="text" spellcheck="false" autocomplete="off" placeholder="ps-xxxxx-xxxxx-xxxxx-xxxxx" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-mono outline-none focus:border-indigo-500" />
         <button id="btn-confirm-import-pairing" type="button" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-orange-600 to-indigo-600 text-white font-bold text-xs shadow active:scale-95">
-          Importar e Parear Sessão
+          Entrar nesta conta
         </button>
       </div>
     </div>
@@ -723,6 +767,96 @@
         <button id="btn-close-settings-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
       </div>
 
+      <!-- Meu Perfil (foto, nome, chaves) -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center gap-3">
+        <button id="btn-settings-avatar" type="button" title="Trocar foto do perfil" class="relative w-14 h-14 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 shrink-0 active:scale-95">
+          <span id="settings-avatar-slot" class="block w-full h-full"></span>
+          <span class="absolute bottom-0 right-0 w-5 h-5 rounded-tl-lg bg-indigo-600 text-white text-[10px] flex items-center justify-center">📷</span>
+        </button>
+        <div class="min-w-0 flex-1">
+          <span id="settings-profile-name" class="text-sm font-black text-white block truncate">Nome</span>
+          <span id="settings-profile-tag" class="text-[11px] font-mono text-indigo-300 block truncate">@usuario</span>
+          <div class="flex gap-1.5 mt-1.5">
+            <button id="btn-settings-open-identity" type="button" class="px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 text-[10px] font-bold active:scale-95">🔑 Chaves e QR</button>
+            <button id="btn-settings-change-photo" type="button" class="px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-[10px] font-bold active:scale-95">Foto</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Nome de Usuário (alteração com verificação) -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="pr-3 min-w-0">
+            <span class="text-xs font-semibold text-white block">👤 Nome de Usuário</span>
+            <span class="text-[10px] text-slate-400">O sufixo após o "_" vem das suas chaves e não muda.</span>
+          </div>
+          <span id="setting-current-tag" class="text-[10px] font-mono text-indigo-300 font-bold truncate">@usuario</span>
+        </div>
+        <div class="flex gap-2">
+          <div class="flex-1 min-w-0 flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 focus-within:border-indigo-500">
+            <span class="text-xs font-mono text-indigo-400 font-bold">@</span>
+            <input id="setting-username-input" type="text" maxlength="24" spellcheck="false" autocomplete="off" placeholder="novo_nome" class="w-full min-w-0 bg-transparent text-xs text-white font-mono outline-none" />
+            <span id="setting-username-suffix" class="text-xs font-mono text-slate-500 shrink-0">_000000</span>
+          </div>
+          <button id="btn-username-change" type="button" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg active:scale-95 shadow-sm">Alterar</button>
+        </div>
+        <!-- Etapa de verificação (aparece após clicar em Alterar) -->
+        <div id="setting-username-verify" class="hidden space-y-2 pt-2 border-t border-slate-800/80">
+          <p id="setting-username-verify-label" class="text-[11px] text-amber-300">Para confirmar que é você, digite a palavra nº 1 das suas 7 palavras de recuperação:</p>
+          <div class="flex gap-2">
+            <input id="setting-username-verify-input" type="text" spellcheck="false" autocomplete="off" placeholder="palavra" class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono outline-none focus:border-amber-500" />
+            <button id="btn-username-verify-confirm" type="button" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg active:scale-95 shadow-sm">Confirmar</button>
+            <button id="btn-username-verify-cancel" type="button" class="px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg active:scale-95">✕</button>
+          </div>
+        </div>
+        <p id="setting-username-status" class="hidden text-[10px] text-slate-400"></p>
+      </div>
+
+      <!-- Notificações e segundo plano -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div class="pr-3">
+            <span class="text-xs font-semibold text-white block">🔔 Notificações</span>
+            <span class="text-[10px] text-slate-400">Mensagens e arquivos recebidos aparecem na barra de notificações.</span>
+          </div>
+          <input id="setting-notify-enabled" type="checkbox" class="w-4 h-4 accent-indigo-500 cursor-pointer shrink-0" />
+        </div>
+        <div class="space-y-1">
+          <span class="text-[11px] text-slate-300 font-semibold">Som</span>
+          <div class="flex gap-2">
+            <select id="setting-notify-sound" class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white outline-none">
+              <option value="pulso">Pulso (padrão)</option>
+              <option value="sino">Sino</option>
+              <option value="bipe">Bipe triplo</option>
+              <option value="marimba">Marimba</option>
+              <option value="alerta">Alerta (bem alto)</option>
+              <option value="sistema">Som do sistema</option>
+              <option value="nenhum">Sem som</option>
+            </select>
+            <button id="btn-notify-test" type="button" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 active:scale-95">▶ Testar</button>
+          </div>
+        </div>
+        <div class="space-y-1 android-only">
+          <span class="text-[11px] text-slate-300 font-semibold">Vibração</span>
+          <select id="setting-notify-vibration" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white outline-none">
+            <option value="dupla">Dupla (padrão)</option>
+            <option value="curta">Curta</option>
+            <option value="longa">Longa</option>
+            <option value="tripla">Tripla</option>
+            <option value="batida">Batida de coração</option>
+            <option value="nenhuma">Sem vibração</option>
+          </select>
+        </div>
+        <div class="flex items-center justify-between pt-2 border-t border-slate-800/80">
+          <div class="pr-3">
+            <span class="text-xs font-semibold text-white block">Rodar em segundo plano</span>
+            <span id="setting-background-hint" class="text-[10px] text-slate-400">Continua recebendo mensagens com o app fechado.</span>
+          </div>
+          <input id="setting-background-mode" type="checkbox" class="w-4 h-4 accent-indigo-500 cursor-pointer shrink-0" />
+        </div>
+        <button id="btn-battery-exemption" type="button" class="android-only w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-semibold rounded-lg border border-slate-700 active:scale-95">🔋 Permitir rodar sem restrição de bateria</button>
+      </div>
+
       <!-- Download Automático no Chat -->
       <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
         <div class="pr-3">
@@ -733,7 +867,7 @@
       </div>
 
       <!-- Diretório de Salvamento / Pasta de Downloads -->
-      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+      <div class="android-only p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
         <div class="flex items-center justify-between">
           <div>
             <span class="text-xs font-semibold text-white block">Diretório para Salvar Arquivos</span>
@@ -783,7 +917,96 @@
     </div>
   </div>
 
+  <!-- ===================================================================== -->
+  <!-- TELA DE ENTRADA (sem conta neste dispositivo) -->
+  <!-- ===================================================================== -->
+  <div id="view-onboarding" class="hidden fixed inset-0 z-[60] bg-slate-950 overflow-y-auto custom-scroll">
+    <div class="min-h-full flex flex-col justify-center p-6 space-y-5 max-w-md mx-auto">
+      <div class="text-center space-y-1">
+        <div class="w-14 h-14 mx-auto rounded-2xl bg-gradient-to-br from-indigo-600 to-orange-500 flex items-center justify-center text-2xl shadow-xl">⚡</div>
+        <h1 class="text-xl font-black text-white tracking-tight">PulseShare</h1>
+        <p class="text-xs text-slate-400">Mensagens e arquivos direto entre dispositivos, sem servidor.</p>
+      </div>
+
+      <!-- Entrar com chave de acesso -->
+      <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <span class="text-xs font-bold text-white block">🔑 Entrar com a chave de acesso</span>
+        <input id="onb-access-key" type="text" spellcheck="false" autocomplete="off" placeholder="ps-xxxxx-xxxxx-xxxxx-xxxxx" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white font-mono outline-none focus:border-indigo-500" />
+        <input id="onb-access-name" type="text" spellcheck="false" autocomplete="off" maxlength="24" placeholder="Seu nome de usuário (opcional)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-indigo-500" />
+        <button id="onb-btn-login-key" type="button" class="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold active:scale-95">Entrar</button>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <button id="onb-btn-scan" type="button" class="android-only py-3 rounded-2xl bg-orange-600/20 border border-orange-500/30 text-orange-300 text-xs font-bold active:scale-95">📷 Ler QR Code</button>
+        <button id="onb-btn-import-txt" type="button" class="py-3 rounded-2xl bg-slate-900 border border-slate-800 text-slate-200 text-xs font-bold active:scale-95">📄 Importar arquivo .txt</button>
+        <button id="onb-btn-words" type="button" class="py-3 rounded-2xl bg-slate-900 border border-slate-800 text-slate-200 text-xs font-bold active:scale-95">🧩 Usar as 7 palavras</button>
+      </div>
+
+      <!-- Recuperar pelas 7 palavras -->
+      <div id="onb-words-box" class="hidden p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
+        <span class="text-xs font-bold text-white block">🧩 Recuperar pelas 7 palavras</span>
+        <textarea id="onb-words" rows="2" spellcheck="false" autocomplete="off" placeholder="palavra1 palavra2 ... palavra7" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500"></textarea>
+        <button id="onb-btn-login-words" type="button" class="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold active:scale-95">Recuperar conta</button>
+      </div>
+
+      <!-- Criar conta -->
+      <div class="p-4 rounded-2xl bg-slate-900/60 border border-dashed border-slate-700 space-y-2">
+        <span class="text-xs font-bold text-white block">✨ Criar uma conta nova</span>
+        <input id="onb-new-name" type="text" spellcheck="false" autocomplete="off" maxlength="24" placeholder="Escolha um nome de usuário" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500" />
+        <button id="onb-btn-create" type="button" class="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold active:scale-95">Criar conta</button>
+      </div>
+      <p id="onb-status" class="hidden text-center text-[11px] text-rose-400"></p>
+    </div>
+  </div>
+
+  <!-- Conta criada: mostrar chave e palavras antes de entrar -->
+  <div id="view-account-created" class="hidden fixed inset-0 z-[61] bg-slate-950 overflow-y-auto custom-scroll">
+    <div class="min-h-full flex flex-col justify-center p-6 space-y-4 max-w-md mx-auto">
+      <h2 class="text-lg font-black text-white text-center">Guarde sua chave de acesso</h2>
+      <p class="text-xs text-slate-400 text-center">Com ela (ou com as 7 palavras) você entra na sua conta em qualquer dispositivo. Sem elas, a conta não pode ser recuperada.</p>
+      <div id="created-access-key" class="p-3 rounded-xl bg-slate-900 border border-slate-800 text-center font-mono text-base font-bold text-emerald-300 select-text break-words"></div>
+      <div id="created-seed-words" class="p-3 rounded-xl bg-slate-900 border border-slate-800 text-center font-mono text-xs text-slate-200 select-text break-words"></div>
+      <button id="btn-created-export" type="button" class="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700 active:scale-95">⬇️ Exportar como .txt</button>
+      <button id="btn-created-continue" type="button" class="w-full py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold active:scale-95">Já guardei — entrar</button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- EDITOR DE FOTO DO PERFIL (arrastar, zoom por pinça/roda/controle) -->
+  <!-- ===================================================================== -->
+  <div id="modal-photo-editor" class="hidden fixed inset-0 bg-slate-950/95 z-[55] flex flex-col justify-center p-4">
+    <div class="max-w-sm w-full mx-auto space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-bold text-white">📷 Ajustar foto do perfil</h3>
+        <button id="btn-photo-editor-close" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div id="photo-editor-stage" class="relative mx-auto overflow-hidden rounded-2xl bg-slate-900" style="width: 280px; height: 280px;">
+        <img id="photo-editor-img" alt="" draggable="false" />
+        <div class="photo-editor-mask absolute pointer-events-none" style="left: 20px; top: 20px; width: 240px; height: 240px;"></div>
+      </div>
+      <div class="flex items-center gap-3 px-2">
+        <span class="text-slate-400 text-xs">−</span>
+        <input id="photo-editor-zoom" type="range" min="1" max="4" step="0.01" value="1" class="flex-1 accent-indigo-500" />
+        <span class="text-slate-400 text-xs">+</span>
+      </div>
+      <p class="text-[10px] text-slate-500 text-center">Arraste para centralizar. Use a pinça, a roda do mouse ou o controle para dar zoom.</p>
+      <div class="grid grid-cols-3 gap-2">
+        <button id="btn-photo-editor-pick" type="button" class="py-2.5 rounded-xl bg-slate-800 text-slate-200 text-xs font-bold border border-slate-700 active:scale-95">Trocar</button>
+        <button id="btn-photo-editor-remove" type="button" class="py-2.5 rounded-xl bg-rose-500/10 text-rose-400 text-xs font-bold border border-rose-500/30 active:scale-95">Remover</button>
+        <button id="btn-photo-editor-save" type="button" class="py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold active:scale-95">Salvar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Extensão: esta janela perdeu o controle para outra janela do PulseShare -->
+  <div id="view-other-window" class="hidden fixed inset-0 z-[70] bg-slate-950/95 flex flex-col items-center justify-center p-6 text-center space-y-3">
+    <span class="text-3xl">🪟</span>
+    <p class="text-sm font-bold text-white">O PulseShare está aberto em outra janela.</p>
+    <button id="btn-use-here" type="button" class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold active:scale-95">Usar aqui</button>
+  </div>
+
   <!-- SCRIPTS BÁSICOS E MOTOR DA MALHA -->
+  <script src="qrcode-core.js"></script>
   <script src="pulseshare-crypto-identity.js"></script>
   <script src="pulseshare-mesh-engine.js"></script>
   <script src="fflate.min.js"></script>
