@@ -427,6 +427,10 @@
     localStorage.setItem('ps_my_tag', myTag);
     localStorage.setItem('ps_my_reghash', myRegHash);
 
+    // Meu nome no catálogo da rede (e aviso se outra conta o registrou antes)
+    noteTagClaim(myTag, mySince(), Date.now());
+    checkMyNameConflict();
+
     // Inicia rádio Bluetooth BLE Mesh se disponível
     if (Native.isBleAvailable()) {
       Native.startBleMesh(myTag);
@@ -473,20 +477,278 @@
   //  4) re-deriva a identidade com as MESMAS palavras → o sufixo _hash6 não muda;
   //  5) avisa a rede (USER_REGISTERED) e os contatos (USER_RENAMED) para migrarem.
   // --------------------------------------------------------------------------
-  const pendingUserProbes = new Map(); // probeId -> callback(exists)
+  const pendingUserProbes = new Map(); // probeId -> callback(replyPacket)
   let pendingRename = null;            // { name, wordIndex }
 
-  function probeUserExists(tag, timeoutMs = 2500) {
+  // --------------------------------------------------------------------------
+  // 4c. CATÁLOGO DE NOMES DA REDE — o NOME é único, não só a tag.
+  // A tag é @nome_hash6 e o hash6 vem das chaves: duas contas diferentes com o
+  // mesmo nome teriam tags diferentes e a checagem pela tag inteira nunca
+  // colidia. Regra: cada nome pertence a UMA conta (sufixo). Cada nó guarda um
+  // catálogo nome → {s: sufixo, since, seen}, alimentado por PRESENCE_ANNOUNCE
+  // (nameSince), USER_REGISTERED, respostas de PROBE_USER_EXISTS (que todos
+  // ouvem) e NAME_REGISTRY_REQUEST/SYNC (troca do catálogo ao conectar).
+  // Em conflito vence quem registrou o nome primeiro (menor since). Mesmas
+  // chaves (mesmo sufixo) em outro aparelho = mesma conta → não é conflito.
+  // --------------------------------------------------------------------------
+  const NAME_REGISTRY_KEY = 'ps_name_registry_v1';
+  const NAME_REGISTRY_MAX = 3000;
+  const NAME_REGISTRY_TTL = 90 * 24 * 3600 * 1000; // sem sinal por 90 dias → o nome volta a ficar livre
+  const NAME_SYNC_MAX_ENTRIES = 250;
+  let nameRegistry = {};
+  try { nameRegistry = JSON.parse(localStorage.getItem(NAME_REGISTRY_KEY) || '{}') || {}; } catch (e) { nameRegistry = {}; }
+  let nameRegistrySaveTimer = null;
+  let myNameConflict = null;            // { ownerTag } quando outra conta registrou o meu nome antes
+  const answeredProbes = new Set();     // probeId já respondido por alguém (evita enxurrada)
+  const answeredNameSyncs = new Set();  // reqId de sync já atendido
+  let nameSyncRequested = false;
+
+  function splitTag(tag) {
+    const m = /^@([a-z0-9_]{1,40})_([0-9a-f]{6})$/.exec(normalizeTag(tag));
+    if (!m || m[1] === 'link') return null; // visitantes de link (@link_xxxxxx) não têm nome
+    return { name: m[1], suffix: m[2] };
+  }
+
+  function mySuffix() {
+    return activeProfile && activeProfile.pubKeyHex ? activeProfile.pubKeyHex.slice(0, 6) : '';
+  }
+
+  function mySince() {
+    return (activeProfile && (activeProfile.nameSince || activeProfile.createdAt)) || 0;
+  }
+
+  function cleanSince(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return Math.min(n, Date.now());
+  }
+
+  function nameEntryAlive(e) {
+    return Boolean(e && Date.now() - (e.seen || 0) < NAME_REGISTRY_TTL);
+  }
+
+  function scheduleNameRegistrySave() {
+    if (nameRegistrySaveTimer) return;
+    nameRegistrySaveTimer = setTimeout(flushNameRegistry, 1500);
+  }
+
+  function flushNameRegistry() {
+    if (nameRegistrySaveTimer) clearTimeout(nameRegistrySaveTimer);
+    nameRegistrySaveTimer = null;
+    {
+      let names = Object.keys(nameRegistry).filter((n) => nameEntryAlive(nameRegistry[n]));
+      if (names.length > NAME_REGISTRY_MAX) {
+        names = names.sort((a, b) => (nameRegistry[b].seen || 0) - (nameRegistry[a].seen || 0)).slice(0, NAME_REGISTRY_MAX);
+      }
+      const out = {};
+      names.forEach((n) => { out[n] = nameRegistry[n]; });
+      nameRegistry = out;
+      try { localStorage.setItem(NAME_REGISTRY_KEY, JSON.stringify(nameRegistry)); } catch (e) {}
+    }
+  }
+  window.addEventListener('pagehide', () => { if (nameRegistrySaveTimer) flushNameRegistry(); });
+
+  // Registra "a conta <suffix> usa o nome <name> desde <since>". Retorna true se mudou.
+  function noteNameClaim(name, suffix, since, seen) {
+    if (!/^[a-z0-9_]{1,40}$/.test(name || '') || name === 'link' || !/^[0-9a-f]{6}$/.test(suffix || '')) return false;
+    since = cleanSince(since);
+    seen = cleanSince(seen) || Date.now();
+    const cur = nameRegistry[name];
+    let changed = false;
+    if (!nameEntryAlive(cur)) {
+      nameRegistry[name] = { s: suffix, since: since || seen, seen };
+      changed = true;
+    } else if (cur.s === suffix) {
+      if (since && since < (cur.since || Infinity)) { cur.since = since; changed = true; }
+      if (seen > (cur.seen || 0) + 60000) { cur.seen = seen; changed = true; }
+    } else if (since && since < (cur.since || Infinity)) {
+      // Outra conta registrou este nome antes: ela é a dona
+      nameRegistry[name] = { s: suffix, since, seen };
+      changed = true;
+    }
+    if (changed) {
+      scheduleNameRegistrySave();
+      if (activeProfile && name === (splitTag(myTag) || {}).name) checkMyNameConflict();
+    }
+    return changed;
+  }
+
+  function noteTagClaim(tag, since, seen) {
+    const p = splitTag(tag);
+    return p ? noteNameClaim(p.name, p.suffix, since, seen) : false;
+  }
+
+  function releaseNameClaim(name, suffix) {
+    const cur = nameRegistry[name];
+    if (cur && cur.s === suffix) {
+      delete nameRegistry[name];
+      scheduleNameRegistrySave();
+    }
+  }
+
+  function registryOwnerOf(name) {
+    const e = nameRegistry[name];
+    return nameEntryAlive(e) ? e : null;
+  }
+
+  // Nome mais recente conhecido para as chaves <suffix> (login sem digitar o nome)
+  function registryNameOfSuffix(suffix) {
+    let best = null;
+    Object.keys(nameRegistry).forEach((n) => {
+      const e = nameRegistry[n];
+      if (e.s === suffix && nameEntryAlive(e) && (!best || (e.seen || 0) > best.seen)) best = { name: n, since: e.since, seen: e.seen || 0 };
+    });
+    return best;
+  }
+
+  // Meu nome foi registrado antes por outra conta? (aviso nas Configurações)
+  function checkMyNameConflict() {
+    const me = splitTag(myTag);
+    if (!me || !activeProfile) return;
+    const e = registryOwnerOf(me.name);
+    // Mesma conta em outro aparelho com registro mais antigo: adota a data
+    if (e && e.s === me.suffix && e.since && e.since < mySince()) {
+      activeProfile.nameSince = e.since;
+      try { PulseShareCrypto.ProfilesManager.saveProfile(activeProfile); } catch (err) {}
+    }
+    const ownerTag = e && e.s !== me.suffix ? `@${me.name}_${e.s}` : '';
+    if (ownerTag === ((myNameConflict && myNameConflict.ownerTag) || '')) return;
+    myNameConflict = ownerTag ? { ownerTag } : null;
+    renderUsernameSettings();
+    if (ownerTag) Native.toast(`O nome "${me.name}" já pertence a ${ownerTag}. Altere o seu nome nas Configurações.`);
+  }
+
+  function exportNameRegistry(max) {
+    return Object.keys(nameRegistry)
+      .filter((n) => nameEntryAlive(nameRegistry[n]))
+      .sort((a, b) => (nameRegistry[b].seen || 0) - (nameRegistry[a].seen || 0))
+      .slice(0, max)
+      .map((n) => [n, nameRegistry[n].s, nameRegistry[n].since || 0, nameRegistry[n].seen || 0]);
+  }
+
+  function mergeNameRegistryEntries(entries) {
+    if (!Array.isArray(entries)) return;
+    entries.slice(0, 400).forEach((e) => {
+      if (Array.isArray(e)) noteNameClaim(String(e[0] || ''), String(e[1] || ''), e[2], e[3]);
+    });
+  }
+
+  // Pede o catálogo aos nós online (uma vez por sessão, ao conectar)
+  function requestNameRegistrySync() {
+    if (nameSyncRequested || !brokersOnline()) return;
+    nameSyncRequested = true;
+    broadcastToMesh({ meshType: 'NAME_REGISTRY_REQUEST', reqId: 'nsync_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), requesterNodeId: nodeId, have: Object.keys(nameRegistry).length });
+  }
+
+  // Responde a uma consulta de nome (dono responde na hora; quem só tem o
+  // catálogo espera um pouco e fica quieto se alguém já respondeu)
+  function answerNameProbe(packet) {
+    let name = cleanUsername(packet.name || '');
+    let suffix = /^[0-9a-f]{6}$/.test(packet.suffix || '') ? packet.suffix : '';
+    if (!name && !suffix) {
+      const p = splitTag(packet.tag);
+      if (p) { name = p.name; suffix = p.suffix; }
+    }
+    if (!name && !suffix) return;
+    const reply = (ownerTag, since, authoritative) => {
+      answeredProbes.add(packet.probeId);
+      broadcastToMesh({
+        meshType: 'PROBE_USER_EXISTS_REPLY',
+        probeId: packet.probeId,
+        requesterNodeId: packet.requesterNodeId,
+        tag: ownerTag,
+        ownerTag,
+        exists: true,
+        since: since || 0,
+        authoritative,
+        ownerNodeId: authoritative ? nodeId : undefined
+      });
+    };
+    const me = splitTag(myTag);
+    if (me && ((name && me.name === name) || (suffix && me.suffix === suffix))) {
+      reply(myTag, mySince(), true);
+      return;
+    }
+    let ownerTag = '';
+    let since = 0;
+    const byName = name ? registryOwnerOf(name) : null;
+    if (byName) { ownerTag = `@${name}_${byName.s}`; since = byName.since; }
+    else if (suffix) {
+      const k = registryNameOfSuffix(suffix);
+      if (k) { ownerTag = `@${k.name}_${suffix}`; since = k.since; }
+    }
+    if (!ownerTag) return;
+    setTimeout(() => {
+      if (!answeredProbes.has(packet.probeId)) reply(ownerTag, since, false);
+    }, 250 + Math.random() * 1200);
+  }
+
+  // Consulta a rede (e o catálogo local) sobre <name> para as chaves <suffix>.
+  // → { taken, ownerTag, knownName, knownSince, replies }
+  //   taken: o nome pertence a OUTRA conta; knownName: nome que a rede conhece
+  //   para estas chaves (outro aparelho da mesma conta).
+  function probeName(name, suffix, timeoutMs = 3000) {
     return new Promise((resolve) => {
       const probeId = 'probe_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-      const timer = setTimeout(() => { pendingUserProbes.delete(probeId); resolve(false); }, timeoutMs);
-      pendingUserProbes.set(probeId, (exists) => {
+      const result = { taken: false, ownerTag: '', knownName: '', knownSince: 0, replies: 0 };
+      const consider = (ownerTag, since) => {
+        const o = splitTag(ownerTag);
+        if (!o) return;
+        if (suffix && o.suffix === suffix) {
+          if (!result.knownName || (name && o.name === name)) {
+            result.knownName = o.name;
+            result.knownSince = cleanSince(since) || result.knownSince;
+          }
+        } else if (name && o.name === name) {
+          result.taken = true;
+          result.ownerTag = ownerTag;
+        }
+      };
+      if (name) {
+        const local = registryOwnerOf(name);
+        if (local) consider(`@${name}_${local.s}`, local.since);
+      }
+      if (suffix && !result.knownName) {
+        const k = registryNameOfSuffix(suffix);
+        if (k) consider(`@${k.name}_${suffix}`, k.since);
+      }
+      const finish = () => {
         clearTimeout(timer);
         pendingUserProbes.delete(probeId);
-        resolve(Boolean(exists));
+        resolve(result);
+      };
+      const timer = setTimeout(finish, timeoutMs);
+      pendingUserProbes.set(probeId, (pkt) => {
+        result.replies++;
+        consider(normalizeTag(pkt.ownerTag || pkt.tag), pkt.since);
+        if (result.taken && pkt.authoritative) finish();
       });
-      broadcastToMesh({ meshType: 'PROBE_USER_EXISTS', probeId, tag: normalizeTag(tag), requesterNodeId: nodeId });
+      broadcastToMesh({
+        meshType: 'PROBE_USER_EXISTS',
+        probeId,
+        tag: name && suffix ? `@${name}_${suffix}` : '',
+        name: name || '',
+        suffix: suffix || '',
+        requesterNodeId: nodeId
+      });
     });
+  }
+
+  // Conecta aos brokers (também na tela de entrada) e espera ficar online
+  async function ensureNetworkForProbe(timeoutMs = 8000) {
+    connectBrokers();
+    const t0 = Date.now();
+    while (!brokersOnline() && Date.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 250));
+    if (!brokersOnline()) return freshBleNeighbors().length > 0;
+    await new Promise((r) => setTimeout(r, 600)); // SUBSCRIBE confirmado antes de perguntar
+    return true;
+  }
+
+  function nameRuleError(name) {
+    if (!/^[a-z0-9_]{2,24}$/.test(name) || /^link_/.test(name) || name === 'link') {
+      return 'Use de 2 a 24 letras minúsculas, números ou "_" (não pode começar com "link_").';
+    }
+    return '';
   }
 
   function cleanUsername(raw) {
@@ -513,19 +775,33 @@
       const box = document.getElementById('setting-username-verify');
       if (box) box.classList.add('hidden');
     }
+    const warn = document.getElementById('setting-username-conflict');
+    if (warn) {
+      warn.textContent = myNameConflict
+        ? `⚠️ Este nome já foi registrado antes por outra conta (${myNameConflict.ownerTag}). Escolha outro nome para não ser confundido.`
+        : '';
+      warn.classList.toggle('hidden', !myNameConflict);
+    }
   }
 
   function startUsernameChange() {
     if (!activeProfile || typeof PulseShareCrypto === 'undefined') return;
     const input = document.getElementById('setting-username-input');
     const name = cleanUsername(input ? input.value : '');
-    if (!/^[a-z0-9_]{2,24}$/.test(name) || /^link_/.test(name)) {
-      setUsernameStatus('Use de 2 a 24 letras minúsculas, números ou "_" (não pode começar com "link_").', 'error');
+    const ruleErr = nameRuleError(name);
+    if (ruleErr) {
+      setUsernameStatus(ruleErr, 'error');
       return;
     }
     const newTag = `@${name}_${activeProfile.pubKeyHex.slice(0, 6)}`;
     if (newTag === normalizeTag(myTag)) {
       setUsernameStatus('Esse já é o seu nome atual.', 'info');
+      return;
+    }
+    // Checagem rápida no catálogo local antes de pedir a palavra
+    const known = registryOwnerOf(name);
+    if (known && known.s !== mySuffix()) {
+      setUsernameStatus(`O nome "${name}" já está em uso por @${name}_${known.s}.`, 'error');
       return;
     }
     const words = (activeProfile.seedWords || '').split(/\s+/).filter(Boolean);
@@ -566,12 +842,19 @@
     if (btn) btn.disabled = true;
     const { name, newTag } = pendingRename;
     try {
-      // Consulta na rede: alguém responde que já é dono dessa tag?
-      setUsernameStatus(brokersOnline() ? 'Verificando disponibilidade na rede...' : 'Sem internet: verificando só na malha local...', 'info');
-      const taken = await probeUserExists(newTag);
-      const localTaken = Object.values(peerRegistry).some((p) => normalizeTag(p.tag) === newTag && p.nodeId && p.nodeId !== nodeId);
-      if (taken || localTaken) {
-        setUsernameStatus(`${newTag} já está em uso por outro dispositivo.`, 'error');
+      // Consulta na rede: alguma OUTRA conta já usa esse nome (com qualquer sufixo)?
+      setUsernameStatus('Verificando disponibilidade na rede...', 'info');
+      if (!(await ensureNetworkForProbe())) {
+        setUsernameStatus('Sem conexão com a rede: não dá para verificar se o nome está livre. Tente de novo quando estiver online.', 'error');
+        return;
+      }
+      const res = await probeName(name, mySuffix());
+      const peerTaken = Object.values(peerRegistry).some((p) => {
+        const o = splitTag(p.tag);
+        return o && o.name === name && o.suffix !== mySuffix();
+      });
+      if (res.taken || peerTaken) {
+        setUsernameStatus(`O nome "${name}" já está em uso${res.ownerTag ? ' por ' + res.ownerTag : ''}. Escolha outro.`, 'error');
         return;
       }
       await applyUsernameChange(name);
@@ -591,7 +874,7 @@
     const oldTag = normalizeTag(myTag);
     const derived = await PulseShareCrypto.deriveIdentity(name, activeProfile.seedWords);
     if (derived.pubKeyHex !== activeProfile.pubKeyHex) throw new Error('chaves divergentes');
-    const updated = { ...activeProfile, name: derived.name, tag: derived.tag };
+    const updated = { ...activeProfile, name: derived.name, tag: derived.tag, nameSince: Date.now() };
     PulseShareCrypto.ProfilesManager.saveProfile(updated);
     activeProfile = updated;
     myTag = updated.tag;
@@ -615,8 +898,14 @@
     }
 
     // Avisa toda a malha e, ponto a ponto, quem conversa com a gente
+    // Catálogo de nomes: libera o nome antigo e registra o novo
+    const oldParts = splitTag(oldTag);
+    if (oldParts && oldParts.suffix === mySuffix()) releaseNameClaim(oldParts.name, oldParts.suffix);
+    noteTagClaim(myTag, updated.nameSince, Date.now());
+    myNameConflict = null;
+
     const notice = { tag: myTag, previousTag: oldTag, nodeId, pubKeyHex: activeProfile.pubKeyHex };
-    broadcastToMesh({ meshType: 'USER_REGISTERED', ...notice, registeredAt: Date.now(), regHash: myRegHash });
+    broadcastToMesh({ meshType: 'USER_REGISTERED', ...notice, since: updated.nameSince, registeredAt: Date.now(), regHash: myRegHash });
     const notify = new Set([...Object.keys(getContacts()), ...Object.keys(chatMessages)]);
     notify.forEach((t) => {
       if (t && !isLinkVisitor(t) && !isMyTag(t)) sendSignal(t, 'rename-' + Date.now(), 'USER_RENAMED', notice);
@@ -1093,6 +1382,8 @@
       }, 30000);
 
       setTimeout(announcePresence, 300);
+      // Ao conectar, sincroniza o catálogo de nomes com os nós online (1x por sessão)
+      if (myTag) setTimeout(requestNameRegistrySync, 4000);
     };
 
     ws.onmessage = (event) => {
@@ -1174,9 +1465,11 @@
 
   function announcePresence() {
     if (!myTag) return;
+    noteTagClaim(myTag, mySince(), Date.now());
     broadcastToMesh({
       meshType: 'PRESENCE_ANNOUNCE',
       tag: myTag,
+      nameSince: mySince(),
       reghash: myRegHash,
       nodeId: nodeId,
       photoHash: (activeProfile && activeProfile.photoHash) || '',
@@ -1184,6 +1477,8 @@
       relayMode: meshRelay
     });
   }
+
+  const NAME_ONLY_PACKETS = new Set(['PROBE_USER_EXISTS_REPLY', 'PRESENCE_ANNOUNCE', 'USER_REGISTERED', 'NAME_REGISTRY_SYNC']);
 
   function handleIncomingPacket(packet, via = 'mqtt') {
     if (!packet || !packet.meshType) return;
@@ -1194,6 +1489,8 @@
       if (seenPacketIds.size > 2000) seenPacketIds.clear();
     }
     if (packet.senderNodeId === nodeId || (packet.senderTag && normalizeTag(packet.senderTag) === normalizeTag(myTag))) return;
+    // Tela de entrada (sem conta): só escuta o necessário para verificar nomes
+    if (!myTag && !NAME_ONLY_PACKETS.has(packet.meshType)) return;
 
     const senderTag = normalizeTag(packet.senderTag);
     if (via === 'mqtt' && senderTag && peerRegistry[senderTag]) peerRegistry[senderTag].lastSeenMqtt = Date.now();
@@ -1201,6 +1498,8 @@
     switch (packet.meshType) {
       case 'PRESENCE_ANNOUNCE': {
         const tag = normalizeTag(packet.tag);
+        if (tag) noteTagClaim(tag, packet.nameSince, Date.now());
+        if (!myTag) break;
         if (tag && !isMyTag(tag)) {
           const prev = peerRegistry[tag] || {};
           peerRegistry[tag] = {
@@ -1239,31 +1538,53 @@
         break;
       }
 
-      // Alguém quer saber se um @usuario já existe (registro/alteração de nome)
+      // Alguém quer saber se um nome já existe (criação de conta / troca de nome / login)
       case 'PROBE_USER_EXISTS': {
-        const asked = normalizeTag(packet.tag);
-        if (asked && asked === normalizeTag(myTag) && packet.requesterNodeId !== nodeId) {
-          broadcastToMesh({
-            meshType: 'PROBE_USER_EXISTS_REPLY',
-            probeId: packet.probeId,
-            tag: myTag,
-            exists: true,
-            ownerNodeId: nodeId,
-            requesterNodeId: packet.requesterNodeId
-          });
-        }
+        if (packet.probeId && packet.requesterNodeId !== nodeId) answerNameProbe(packet);
         break;
       }
 
+      // Todos ouvem as respostas: atualiza o catálogo e cala quem ia responder de novo
       case 'PROBE_USER_EXISTS_REPLY': {
+        if (packet.probeId) {
+          answeredProbes.add(packet.probeId);
+          if (answeredProbes.size > 500) answeredProbes.clear();
+        }
+        noteTagClaim(packet.ownerTag || packet.tag, packet.since, Date.now());
         const cb = pendingUserProbes.get(packet.probeId);
-        if (cb && packet.ownerNodeId !== nodeId) cb(Boolean(packet.exists));
+        if (cb && packet.ownerNodeId !== nodeId) cb(packet);
         break;
       }
 
-      // Troca de nome de um usuário: migra a conversa/contato se for verificável
+      // Registro de nome (conta nova) ou troca de nome de um usuário
       case 'USER_REGISTERED': {
-        handleRemoteRename(packet.previousTag, packet.tag, packet.nodeId || packet.senderNodeId, packet.pubKeyHex);
+        const nt = splitTag(packet.tag);
+        const ot = splitTag(packet.previousTag);
+        if (ot && nt && ot.suffix === nt.suffix && ot.name !== nt.name) releaseNameClaim(ot.name, ot.suffix);
+        if (nt) noteNameClaim(nt.name, nt.suffix, packet.since || packet.registeredAt, Date.now());
+        if (!myTag) break;
+        if (packet.previousTag) handleRemoteRename(packet.previousTag, packet.tag, packet.nodeId || packet.senderNodeId, packet.pubKeyHex);
+        break;
+      }
+
+      // Catálogo de nomes: um nó novo pede, um nó online (o primeiro a sortear) responde
+      case 'NAME_REGISTRY_REQUEST': {
+        const rid = packet.reqId;
+        if (!rid || answeredNameSyncs.has(rid) || !Object.keys(nameRegistry).length) break;
+        setTimeout(() => {
+          if (answeredNameSyncs.has(rid)) return;
+          answeredNameSyncs.add(rid);
+          broadcastToMesh({ meshType: 'NAME_REGISTRY_SYNC', reqId: rid, entries: exportNameRegistry(NAME_SYNC_MAX_ENTRIES) });
+        }, 800 + Math.random() * 3500);
+        break;
+      }
+
+      case 'NAME_REGISTRY_SYNC': {
+        if (packet.reqId) {
+          answeredNameSyncs.add(packet.reqId);
+          if (answeredNameSyncs.size > 200) answeredNameSyncs.clear();
+        }
+        mergeNameRegistryEntries(packet.entries);
         break;
       }
 
@@ -3964,31 +4285,81 @@
   }
 
   // ---------- entrada / login ----------
-  function onbStatus(msg) {
+  function onbStatus(msg, tone) {
     const el = document.getElementById('onb-status');
     if (!el) return;
     el.textContent = msg || '';
-    el.classList.toggle('hidden', !msg);
+    el.className = 'text-center text-[11px] ' + (tone === 'info' ? 'text-slate-300' : 'text-rose-400') + (msg ? '' : ' hidden');
   }
 
   function showOnboarding() {
     document.getElementById('view-onboarding').classList.remove('hidden');
   }
 
-  // Cria/ativa o perfil a partir das palavras e reinicia o app já logado
+  // Cria/ativa o perfil a partir das palavras e reinicia o app já logado.
+  // Antes de salvar, consulta a rede: o NOME não pode pertencer a outra conta.
+  // opts.isNew = conta recém-criada (exige rede); opts.showKeyFirst = não recarrega;
+  // opts.status = função para mostrar o andamento.
   async function loginWithWords(words, name, opts = {}) {
+    const status = opts.status || onbStatus;
     words = String(words || '').trim().toLowerCase().split(/\s+/).join(' ');
     if (!PulseShareCrypto.isValidMnemonic(words)) throw new Error('As 7 palavras não conferem com a lista do PulseShare.');
-    const cleanName = cleanUsername(name || '') || 'usuario';
-    const prof = await PulseShareCrypto.deriveIdentity(cleanName, words);
+    let cleanName = cleanUsername(name || '');
+    if (cleanName) {
+      const ruleErr = nameRuleError(cleanName);
+      if (ruleErr) throw new Error('Nome: ' + ruleErr);
+    } else if (opts.isNew) {
+      throw new Error('Escolha um nome de usuário.');
+    }
+    let prof = await PulseShareCrypto.deriveIdentity(cleanName || 'usuario', words);
+    const suffix = prof.pubKeyHex.slice(0, 6);
+
+    // Conta já salva neste aparelho: só ativa (o nome dela já foi verificado)
     const existing = PulseShareCrypto.ProfilesManager.getAllProfiles().find((p) => p.pubKeyHex === prof.pubKeyHex);
+    if (existing && (!cleanName || cleanName === cleanUsername(existing.name))) {
+      PulseShareCrypto.ProfilesManager.switchProfile(existing.id);
+      if (opts.showKeyFirst) return existing;
+      location.reload();
+      return existing;
+    }
+
+    status(cleanName ? `Verificando se o nome "${cleanName}" está livre na rede...` : 'Procurando o nome desta conta na rede...', 'info');
+    const online = await ensureNetworkForProbe();
+    if (!online && (opts.isNew || !cleanName)) {
+      status('');
+      throw new Error(opts.isNew
+        ? 'Sem conexão com a rede: não dá para verificar se o nome está livre. Tente de novo quando estiver online.'
+        : 'Sem conexão com a rede: digite o seu nome de usuário para entrar.');
+    }
+    const res = await probeName(cleanName, suffix);
+    status('');
+    if (!cleanName) {
+      if (!res.knownName) throw new Error('Não encontramos o nome desta conta na rede (nenhum aparelho dela online). Digite o seu nome de usuário.');
+      cleanName = res.knownName;
+      prof = await PulseShareCrypto.deriveIdentity(cleanName, words);
+    } else if (res.taken) {
+      throw new Error(`O nome "${cleanName}" já está em uso por ${res.ownerTag}. Escolha outro.`);
+    }
+    prof.nameSince = (res.knownName === cleanName && res.knownSince) || Date.now();
+
     if (existing) {
+      // Mesma conta, nome novo digitado no login: atualiza o perfil salvo
+      const updated = { ...existing, name: prof.name, tag: prof.tag, nameSince: prof.nameSince };
+      PulseShareCrypto.ProfilesManager.saveProfile(updated);
       PulseShareCrypto.ProfilesManager.switchProfile(existing.id);
     } else {
       prof.id = 'prof_' + Date.now();
       PulseShareCrypto.ProfilesManager.saveProfile(prof);
+      PulseShareCrypto.ProfilesManager.switchProfile(prof.id);
+    }
+
+    // Avisa a rede do nome registrado (todos atualizam o catálogo)
+    noteTagClaim(prof.tag, prof.nameSince, Date.now());
+    if (res.knownName !== cleanName) {
+      broadcastToMesh({ meshType: 'USER_REGISTERED', tag: prof.tag, nodeId, since: prof.nameSince, registeredAt: Date.now(), regHash: prof.regHash });
     }
     if (opts.showKeyFirst) return prof;
+    await new Promise((r) => setTimeout(r, 400)); // deixa o anúncio sair antes de recarregar
     location.reload();
     return prof;
   }
@@ -4031,13 +4402,19 @@
       document.getElementById('onb-words').value, document.getElementById('onb-access-name').value));
     document.getElementById('onb-btn-import-txt').onclick = () => pickTextFile((text) => run(() => loginFromParsed(parseLoginText(text))));
     document.getElementById('onb-btn-scan').onclick = () => openQrScanner();
-    document.getElementById('onb-btn-create').onclick = () => run(async () => {
+    const btnCreate = document.getElementById('onb-btn-create');
+    btnCreate.onclick = () => run(async () => {
       const name = cleanUsername(document.getElementById('onb-new-name').value);
-      if (!/^[a-z0-9_]{2,24}$/.test(name) || /^link_/.test(name)) {
-        throw new Error('Nome: 2 a 24 letras minúsculas, números ou "_".');
-      }
+      const ruleErr = nameRuleError(name);
+      if (ruleErr) throw new Error('Nome: ' + ruleErr);
       const words = PulseShareCrypto.generate7WordMnemonic();
-      const prof = await loginWithWords(words, name, { showKeyFirst: true });
+      btnCreate.disabled = true;
+      let prof;
+      try {
+        prof = await loginWithWords(words, name, { showKeyFirst: true, isNew: true });
+      } finally {
+        btnCreate.disabled = false;
+      }
       const key = await PulseShareCrypto.wordsToAccessKey(words);
       document.getElementById('created-access-key').textContent = key;
       document.getElementById('created-seed-words').textContent = words;
@@ -4574,10 +4951,12 @@
       const name = prompt('Nome para o novo perfil:');
       if (name && typeof PulseShareCrypto !== 'undefined') {
         const seedWords = PulseShareCrypto.generate7WordMnemonic();
-        const newProf = await PulseShareCrypto.deriveIdentity(name.trim(), seedWords);
-        newProf.id = 'prof_' + Date.now();
-        PulseShareCrypto.ProfilesManager.saveProfile(newProf);
-        window.location.reload();
+        try {
+          // Mesma verificação da criação de conta: o nome não pode existir na rede
+          await loginWithWords(seedWords, name, { isNew: true, status: (m) => { if (m) Native.toast(m); } });
+        } catch (e) {
+          alert(e && e.message ? e.message : String(e));
+        }
       }
     };
 
