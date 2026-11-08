@@ -30,6 +30,78 @@
   ];
 
   // ==========================================================================
+  // 1b. VÁRIAS CONTAS NO MESMO APARELHO (alternar / adicionar / sair)
+  // O app lê conversas, contatos etc. de chaves fixas do localStorage ("ao
+  // vivo"). Cada conta tem a sua cópia guardada em ps_acct_<conta>__<chave>; a
+  // conta dona das chaves ao vivo fica em ps_live_account_id. Quando a conta
+  // ativa muda (troca, nova conta, saída), ANTES de qualquer leitura: guarda as
+  // chaves ao vivo na conta anterior e carrega as da conta nova. <conta> vem da
+  // chave pública (estável: entrar de novo com a mesma chave recupera os dados).
+  // Só a conta ativa fica conectada e recebe mensagens.
+  // ==========================================================================
+  const ACCOUNT_SCOPED_KEYS = ['ps_chat_messages', 'ps_contacts_catalog_v2', 'ps_custom_categories', 'ps_blocked_tags',
+    'ps_previous_tags', 'ps_my_tag', 'ps_my_reghash', 'ps_node_id'];
+  const LIVE_ACCOUNT_KEY = 'ps_live_account_id';
+  function accountStoreId(profile) {
+    return profile && profile.pubKeyHex ? 'k' + profile.pubKeyHex.slice(0, 16) : '';
+  }
+  function accountStoreKey(acct, key) {
+    return `ps_acct_${acct}__${key}`;
+  }
+  function rawProfiles() {
+    try { return JSON.parse(localStorage.getItem('ps_profiles_v2') || '[]') || []; } catch (e) { return []; }
+  }
+  function rawActiveProfile() {
+    const list = rawProfiles();
+    const id = localStorage.getItem('ps_active_profile_id_v2');
+    return list.find((p) => p.id === id) || list[0] || null;
+  }
+  function accountHasStash(acct) {
+    return ACCOUNT_SCOPED_KEYS.some((k) => localStorage.getItem(accountStoreKey(acct, k)) !== null);
+  }
+  // Troca as chaves ao vivo para a conta <target> (guardando as da conta atual)
+  function swapLiveAccount(target) {
+    const live = localStorage.getItem(LIVE_ACCOUNT_KEY);
+    if (live === target) return;
+    // 1) dados da conta nova para a memória (e libera o espaço que ocupavam)
+    const incoming = {};
+    ACCOUNT_SCOPED_KEYS.forEach((k) => { incoming[k] = localStorage.getItem(accountStoreKey(target, k)); });
+    // 2) guarda os dados ao vivo na conta anterior
+    if (live) {
+      ACCOUNT_SCOPED_KEYS.forEach((k) => {
+        const v = localStorage.getItem(k);
+        if (v === null) localStorage.removeItem(accountStoreKey(live, k));
+        else localStorage.setItem(accountStoreKey(live, k), v); // pode lançar (cota): aborta antes de mexer no resto
+      });
+    }
+    // 3) carrega a conta nova nas chaves ao vivo
+    ACCOUNT_SCOPED_KEYS.forEach((k) => {
+      localStorage.removeItem(accountStoreKey(target, k));
+      if (incoming[k] === null) localStorage.removeItem(k);
+      else localStorage.setItem(k, incoming[k]);
+    });
+    localStorage.setItem(LIVE_ACCOUNT_KEY, target);
+  }
+  function syncAccountStorage() {
+    try {
+      const target = accountStoreId(rawActiveProfile());
+      if (!target) return;
+      const live = localStorage.getItem(LIVE_ACCOUNT_KEY);
+      // 1ª vez com este recurso: os dados atuais são da conta ativa
+      if (!live && !accountHasStash(target)) { localStorage.setItem(LIVE_ACCOUNT_KEY, target); return; }
+      swapLiveAccount(target);
+    } catch (e) {
+      console.warn('[PulseShare] falha ao trocar os dados da conta:', e);
+    }
+  }
+  syncAccountStorage();
+  const LOADED_ACCOUNT = localStorage.getItem(LIVE_ACCOUNT_KEY) || '';
+  // Outra página (ex.: o documento de fundo da extensão) trocou de conta?
+  function liveAccountChanged() {
+    return Boolean(LOADED_ACCOUNT) && localStorage.getItem(LIVE_ACCOUNT_KEY) !== LOADED_ACCOUNT;
+  }
+
+  // ==========================================================================
   // 2. ESTADO LOCAL E IDENTIDADE DO NÓ
   // ==========================================================================
   let activeProfile = null;
@@ -71,6 +143,8 @@
   }
 
   function saveChatMessagesToStorage() {
+    // As chaves ao vivo passaram para outra conta (troca em outra página): não sobrescreve
+    if (liveAccountChanged()) return;
     try {
       localStorage.setItem('ps_chat_messages', JSON.stringify(chatMessages));
     } catch (e) {}
@@ -260,7 +334,7 @@
       if (IS_EXTENSION && window.chrome && chrome.runtime && chrome.runtime.sendMessage) {
         try { chrome.runtime.sendMessage({ type: 'PS_NOTIFY', title, body, peerTag: peerTag || '', kind: kind || 'chat' }); } catch (e) {}
       } else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-        try { new Notification(title, { body, tag: peerTag || undefined }); } catch (e) {}
+        try { new Notification(title, { body, tag: peerTag || undefined, icon: 'icons/icon128.png' }); } catch (e) {}
       }
       playNotifySound(notifySound);
     },
@@ -376,6 +450,11 @@
         modalContact.classList.add('hidden');
         return 'HANDLED';
       }
+      const onb = document.getElementById('view-onboarding');
+      if (onb && !onb.classList.contains('hidden') && activeProfile) {
+        onb.classList.add('hidden');
+        return 'HANDLED';
+      }
       const modalAddCat = document.getElementById('modal-add-category-list');
       if (modalAddCat && !modalAddCat.classList.contains('hidden')) {
         modalAddCat.classList.add('hidden');
@@ -468,6 +547,7 @@
     if (setTag) setTag.textContent = myTag;
 
     renderUsernameSettings();
+    renderAccountsList();
   }
 
   // --------------------------------------------------------------------------
@@ -569,6 +649,7 @@
     if (changed) {
       scheduleNameRegistrySave();
       if (activeProfile && name === (splitTag(myTag) || {}).name) checkMyNameConflict();
+      if (myTag) scheduleBareTagMigration();
     }
     return changed;
   }
@@ -915,6 +996,87 @@
     renderConversationsList();
   }
 
+  // --------------------------------------------------------------------------
+  // 4d. CONTAS NESTE APARELHO (ver 1b: cada conta tem os seus dados guardados)
+  // --------------------------------------------------------------------------
+  function renderAccountsList() {
+    const box = document.getElementById('settings-accounts-list');
+    if (!box || typeof PulseShareCrypto === 'undefined') return;
+    const all = PulseShareCrypto.ProfilesManager.getAllProfiles();
+    box.innerHTML = all.map((p) => {
+      const cur = Boolean(activeProfile && p.id === activeProfile.id);
+      return `
+        <div class="p-2 rounded-lg ${cur ? 'bg-indigo-900/30 border border-indigo-500/50' : 'bg-slate-900 border border-slate-800'} flex items-center justify-between gap-2">
+          <div class="flex items-center gap-2 min-w-0">
+            <div class="w-7 h-7 rounded-lg overflow-hidden shrink-0">${profileAvatarHtml(p)}</div>
+            <div class="min-w-0">
+              <span class="text-xs font-bold text-white block truncate">${escapeHtml(p.name || '')}</span>
+              <span class="text-[10px] font-mono text-slate-400 block truncate">${escapeHtml(p.tag || '')}</span>
+            </div>
+          </div>
+          ${cur
+            ? '<span class="text-[10px] text-emerald-400 font-bold shrink-0">● Ativa</span>'
+            : `<button type="button" data-switch-account="${escapeHtml(p.id)}" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] text-indigo-300 font-bold border border-slate-700 active:scale-95 shrink-0">Usar</button>`}
+        </div>`;
+    }).join('');
+    box.querySelectorAll('[data-switch-account]').forEach((b) => {
+      b.onclick = () => switchAccount(b.getAttribute('data-switch-account'));
+    });
+  }
+
+  // Troca de conta: marca a outra como ativa e recarrega (syncAccountStorage
+  // guarda os dados desta conta e carrega os da outra antes de tudo)
+  function switchAccount(profileId) {
+    if (!profileId || (activeProfile && profileId === activeProfile.id)) return;
+    saveChatMessagesToStorage();
+    PulseShareCrypto.ProfilesManager.switchProfile(profileId);
+    if (Native.isBleAvailable()) Native.stopBleMesh();
+    location.reload();
+  }
+
+  function openAddAccount() {
+    document.getElementById('modal-settings').classList.add('hidden');
+    ['onb-access-key', 'onb-access-name', 'onb-words', 'onb-new-name'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    onbStatus('');
+    document.getElementById('btn-onb-back').classList.toggle('hidden', !activeProfile);
+    showOnboarding();
+  }
+
+  function closeAddAccount() {
+    if (!activeProfile) return;
+    document.getElementById('view-onboarding').classList.add('hidden');
+  }
+
+  function logoutAccount() {
+    if (!activeProfile || typeof PulseShareCrypto === 'undefined') return;
+    const tag = myTag;
+    if (!confirm(`Sair de ${tag} neste aparelho?\n\nPara entrar de novo você vai precisar da chave de acesso ou das 7 palavras (em "🔑 Chaves e QR"). Guarde-as antes de sair.`)) return;
+    const wipe = confirm(`Apagar também as conversas e os contatos de ${tag} deste aparelho?\n\nOK = apagar\nCancelar = manter guardados (voltam quando você entrar de novo nesta conta)`);
+    const acct = accountStoreId(activeProfile);
+    try {
+      saveChatMessagesToStorage();
+      ACCOUNT_SCOPED_KEYS.forEach((k) => {
+        const v = localStorage.getItem(k);
+        if (!wipe && v !== null) localStorage.setItem(accountStoreKey(acct, k), v);
+        else localStorage.removeItem(accountStoreKey(acct, k));
+        localStorage.removeItem(k);
+      });
+      localStorage.removeItem(LIVE_ACCOUNT_KEY);
+      // Remove o perfil (e cópias dele com as mesmas chaves)
+      PulseShareCrypto.ProfilesManager.getAllProfiles()
+        .filter((p) => p.pubKeyHex === activeProfile.pubKeyHex)
+        .forEach((p) => PulseShareCrypto.ProfilesManager.deleteProfile(p.id));
+    } catch (e) {
+      alert('Não foi possível sair da conta: ' + (e && e.message ? e.message : e));
+      return;
+    }
+    if (Native.isBleAvailable()) Native.stopBleMesh();
+    location.reload();
+  }
+
   function renderIdentityModal() {
     if (!activeProfile) return;
 
@@ -956,38 +1118,6 @@
       fieldPin.classList.toggle('hidden', !toggle2fa.checked);
     }
 
-    // Lista de múltiplos perfis
-    const profilesList = document.getElementById('profiles-list-container');
-    if (profilesList) {
-      const all = PulseShareCrypto.ProfilesManager.getAllProfiles();
-      profilesList.innerHTML = all.map(p => {
-        const isCurrent = p.id === activeProfile.id;
-        return `
-          <div class="p-2.5 rounded-xl ${isCurrent ? 'bg-indigo-900/30 border border-indigo-500/50' : 'bg-slate-900 border border-slate-800'} flex items-center justify-between">
-            <div class="flex items-center gap-2 min-w-0">
-              <div class="w-7 h-7 rounded-lg overflow-hidden shrink-0">${profileAvatarHtml(p)}</div>
-              <div class="min-w-0">
-                <span class="text-xs font-bold text-white block truncate">${p.name} ${isCurrent ? '(Ativo)' : ''}</span>
-                <span class="text-[10px] font-mono text-slate-400 block truncate">${p.tag}</span>
-              </div>
-            </div>
-            ${!isCurrent ? `
-              <button type="button" data-switch-profile="${p.id}" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-indigo-300 font-semibold border border-slate-700 active:scale-95">
-                Usar
-              </button>
-            ` : '<span class="text-[10px] text-emerald-400 font-bold">● Ativo</span>'}
-          </div>
-        `;
-      }).join('');
-
-      profilesList.querySelectorAll('[data-switch-profile]').forEach(btn => {
-        btn.onclick = () => {
-          const pid = btn.getAttribute('data-switch-profile');
-          PulseShareCrypto.ProfilesManager.switchProfile(pid);
-          window.location.reload();
-        };
-      });
-    }
 
   }
 
@@ -1384,6 +1514,7 @@
       setTimeout(announcePresence, 300);
       // Ao conectar, sincroniza o catálogo de nomes com os nós online (1x por sessão)
       if (myTag) setTimeout(requestNameRegistrySync, 4000);
+      if (myTag) setTimeout(migrateBareTags, 6000);
     };
 
     ws.onmessage = (event) => {
@@ -1505,7 +1636,7 @@
           peerRegistry[tag] = {
             ...prev,
             tag: tag,
-            name: tag.replace(/^@/, '').split('_')[0],
+            name: displayNameFor(tag),
             nodeId: packet.nodeId || packet.senderNodeId || prev.nodeId,
             reghash: packet.reghash || '0x0000',
             // Nunca usa HTML vindo da rede: identicon local (ou a foto já validada)
@@ -1516,6 +1647,8 @@
             lastSeen: Date.now(),
             lastSeenMqtt: via === 'mqtt' ? Date.now() : prev.lastSeenMqtt
           };
+          // Destino apareceu: reenvia o que ficou pendente para ele
+          if (chatMessages[tag]) flushPendingMessages(tag);
           // Só contatos adicionados são exibidos: evita re-render a cada anúncio de estranhos
           if (isContact(tag)) {
             maybeRequestPeerPhoto(tag, packet.photoHash);
@@ -1818,7 +1951,7 @@
         trackRttAck(from, msgId, via);
         if (activeChatPeer === from) refreshActiveChatRouteBadge();
         const m = (chatMessages[from] || []).find((x) => x.id === msgId);
-        if (m && m.sender === myTag && m.status !== 'READ') {
+        if (m && isMyTag(m.sender) && m.status !== 'READ') {
           m.status = payload.status === 'READ' ? 'READ' : 'DELIVERED';
           saveChatMessagesToStorage();
           if (activeChatPeer === from) renderChatMessages(from);
@@ -2716,7 +2849,8 @@
 
   function displayNameFor(tag) {
     if (isLinkVisitor(tag)) return 'Visitante do link ' + tag.slice(6, 10);
-    return tag.replace(/^@/, '').split('_')[0];
+    const parts = splitTag(tag);
+    return parts ? parts.name : tag.replace(/^@/, '').split('_')[0];
   }
 
   function updateChatHeaderTyping() {
@@ -3060,6 +3194,80 @@
         scheduleChatRetry(targetTag, msgId, payload, attempt + 1);
       }
     }, 4000 * attempt);
+  }
+
+  // --------------------------------------------------------------------------
+  // Mensagens pendentes: não há servidor guardando mensagens, então texto para
+  // quem está offline fica em ✓ (SENT). Quando o destino aparece na rede
+  // (presença), reenviamos as pendentes dos últimos 7 dias (o destino deduplica
+  // pelo id e responde CHAT_ACK → ✓✓).
+  // --------------------------------------------------------------------------
+  const PENDING_RESEND_MAX_AGE = 7 * 24 * 3600 * 1000;
+  const pendingFlushAt = {}; // tag -> último reenvio
+  function flushPendingMessages(tag) {
+    tag = normalizeTag(tag);
+    const list = chatMessages[tag];
+    if (!list || !list.length || !myTag) return;
+    const now = Date.now();
+    if (now - (pendingFlushAt[tag] || 0) < 30000) return;
+    const pending = list.filter((m) => m.status === 'SENT' && isMyTag(m.sender) && m.text &&
+      !m.transferId && !m.media && now - (m.timestamp || 0) < PENDING_RESEND_MAX_AGE && now - (m.timestamp || 0) > 15000);
+    if (!pending.length) return;
+    pendingFlushAt[tag] = now;
+    pending.slice(-30).forEach((m, i) => setTimeout(() => {
+      const payload = { id: m.id, senderTag: myTag, text: m.text, msgType: 'text', type: 'text', timestamp: m.timestamp };
+      if (m.replyTo) payload.replyTo = m.replyTo;
+      const vias = sendSignal(tag, m.id, 'CHAT_MESSAGE', payload);
+      trackRttSent(tag, m.id, vias);
+    }, i * 150));
+  }
+
+  // Conversas/contatos criados com "@nome" sem o sufixo _hash6 (busca antiga)
+  // nunca chegavam a ninguém: quando o catálogo de nomes conhece o dono, move a
+  // conversa para a tag completa e reenvia o que ficou pendente.
+  function isBareUserTag(tag) {
+    return /^@[a-z0-9_]{2,40}$/.test(tag || '') && !splitTag(tag) && !isLinkVisitor(tag);
+  }
+  let bareMigrateTimer = null;
+  const bareProbed = new Set();
+  function scheduleBareTagMigration() {
+    if (bareMigrateTimer) return;
+    bareMigrateTimer = setTimeout(() => { bareMigrateTimer = null; migrateBareTags(); }, 1500);
+  }
+  function migrateBareTags() {
+    if (!myTag || typeof PulseShareCrypto === 'undefined') return;
+    const contacts = getContacts();
+    const bare = new Set([...Object.keys(chatMessages), ...Object.keys(contacts)].filter(isBareUserTag));
+    let changed = false;
+    bare.forEach((b) => {
+      const name = b.slice(1);
+      const owner = registryOwnerOf(name);
+      if (!owner) {
+        // Pergunta à rede uma vez; a resposta entra no catálogo e chama isto de novo
+        if (!bareProbed.has(name) && brokersOnline()) { bareProbed.add(name); probeName(name, ''); }
+        return;
+      }
+      const full = `@${name}_${owner.s}`;
+      if (isMyTag(full)) return;
+      if (chatMessages[b]) {
+        chatMessages[full] = (chatMessages[full] || []).concat(chatMessages[b]).sort((x, y) => (x.timestamp || 0) - (y.timestamp || 0));
+        delete chatMessages[b];
+      }
+      if (contacts[b]) {
+        const c = contacts[b];
+        if (!contacts[full]) PulseShareCrypto.ProfilesManager.saveContact(full, { name: c.name && c.name !== b ? c.name : name, lists: c.lists });
+        PulseShareCrypto.ProfilesManager.removeContact(b);
+      }
+      if (activeChatPeer === b) activeChatPeer = full;
+      pendingFlushAt[full] = 0;
+      changed = true;
+      setTimeout(() => flushPendingMessages(full), 500);
+    });
+    if (changed) {
+      saveChatMessagesToStorage();
+      renderConversationsList();
+      if (activeChatPeer && document.getElementById('chat-active-conversation-pane').classList.contains('active')) openActiveChat(activeChatPeer);
+    }
   }
 
   function sendChatMessageWithMedia(targetTag, text, transferId, fileItem) {
@@ -3427,7 +3635,7 @@
     if (isMyTag(tag)) return false;
     const peer = peerRegistry[tag];
     PulseShareCrypto.ProfilesManager.saveContact(tag, {
-      name: name || (peer && peer.name) || tag.replace(/^@/, '').split('_')[0],
+      name: name || (peer && peer.name) || displayNameFor(tag),
       avatar: (peer && peer.avatar) || PulseShareCrypto.generateIdenticonSvg(tag, 64)
     });
     setBlocked(tag, false);
@@ -3719,6 +3927,29 @@
     return (c && c.avatar) || (p && p.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, size || 40) : '');
   }
 
+  // Busca de um nome sem sufixo: pergunta à rede (1x a cada 30 s por nome) e
+  // redesenha a busca quando a resposta chegar, se o termo ainda for o mesmo.
+  const searchNameLookups = {}; // nome -> { at, found, pending }
+  let searchLookupTimer = null;
+  function searchLookupName(name, rawQ) {
+    const st = searchNameLookups[name];
+    if (st && st.pending) return `Procurando "${name}" na rede...`;
+    if (st && Date.now() - st.at < 30000) return st.found ? '' : `Nenhum usuário "${name}" foi visto na rede. Confira o nome ou peça o @usuário completo.`;
+    if (!brokersOnline()) return 'Sem conexão para procurar esse nome na rede.';
+    // Espera parar de digitar para não perguntar "ri", "ric", "rica"...
+    clearTimeout(searchLookupTimer);
+    searchLookupTimer = setTimeout(() => {
+      searchNameLookups[name] = { at: Date.now(), pending: true };
+      probeName(name, '').then((res) => {
+        searchNameLookups[name] = { at: Date.now(), found: res.taken };
+        const input = document.getElementById('input-global-search');
+        const modal = document.getElementById('modal-global-search');
+        if (input && modal && !modal.classList.contains('hidden') && input.value.trim() === rawQ.trim()) renderGlobalSearchResults(input.value);
+      });
+    }, 700);
+    return `Procurando "${name}" na rede...`;
+  }
+
   function renderGlobalSearchResults(query) {
     const resultsContainer = document.getElementById('global-search-results');
     if (!resultsContainer) return;
@@ -3731,7 +3962,7 @@
     if (!q) {
       const tags = Object.keys(contacts).filter((t) => !isMyTag(t)).slice(0, LIMIT);
       resultsContainer.innerHTML = `
-        <p class="text-[11px] text-slate-500 px-1">Digite para buscar em conversas, mensagens, arquivos e contatos. Para adicionar alguém, digite o <span class="font-mono text-indigo-300">@usuário</span> completo.</p>
+        <p class="text-[11px] text-slate-500 px-1">Digite para buscar em conversas, mensagens, arquivos e contatos. Para adicionar alguém, digite o nome de usuário (ou o <span class="font-mono text-indigo-300">@usuário</span> completo).</p>
         ${searchSection('👤 Contatos', tags.length, tags.map((t) => userRowHtml(t, contacts[t].name, true)).join(''))}`;
       bindSearchResultEvents(resultsContainer);
       return;
@@ -3747,10 +3978,21 @@
     });
     let usersHtml = Array.from(userTags).slice(0, LIMIT).map((t) => userRowHtml(t, (contacts[t] && contacts[t].name) || displayNameFor(t), isContact(t))).join('');
     let usersCount = userTags.size;
-    // @tag completo digitado e ainda não adicionado → oferecer "Adicionar"
-    const typed = rawQ.toLowerCase().replace(/\s+/g, '');
-    const typedTag = /^@?[a-z0-9_]{3,40}$/.test(typed) ? (typed.startsWith('@') ? typed : '@' + typed) : '';
-    if (typedTag && !isMyTag(typedTag) && !isContact(typedTag) && !userTags.has(typedTag) && !typedTag.startsWith('@link_') && (rawQ.startsWith('@') || /_[0-9a-f]{6}$/.test(typedTag))) {
+    // Usuário digitado (tag completa @nome_hash6 ou só o nome) → oferecer "Adicionar".
+    // Só o nome: resolve pelo catálogo de nomes da rede (e pergunta à rede se não souber).
+    const typed = rawQ.toLowerCase().replace(/\s+/g, '').replace(/^@/, '');
+    let typedTag = '';
+    let typedHint = '';
+    if (/^[a-z0-9_]{2,40}$/.test(typed) && !typed.startsWith('link_')) {
+      if (splitTag('@' + typed)) {
+        typedTag = '@' + typed;
+      } else {
+        const owner = registryOwnerOf(typed);
+        if (owner) typedTag = `@${typed}_${owner.s}`;
+        else typedHint = searchLookupName(typed, rawQ);
+      }
+    }
+    if (typedTag && !isMyTag(typedTag) && !isContact(typedTag) && !userTags.has(typedTag)) {
       const seen = peerRegistry[typedTag];
       const online = Boolean(seen && Date.now() - (seen.lastSeen || 0) < 60000);
       usersHtml = `
@@ -3759,12 +4001,14 @@
             <div class="w-9 h-9 rounded-xl overflow-hidden shrink-0 border border-slate-800 bg-slate-900">${avatarFor(typedTag, 40)}</div>
             <div class="min-w-0">
               <span class="text-xs font-bold text-white block truncate font-mono">${escapeHtml(typedTag)}</span>
-              <span class="text-[10px] ${online ? 'text-emerald-400' : 'text-slate-500'} block">${online ? '● visto na rede agora' : 'não visto recentemente (a mensagem chega quando estiver online)'}</span>
+              <span class="text-[10px] ${online ? 'text-emerald-400' : 'text-slate-500'} block">${online ? '● online agora' : 'offline — a mensagem é entregue quando os dois estiverem online'}</span>
             </div>
           </div>
           <button type="button" data-search-add="${escapeHtml(typedTag)}" class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shadow shrink-0">+ Adicionar</button>
         </div>` + usersHtml;
       usersCount++;
+    } else if (typedHint && !usersCount) {
+      usersHtml = `<p class="text-[11px] text-slate-500 px-1">${escapeHtml(typedHint)}</p>`;
     }
 
     // 2) Mensagens (trechos) e 3) Arquivos
@@ -4496,7 +4740,7 @@
     }
     closeQrScanner();
     if (activeProfile) {
-      const ok = confirm('Entrar nesta conta neste celular? A conta atual continua salva em "Múltiplos Perfis".');
+      const ok = confirm('Entrar nesta conta neste celular? A conta atual continua salva em "Contas neste aparelho".');
       if (!ok) return;
     }
     try {
@@ -4946,19 +5190,10 @@
       }
     };
 
-    // Criar Novo Perfil
-    document.getElementById('btn-add-new-profile').onclick = async () => {
-      const name = prompt('Nome para o novo perfil:');
-      if (name && typeof PulseShareCrypto !== 'undefined') {
-        const seedWords = PulseShareCrypto.generate7WordMnemonic();
-        try {
-          // Mesma verificação da criação de conta: o nome não pode existir na rede
-          await loginWithWords(seedWords, name, { isNew: true, status: (m) => { if (m) Native.toast(m); } });
-        } catch (e) {
-          alert(e && e.message ? e.message : String(e));
-        }
-      }
-    };
+    // Contas neste aparelho: adicionar / sair / voltar da tela de entrada
+    document.getElementById('btn-account-add').onclick = () => openAddAccount();
+    document.getElementById('btn-account-logout').onclick = () => logoutAccount();
+    document.getElementById('btn-onb-back').onclick = () => closeAddAccount();
 
     // Ler QR Code (câmera só no celular) / colar chave de acesso
     document.getElementById('btn-scan-device-qr').onclick = () => openQrScanner();
@@ -4967,7 +5202,7 @@
     document.getElementById('btn-confirm-import-pairing').onclick = async () => {
       const parsed = parseLoginText(document.getElementById('input-pairing-payload').value);
       if (!parsed.key && !parsed.words) { Native.toast('Cole uma chave de acesso válida (ps-…).'); return; }
-      if (activeProfile && !confirm('Entrar nesta conta? A conta atual continua salva em "Múltiplos Perfis".')) return;
+      if (activeProfile && !confirm('Entrar nesta conta? A conta atual continua salva em "Contas neste aparelho".')) return;
       try { await loginFromParsed(parsed); } catch (e) { Native.toast(e && e.message ? e.message : 'Chave inválida'); }
     };
 

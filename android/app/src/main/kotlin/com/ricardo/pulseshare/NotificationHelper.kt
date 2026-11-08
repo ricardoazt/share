@@ -19,6 +19,9 @@ import androidx.core.content.FileProvider
 import java.io.File
 
 object NotificationHelper {
+    // Ícone pequeno = raio do PulseShare (res/drawable/ic_stat_pulseshare.xml, gerado por icons/gen_icons.py)
+    private const val BRAND_COLOR = 0xFF4F46E5.toInt()
+
 
     const val CHANNEL_TRANSFERS = "pulseshare_transfers"
     const val CHANNEL_SERVICE = "pulseshare_service"
@@ -79,7 +82,8 @@ object NotificationHelper {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setSmallIcon(R.drawable.ic_stat_pulseshare)
+            .setColor(BRAND_COLOR)
             .setContentTitle("Download Concluído — PulseShare")
             .setContentText(fileName)
             .setStyle(NotificationCompat.BigTextStyle().bigText("O arquivo \"$fileName\" foi recebido e salvo na pasta Downloads/PulseShare."))
@@ -106,7 +110,8 @@ object NotificationHelper {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_TRANSFERS)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.ic_stat_pulseshare)
+            .setColor(BRAND_COLOR)
             .setContentTitle(title)
             .setContentText(text)
             .setContentIntent(pendingMain)
@@ -129,7 +134,8 @@ object NotificationHelper {
         )
 
         return NotificationCompat.Builder(context, CHANNEL_SERVICE)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.drawable.ic_stat_pulseshare)
+            .setColor(BRAND_COLOR)
             .setContentTitle("PulseShare ativo")
             .setContentText(text)
             .setContentIntent(pendingMain)
@@ -211,7 +217,8 @@ object NotificationHelper {
         val pending = PendingIntent.getActivity(context, notifId, open,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val builder = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setSmallIcon(R.drawable.ic_stat_pulseshare)
+            .setColor(BRAND_COLOR)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gerado por icons/gen_icons.py — não edite à mão -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="0.64"
+        android:strokeLineJoin="round"
+        android:pathData="M13.62,1.82L14.83,1.82L12.29,9.72L18.47,9.72L9.64,22.18L11.21,13.25L5.53,13.25Z" />
+</vector>
