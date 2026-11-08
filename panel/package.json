@@ -1,0 +1,18 @@
+{
+  "name": "pulseshare-panel",
+  "productName": "PulseSharePanel",
+  "version": "1.0.0",
+  "description": "PulseSharePanel: painel administrativo da rede PulseShare",
+  "main": "main.js",
+  "author": "Ricardo André Zampiva Teixeira",
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "electron": "45.2.3"
+  },
+  "scripts": {
+    "start": "electron .",
+    "deb": "./build-deb.sh"
+  },
+  "desktopName": "pulseshare-panel.desktop"
+}

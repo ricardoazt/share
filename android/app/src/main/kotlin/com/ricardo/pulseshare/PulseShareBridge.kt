@@ -41,6 +41,15 @@ class PulseShareBridge(
         }
     }
 
+    // accept no formato do <input type=file>: "image/*,video/*", "audio/*"
+    @JavascriptInterface
+    fun pickFilesOfType(accept: String) {
+        val types = accept.split(',').map { it.trim() }.filter { it.matches(Regex("^[a-z*]+/[a-z0-9.+*-]+$")) }
+        mainHandler.post {
+            activity.launchFilePicker(types.toTypedArray())
+        }
+    }
+
     @JavascriptInterface
     fun getPendingSharedFiles(): String {
         return activity.getSharedFilesJson()

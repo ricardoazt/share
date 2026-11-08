@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src wss: ws:">
+  <title>PulseSharePanel</title>
+  <link rel="icon" href="icons/icon32.png">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon128.png" alt="">
+      <div>
+        <h1>PulseSharePanel</h1>
+        <span>Administração da rede PulseShare</span>
+      </div>
+    </div>
+    <div class="top-status">
+      <span id="conn-pill" class="pill pill-wait"><i></i><b>Conectando…</b></span>
+      <span id="sync-status" class="muted">Ainda não sincronizado</span>
+      <button id="btn-sync" class="btn btn-primary" type="button">⟳ Sincronizar agora</button>
+    </div>
+  </header>
+
+  <div id="readonly-banner" class="banner hidden">
+    <span>🔒 Sem a chave do administrador neste computador: dá para ver os usuários, mas não enviar mensagens nem excluir contas.</span>
+    <button class="btn btn-small" type="button" data-goto="key">Configurar chave</button>
+  </div>
+
+  <section class="metrics">
+    <div class="metric"><span>Usuários</span><b id="m-total">0</b><small>contas ativas conhecidas</small></div>
+    <div class="metric metric-online"><span>Online agora</span><b id="m-online">0</b><small>sinal nos últimos 45 s</small></div>
+    <div class="metric"><span>Ativos 24 h</span><b id="m-24h">0</b><small>último acesso &lt; 24 h</small></div>
+    <div class="metric"><span>Ativos 7 dias</span><b id="m-7d">0</b><small>último acesso &lt; 7 dias</small></div>
+    <div class="metric"><span>Novos 7 dias</span><b id="m-new">0</b><small>contas criadas na semana</small></div>
+    <div class="metric metric-deleted"><span>Excluídos</span><b id="m-deleted">0</b><small>removidos pelo painel</small></div>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" type="button" data-tab="users">👥 Usuários</button>
+    <button class="tab" type="button" data-tab="broadcast">📣 Mensagem para todos</button>
+    <button class="tab" type="button" data-tab="history">🗂 Histórico de ações</button>
+    <button class="tab" type="button" data-tab="key">🔑 Chave do administrador</button>
+  </nav>
+
+  <main>
+    <!-- USUÁRIOS -->
+    <section id="tab-users" class="tabpane">
+      <div class="toolbar">
+        <input id="f-search" type="search" placeholder="Buscar por nome ou @tag…" autocomplete="off" spellcheck="false">
+        <label>Status
+          <select id="f-status">
+            <option value="active">Todos (sem excluídos)</option>
+            <option value="online">Online</option>
+            <option value="offline">Offline</option>
+            <option value="deleted">Excluídos</option>
+            <option value="all">Todos (com excluídos)</option>
+          </select>
+        </label>
+        <label>Último acesso
+          <select id="f-seen">
+            <option value="any">Qualquer data</option>
+            <option value="1h">Última hora</option>
+            <option value="24h">Últimas 24 h</option>
+            <option value="7d">Últimos 7 dias</option>
+            <option value="30d">Últimos 30 dias</option>
+            <option value="gt30">Há mais de 30 dias</option>
+          </select>
+        </label>
+        <label>Ordenar
+          <select id="f-sort">
+            <option value="seen-desc">Último acesso: mais novo → mais antigo</option>
+            <option value="seen-asc">Último acesso: mais antigo → mais novo</option>
+            <option value="created-desc">Conta criada: mais nova primeiro</option>
+            <option value="created-asc">Conta criada: mais antiga primeiro</option>
+            <option value="name-asc">Nome (A → Z)</option>
+          </select>
+        </label>
+        <button id="btn-csv" class="btn" type="button">⬇ Exportar CSV</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th data-sort="name">Usuário</th>
+              <th>Status</th>
+              <th data-sort="seen">Último acesso</th>
+              <th data-sort="created">Conta criada em</th>
+              <th>Plataforma</th>
+              <th class="right">Ações</th>
+            </tr>
+          </thead>
+          <tbody id="users-body"></tbody>
+        </table>
+        <div id="users-empty" class="empty hidden"></div>
+      </div>
+      <p id="users-footer" class="muted footer-note"></p>
+    </section>
+
+    <!-- MENSAGEM PARA TODOS -->
+    <section id="tab-broadcast" class="tabpane hidden">
+      <div class="two-cols">
+        <div class="card">
+          <h2>Mensagem para todos os usuários</h2>
+          <p class="muted">Aparece na lista de conversas de cada usuário como <b>PulseShare</b> (canal oficial, só leitura), com notificação. Quem está offline recebe ao abrir o app, de qualquer aparelho online que já tenha a mensagem.</p>
+          <textarea id="bc-text" rows="7" maxlength="2000" placeholder="Escreva a mensagem…"></textarea>
+          <div class="row-between">
+            <span id="bc-count" class="muted">0 / 2000</span>
+            <button id="btn-bc-send" class="btn btn-primary" type="button">📣 Enviar para todos</button>
+          </div>
+          <div class="preview">
+            <span class="muted small">Pré-visualização no app</span>
+            <div class="chat-row">
+              <img src="icons/icon128.png" alt="">
+              <div class="chat-row-text">
+                <div class="row-between"><b>PulseShare</b><span class="badge badge-official">✔ Oficial</span></div>
+                <p id="bc-preview">Sua mensagem aparece aqui.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Mensagens enviadas</h2>
+          <ul id="bc-history" class="list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- HISTÓRICO -->
+    <section id="tab-history" class="tabpane hidden">
+      <div class="card">
+        <h2>Histórico de ações do administrador</h2>
+        <p class="muted">Registros assinados com a chave do administrador. Os aparelhos guardam e repassam estes registros entre si (não há servidor).</p>
+        <ul id="history-list" class="list"></ul>
+      </div>
+    </section>
+
+    <!-- CHAVE -->
+    <section id="tab-key" class="tabpane hidden">
+      <div class="two-cols">
+        <div class="card">
+          <h2>Chave do administrador</h2>
+          <div id="key-status"></div>
+          <div class="btn-row">
+            <button id="btn-key-export" class="btn" type="button">💾 Guardar cópia da chave</button>
+            <button id="btn-key-import" class="btn" type="button">📂 Importar chave</button>
+            <button id="btn-key-generate" class="btn btn-danger-ghost hidden" type="button">✨ Gerar chave nova</button>
+          </div>
+          <p class="muted small">A chave privada fica só neste computador (<code id="key-file"></code>, permissão 0600). Quem tiver este arquivo pode excluir contas e falar como PulseShare: guarde a cópia em lugar seguro.</p>
+        </div>
+        <div class="card">
+          <h2>Rede</h2>
+          <dl class="kv">
+            <dt>Tópico</dt><dd><code id="net-topic"></code></dd>
+            <dt>Brokers</dt><dd id="net-brokers"></dd>
+            <dt>Nó do painel</dt><dd><code id="net-node"></code></dd>
+            <dt>Dados locais</dt><dd id="net-db"></dd>
+          </dl>
+          <div class="btn-row">
+            <button id="btn-db-clear" class="btn btn-danger-ghost" type="button">Apagar dados locais do painel</button>
+          </div>
+          <p class="muted small">Apagar os dados locais não muda nada na rede: a próxima sincronização volta a montar a lista de usuários.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <h3 id="modal-title"></h3>
+      <div id="modal-body"></div>
+      <div class="btn-row right">
+        <button id="modal-cancel" class="btn" type="button">Cancelar</button>
+        <button id="modal-ok" class="btn btn-primary" type="button">Confirmar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+  <script src="panel.js"></script>
+</body>
+</html>

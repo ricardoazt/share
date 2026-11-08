@@ -199,7 +199,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     const ses = session.defaultSession;
-    const allowed = new Set(['media', 'notifications', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen', 'mediaKeySystem']);
+    const allowed = new Set(['media', 'geolocation', 'notifications', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen', 'mediaKeySystem']);
     ses.setPermissionRequestHandler((wc, perm, cb) => cb(allowed.has(perm)));
     ses.setPermissionCheckHandler((wc, perm) => allowed.has(perm));
 

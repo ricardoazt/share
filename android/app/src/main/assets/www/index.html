@@ -138,6 +138,38 @@
     .break-words { overflow-wrap: break-word; }
     .max-h-full { max-height: 100%; }
     .rounded-b-3xl { border-bottom-left-radius: 1.5rem; border-bottom-right-radius: 1.5rem; }
+    .gap-px { gap: 1px; }
+    /* Menu de anexos do chat */
+    .chat-attach-opt { display: flex; flex-direction: column; align-items: center; gap: 0.3rem; padding: 0.4rem 0.1rem; border-radius: 0.9rem; font-size: 10px; font-weight: 600; color: #cbd5e1; transition: background 0.15s, transform 0.1s; }
+    .chat-attach-opt:hover { background: rgba(30, 41, 59, 0.7); }
+    .chat-attach-opt:active { transform: scale(0.94); }
+    .chat-attach-ico { width: 2.6rem; height: 2.6rem; border-radius: 9999px; display: flex; align-items: center; justify-content: center; font-size: 1.15rem; box-shadow: 0 4px 12px rgba(0,0,0,0.35); }
+    /* Gravação de voz */
+    .ps-rec-dot { width: 0.6rem; height: 0.6rem; border-radius: 9999px; background: #f43f5e; flex-shrink: 0; animation: psRecBlink 1s ease-in-out infinite; }
+    @keyframes psRecBlink { 50% { opacity: 0.25; } }
+    #voice-rec-wave span { display: block; width: 3px; flex-shrink: 0; border-radius: 2px; background: #fb7185; }
+    /* Player da mensagem de voz */
+    .ps-voice { display: flex; align-items: center; gap: 0.55rem; min-width: 13.5rem; padding: 0.2rem 0.3rem; }
+    .ps-voice-btn { width: 2.35rem; height: 2.35rem; border-radius: 9999px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.16); color: #fff; transition: transform 0.1s; }
+    .ps-voice-btn:active { transform: scale(0.9); }
+    .ps-voice-btn svg { width: 1rem; height: 1rem; pointer-events: none; }
+    .ps-voice-wave { flex: 1; min-width: 0; height: 1.75rem; display: flex; align-items: center; gap: 2px; cursor: pointer; }
+    .ps-voice-wave i { flex: 1; min-width: 2px; max-width: 4px; border-radius: 2px; background: currentColor; opacity: 0.35; pointer-events: none; }
+    .ps-voice-wave i.on { opacity: 1; }
+    .ps-voice-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 0.1rem; flex-shrink: 0; font-size: 10px; font-family: ui-monospace, monospace; }
+    .ps-voice-speed { font-size: 9px; font-weight: 700; padding: 0 0.3rem; border-radius: 9999px; background: rgba(255,255,255,0.16); }
+    /* Cartão de localização */
+    .ps-loc-map { position: relative; height: 7.5rem; border-radius: 0.8rem; overflow: hidden; background-color: #0f2a2a;
+      background-image: linear-gradient(rgba(148,163,184,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.12) 1px, transparent 1px),
+        radial-gradient(circle at 30% 35%, rgba(16,185,129,0.35), transparent 45%), radial-gradient(circle at 75% 70%, rgba(59,130,246,0.35), transparent 50%);
+      background-size: 18px 18px, 18px 18px, 100% 100%, 100% 100%; }
+    .ps-loc-map::before { content: ''; position: absolute; left: -10%; right: -10%; top: 58%; height: 7px; background: rgba(250,204,21,0.45); transform: rotate(-12deg); }
+    .ps-loc-map::after { content: ''; position: absolute; top: -10%; bottom: -10%; left: 38%; width: 5px; background: rgba(226,232,240,0.35); transform: rotate(18deg); }
+    .ps-loc-pin { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -85%); font-size: 2rem; z-index: 2; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5)); }
+    .ps-loc-pulse { position: absolute; left: 50%; top: 50%; width: 2.4rem; height: 2.4rem; margin: -1.2rem 0 0 -1.2rem; border-radius: 9999px; background: rgba(244,63,94,0.35); z-index: 1; animation: psLocPulse 1.8s ease-out infinite; }
+    @keyframes psLocPulse { from { transform: scale(0.4); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }
+    /* Perfil do contato */
+    #peer-profile-photo svg, #peer-profile-photo img { width: 100% !important; height: 100% !important; display: block; object-fit: cover; }
     /* Mensagem encontrada pela busca */
     .search-hit > div > div { outline: 2px solid #f59e0b; outline-offset: 2px; transition: outline-color 0.4s; }
   </style>
@@ -234,16 +266,19 @@
                 <path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
               </svg>
             </button>
-            <div id="chat-contact-avatar" class="w-9 h-9 min-w-[36px] max-w-[36px] min-h-[36px] max-h-[36px] rounded-full overflow-hidden shrink-0 border border-slate-700/80 bg-slate-800 flex items-center justify-center">
-              <!-- Avatar do contato -->
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5">
-                <h4 id="chat-contact-name" class="text-sm font-bold text-white truncate leading-tight">Contato</h4>
-                <span id="chat-contact-transport-badge" class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">🟢 LAN</span>
+            <!-- Toque na foto ou no nome: abre o perfil do contato -->
+            <button id="btn-chat-open-profile" type="button" title="Ver perfil" class="flex items-center gap-2 min-w-0 flex-1 text-left rounded-xl py-1 pr-2 hover:bg-slate-800/60 active:scale-95 transition-all">
+              <div id="chat-contact-avatar" class="w-9 h-9 min-w-[36px] max-w-[36px] min-h-[36px] max-h-[36px] rounded-full overflow-hidden shrink-0 border border-slate-700/80 bg-slate-800 flex items-center justify-center">
+                <!-- Avatar do contato -->
               </div>
-              <span id="chat-contact-tag" class="text-[11px] font-mono text-slate-400 truncate block leading-none mt-0.5">@usuario</span>
-            </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <h4 id="chat-contact-name" class="text-sm font-bold text-white truncate leading-tight">Contato</h4>
+                  <span id="chat-contact-transport-badge" class="text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">🟢 LAN</span>
+                </div>
+                <span id="chat-contact-tag" class="text-[11px] font-mono text-slate-400 truncate block leading-tight">@usuario</span>
+              </div>
+            </button>
           </div>
           <div class="flex items-center gap-1 shrink-0">
             <button id="btn-chat-contact-menu" type="button" class="p-2 rounded-xl text-slate-400 hover:text-white active:scale-95">
@@ -268,19 +303,50 @@
           <!-- Balões de mensagem injetados dinamicamente -->
         </div>
 
+        <!-- Canal oficial PulseShare (mensagens do administrador): somente leitura -->
+        <div id="chat-official-readonly" class="hidden px-4 py-3 bg-slate-900 border-t border-slate-800/90 shrink-0 text-center text-[11px] text-slate-400">
+          ✔ Canal oficial do PulseShare — somente leitura
+        </div>
+
         <!-- Barra Inferior de Entrada (WhatsApp Edge-to-Edge) -->
         <div id="chat-bottom-input-bar" class="p-2 bg-slate-900 border-t border-slate-800/90 shrink-0 space-y-2">
           <!-- Pré-visualização de anexos -->
           <div id="chat-attachment-preview" class="hidden flex flex-wrap gap-2 p-2 bg-slate-950 rounded-xl border border-slate-800 text-xs"></div>
           
-          <div class="flex items-center gap-2">
+          <!-- Menu de anexos (foto/vídeo, áudio, documento, localização) -->
+          <div id="chat-attach-menu" class="hidden grid grid-cols-4 gap-2 p-2 bg-slate-950 rounded-2xl border border-slate-800">
+            <button type="button" data-attach-kind="media" class="chat-attach-opt"><span class="chat-attach-ico" style="background:#7c3aed">🖼️</span><span>Foto e vídeo</span></button>
+            <button type="button" data-attach-kind="audio" class="chat-attach-opt"><span class="chat-attach-ico" style="background:#ea580c">🎵</span><span>Áudio</span></button>
+            <button type="button" data-attach-kind="file" class="chat-attach-opt"><span class="chat-attach-ico" style="background:#2563eb">📄</span><span>Documento</span></button>
+            <button type="button" data-attach-kind="location" class="chat-attach-opt"><span class="chat-attach-ico" style="background:#059669">📍</span><span>Localização</span></button>
+          </div>
+
+          <!-- Gravando mensagem de voz -->
+          <div id="chat-recording-bar" class="hidden flex items-center gap-2">
+            <button id="btn-voice-cancel" type="button" title="Descartar gravação" class="w-9 h-9 min-w-[36px] rounded-full bg-slate-800 hover:bg-slate-700 text-rose-400 border border-slate-700/80 flex items-center justify-center shrink-0 active:scale-95">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
+            </button>
+            <div class="flex-1 min-w-0 flex items-center gap-2 bg-slate-950 border border-rose-500/40 rounded-full px-3 h-9">
+              <span class="ps-rec-dot"></span>
+              <span id="voice-rec-time" class="text-xs font-mono text-rose-300 shrink-0">0:00</span>
+              <div id="voice-rec-wave" class="flex-1 min-w-0 flex items-center justify-end gap-px h-6 overflow-hidden"></div>
+            </div>
+            <button id="btn-voice-send" type="button" title="Enviar mensagem de voz" class="w-9 h-9 min-w-[36px] rounded-full bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 shadow-md shadow-indigo-600/40 flex items-center justify-center shrink-0">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" /></svg>
+            </button>
+          </div>
+
+          <div id="chat-compose-row" class="flex items-center gap-2">
             <button id="btn-chat-attach" type="button" title="Anexar arquivo" class="w-9 h-9 min-w-[36px] rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 active:scale-95 border border-slate-700/80 flex items-center justify-center shrink-0 transition-all">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.37l-10.94 10.94a1.5 1.5 0 01-2.122-2.122l7.693-7.693" />
               </svg>
             </button>
             <input id="input-chat-text" type="text" placeholder="Mensagem segura..." class="flex-1 min-w-0 bg-slate-950 border border-slate-700/80 rounded-full px-4 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors" />
-            <button id="btn-chat-send" type="button" class="w-9 h-9 min-w-[36px] rounded-full bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 shadow-md shadow-indigo-600/40 flex items-center justify-center shrink-0 transition-all">
+            <button id="btn-chat-mic" type="button" title="Gravar mensagem de voz" class="w-9 h-9 min-w-[36px] rounded-full bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 shadow-md shadow-indigo-600/40 flex items-center justify-center shrink-0 transition-all">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" /></svg>
+            </button>
+            <button id="btn-chat-send" type="button" class="hidden w-9 h-9 min-w-[36px] rounded-full bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 shadow-md shadow-indigo-600/40 flex items-center justify-center shrink-0 transition-all">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
               </svg>
@@ -642,6 +708,43 @@
         <button id="btn-contact-delete-chat" type="button" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold flex items-center gap-2">
           <span>🗑️ Excluir Conversa</span>
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- PERFIL DO CONTATO (toque na foto/nome no topo da conversa) -->
+  <!-- ===================================================================== -->
+  <div id="modal-peer-profile" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col">
+    <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center gap-2 shrink-0 shadow-md">
+      <button id="btn-close-peer-profile" type="button" title="Voltar" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95 transition-all shrink-0">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
+      </button>
+      <h3 class="text-sm font-bold text-white">Perfil</h3>
+    </div>
+    <div id="peer-profile-body" class="flex-1 min-h-0 overflow-y-auto custom-scroll p-4 space-y-4">
+      <!-- preenchido por renderPeerProfile() -->
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- ENVIAR LOCALIZAÇÃO -->
+  <!-- ===================================================================== -->
+  <div id="modal-location" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white">📍 Enviar localização</h3>
+        <button id="btn-close-location" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+      <div class="ps-loc-map"><span class="ps-loc-pulse"></span><span class="ps-loc-pin">📍</span></div>
+      <p id="location-status" class="text-xs text-slate-300">Obtendo sua localização...</p>
+      <div id="location-manual" class="hidden space-y-1.5">
+        <label for="input-location-manual" class="text-[11px] text-slate-400 block">Ou cole as coordenadas (ex.: -29.68, -51.13) ou um link do Google Maps / OpenStreetMap:</label>
+        <input id="input-location-manual" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="-29.6842, -51.1288" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-emerald-500" />
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <button id="btn-location-retry" type="button" class="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs active:scale-95">🔄 Atualizar</button>
+        <button id="btn-location-send" type="button" disabled class="py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold text-xs shadow active:scale-95">Enviar localização</button>
       </div>
     </div>
   </div>

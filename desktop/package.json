@@ -1,7 +1,7 @@
 {
   "name": "pulseshare",
   "productName": "PulseShare",
-  "version": "4.1.1",
+  "version": "4.3.0",
   "description": "PulseShare: mensagens e arquivos P2P sem servidor (app de desktop)",
   "main": "main.js",
   "author": "Ricardo André Zampiva Teixeira",

@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.webkit.ConsoleMessage
+import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -78,27 +79,62 @@ class MainActivity : ComponentActivity() {
         Log.i("PulseShare", "Permissão de notificação concedida: $isGranted")
     }
 
-    // Câmera pedida na hora em que a página abre o leitor de QR (getUserMedia)
+    // Câmera (leitor de QR) e microfone (mensagem de voz) pedidos na hora em que a
+    // página chama getUserMedia; só concede à página o que o Android liberou.
     private var pendingWebPermission: PermissionRequest? = null
-    private val cameraPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
+    private val mediaPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
         val req = pendingWebPermission
         pendingWebPermission = null
-        if (req != null) {
-            if (granted) req.grant(req.resources) else req.deny()
+        if (req != null) grantAllowedResources(req)
+    }
+
+    private fun androidPermissionFor(resource: String): String? = when (resource) {
+        PermissionRequest.RESOURCE_VIDEO_CAPTURE -> Manifest.permission.CAMERA
+        PermissionRequest.RESOURCE_AUDIO_CAPTURE -> Manifest.permission.RECORD_AUDIO
+        else -> null
+    }
+
+    private fun grantAllowedResources(request: PermissionRequest) {
+        val allowed = request.resources.filter { res ->
+            val perm = androidPermissionFor(res)
+            perm == null || ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED
         }
+        if (allowed.isEmpty()) request.deny() else request.grant(allowed.toTypedArray())
     }
 
     private fun handleWebPermission(request: PermissionRequest) {
-        val wantsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-        if (wantsCamera && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+        val missing = request.resources.mapNotNull { androidPermissionFor(it) }
+            .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
             pendingWebPermission?.deny()
             pendingWebPermission = request
-            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            mediaPermissionLauncher.launch(missing.distinct().toTypedArray())
         } else {
-            request.grant(request.resources)
+            grantAllowedResources(request)
         }
+    }
+
+    // Localização para a página (enviar localização no chat)
+    private var pendingGeoOrigin: String? = null
+    private var pendingGeoCallback: GeolocationPermissions.Callback? = null
+    private val geoPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val granted = results.values.any { it }
+        pendingGeoCallback?.invoke(pendingGeoOrigin, granted, false)
+        pendingGeoCallback = null
+        pendingGeoOrigin = null
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    // Seletor de arquivos com filtro de tipo ("image/*,video/*", "audio/*")
+    fun launchFilePicker(mimeTypes: Array<String>) {
+        filePickerLauncher.launch(if (mimeTypes.isEmpty()) arrayOf("*/*") else mimeTypes)
     }
 
     private val runtimePermissionsLauncher = registerForActivityResult(
@@ -164,6 +200,7 @@ class MainActivity : ComponentActivity() {
         settings.allowContentAccess = true
         settings.mediaPlaybackRequiresUserGesture = false
         settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.setGeolocationEnabled(true)
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
 
@@ -172,6 +209,20 @@ class MainActivity : ComponentActivity() {
             override fun onPermissionRequest(request: PermissionRequest?) {
                 // WebRTC / leitor de QR: pede a permissão do Android se faltar
                 request?.let { req -> runOnUiThread { handleWebPermission(req) } }
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
+                if (callback == null) return
+                runOnUiThread {
+                    if (hasLocationPermission()) {
+                        callback.invoke(origin, true, false)
+                    } else {
+                        pendingGeoCallback?.invoke(pendingGeoOrigin, false, false)
+                        pendingGeoOrigin = origin
+                        pendingGeoCallback = callback
+                        geoPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    }
+                }
             }
 
             override fun onShowFileChooser(

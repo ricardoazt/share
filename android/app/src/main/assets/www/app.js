@@ -257,12 +257,16 @@
 
   const Native = {
     isAvailable: () => typeof window.PulseShareNative !== 'undefined',
-    pickFiles: () => {
-      if (Native.isAvailable()) window.PulseShareNative.pickFiles();
-      else {
+    // accept: tipos MIME separados por vírgula ("image/*,video/*", "audio/*"); vazio = qualquer arquivo
+    pickFiles: (accept) => {
+      if (Native.isAvailable()) {
+        if (accept && window.PulseShareNative.pickFilesOfType) window.PulseShareNative.pickFilesOfType(accept);
+        else window.PulseShareNative.pickFiles();
+      } else {
         const input = document.createElement('input');
         input.type = 'file';
         input.multiple = true;
+        if (accept) input.accept = accept;
         input.onchange = (e) => {
           if (e.target.files && e.target.files.length) {
             const list = Array.from(e.target.files).map(f => ({
@@ -461,6 +465,20 @@
       if (tag && activeProfile) { switchTab('chat'); openActiveChat(tag); }
     },
     onBackPressed: () => {
+      // Gravação de voz / menu de anexos / localização / perfil do contato
+      if (voiceRec) { stopVoiceRecording(false); return 'HANDLED'; }
+      const attachMenu = document.getElementById('chat-attach-menu');
+      if (attachMenu && !attachMenu.classList.contains('hidden')) { toggleAttachMenu(false); return 'HANDLED'; }
+      const modalLoc = document.getElementById('modal-location');
+      if (modalLoc && !modalLoc.classList.contains('hidden')) {
+        if (window.PulseShareImageViewer && window.PulseShareImageViewer.isOpen()) { window.PulseShareImageViewer.close(); return 'HANDLED'; }
+        closeLocationModal(); return 'HANDLED';
+      }
+      const modalPeer = document.getElementById('modal-peer-profile');
+      if (modalPeer && !modalPeer.classList.contains('hidden') && !(window.PulseShareImageViewer && window.PulseShareImageViewer.isOpen())) {
+        const cm = document.getElementById('modal-contact-menu');
+        if (!cm || cm.classList.contains('hidden')) { closePeerProfile(); return 'HANDLED'; }
+      }
       // Editor de foto / leitor de QR
       const modalPhoto = document.getElementById('modal-photo-editor');
       if (modalPhoto && !modalPhoto.classList.contains('hidden')) { closePhotoEditor(); return 'HANDLED'; }
@@ -673,6 +691,7 @@
   // Registra "a conta <suffix> usa o nome <name> desde <since>". Retorna true se mudou.
   function noteNameClaim(name, suffix, since, seen) {
     if (!/^[a-z0-9_]{1,40}$/.test(name || '') || name === 'link' || !/^[0-9a-f]{6}$/.test(suffix || '')) return false;
+    if (adminDeleted.has(suffix)) return false; // conta excluída pelo administrador
     since = cleanSince(since);
     seen = cleanSince(seen) || Date.now();
     const cur = nameRegistry[name];
@@ -864,13 +883,368 @@
     while (!brokersOnline() && Date.now() - t0 < timeoutMs) await new Promise((r) => setTimeout(r, 250));
     if (!brokersOnline()) return freshBleNeighbors().length > 0;
     await new Promise((r) => setTimeout(r, 600)); // SUBSCRIBE confirmado antes de perguntar
+    requestAdminState(); // contas excluídas pelo administrador (bloqueia o login delas)
     return true;
+  }
+
+  // ==========================================================================
+  // 4e. ADMINISTRAÇÃO (painel PulseSharePanel)
+  // --------------------------------------------------------------------------
+  // O painel assina "registros" com a chave ECDSA P-256 do administrador; aqui
+  // só fica a chave PÚBLICA (ADMIN_PUBLIC_KEYS). Registro = {b: corpo em JSON
+  // (texto exato que foi assinado), s: assinatura base64url r||s (64 bytes)}.
+  // corpo = {v:1, kind, id:'adm_…', ts, ...}:
+  //   broadcast    {text}         → mensagem na conversa oficial "PulseShare" (@pulseshare)
+  //   delete_user  {tag, suffix}  → conta excluída: some das conversas, contatos e
+  //                                  do catálogo de nomes, é ignorada; no aparelho
+  //                                  dela a conta é removida
+  //   restore_user {tag, suffix}  → desfaz a exclusão (vale o registro mais recente)
+  //   sync_request {reqId}        → o painel pede o relatório: cada nó responde
+  //                                  ADMIN_SYNC_REPLY e até 2 nós mandam o catálogo
+  //                                  de nomes (ADMIN_REGISTRY_DUMP)
+  // Sem servidor: todo nó guarda os registros (ps_admin_records_v1, do aparelho)
+  // e os repassa a quem conecta: ADMIN_STATE_REQUEST {reqId, have:[ids]} →
+  // ADMIN_RECORDS {reqId, records} (quem ia responder desconta o que outro já mandou).
+  // Mensagens com senderTag @pulseshare que não sejam registros assinados são descartadas.
+  // ==========================================================================
+  const ADMIN_PUBLIC_KEYS = [
+    { x: '8GFJKFuR4sGEIX4FBsMRa8J0yXU2XqGU32seSLx2Fr0', y: '7wXYjRMKZdt5DiGjqAjUGUDO17IAJWwI2uUa_TLKfeU' }
+  ];
+  const OFFICIAL_TAG = '@pulseshare';
+  const ADMIN_RECORDS_KEY = 'ps_admin_records_v1';
+  const ADMIN_BROADCAST_KEEP = 60;
+  const ADMIN_BROADCAST_MAX_AGE = 180 * 24 * 3600 * 1000;
+  const ADMIN_PACKETS = new Set(['ADMIN_RECORDS', 'ADMIN_STATE_REQUEST', 'ADMIN_SYNC_REPLY', 'ADMIN_REGISTRY_DUMP']);
+  let adminRecords = []; // [{b, s, body}] já verificados
+  try {
+    adminRecords = (JSON.parse(localStorage.getItem(ADMIN_RECORDS_KEY) || '[]') || [])
+      .map((r) => { try { return { b: r.b, s: r.s, body: JSON.parse(r.b) }; } catch (e) { return null; } })
+      .filter((r) => r && r.body && r.body.id);
+  } catch (e) { adminRecords = []; }
+  let adminDeleted = new Map();            // sufixo → {tag, ts}
+  const adminStateCovered = new Map();     // reqId → Set(ids que alguém já mandou)
+  const adminSyncAnswered = new Set();     // reqId de sync_request já respondido
+  const adminDumpCount = new Map();        // reqId → quantos nós já mandaram o catálogo
+  let adminStateRequested = false;
+  let adminStateRequestedAt = 0;
+  let adminKeysPromise = null;
+  rebuildAdminIndex();
+
+  function b64urlToBytes(s) {
+    try {
+      const bin = atob(String(s).replace(/-/g, '+').replace(/_/g, '/').replace(/[^A-Za-z0-9+/]/g, '') +
+        '==='.slice((String(s).length + 3) % 4));
+      return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    } catch (e) { return null; }
+  }
+
+  function adminKeys() {
+    if (!adminKeysPromise) {
+      adminKeysPromise = Promise.all(ADMIN_PUBLIC_KEYS.map((k) =>
+        crypto.subtle.importKey('jwk', { kty: 'EC', crv: 'P-256', x: k.x, y: k.y, ext: true },
+          { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']).catch(() => null)
+      )).then((list) => list.filter(Boolean));
+    }
+    return adminKeysPromise;
+  }
+
+  function adminRecordId(rec) {
+    try { const b = JSON.parse(rec.b); return b && typeof b.id === 'string' ? b.id : ''; } catch (e) { return ''; }
+  }
+
+  // Devolve o corpo se a assinatura for do administrador (senão null)
+  async function verifyAdminRecord(rec) {
+    if (!rec || typeof rec.b !== 'string' || typeof rec.s !== 'string' || rec.b.length > 8000) return null;
+    let body;
+    try { body = JSON.parse(rec.b); } catch (e) { return null; }
+    if (!body || body.v !== 1 || typeof body.id !== 'string' || !/^adm_[a-z0-9_]{6,48}$/.test(body.id) ||
+      !Number.isFinite(body.ts) || typeof body.kind !== 'string') return null;
+    const sig = b64urlToBytes(rec.s);
+    if (!sig || sig.length !== 64) return null;
+    const data = new TextEncoder().encode(rec.b);
+    for (const key of await adminKeys()) {
+      try {
+        if (await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, sig, data)) return body;
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  function cleanSuffix(s) {
+    return /^[0-9a-f]{6}$/.test(String(s || '')) ? String(s) : '';
+  }
+
+  function rebuildAdminIndex() {
+    const latest = new Map(); // sufixo → corpo do registro mais recente
+    adminRecords.forEach((r) => {
+      const b = r.body;
+      if (b.kind !== 'delete_user' && b.kind !== 'restore_user') return;
+      const sfx = cleanSuffix(b.suffix) || hashSuffix(b.tag);
+      if (!sfx) return;
+      const cur = latest.get(sfx);
+      if (!cur || b.ts > cur.ts) latest.set(sfx, b);
+    });
+    adminDeleted = new Map();
+    latest.forEach((b, sfx) => { if (b.kind === 'delete_user') adminDeleted.set(sfx, { tag: normalizeTag(b.tag), ts: b.ts }); });
+  }
+
+  // Mantém só o necessário: últimas mensagens oficiais e o registro mais recente por conta
+  function pruneAdminRecords() {
+    const now = Date.now();
+    const bcasts = adminRecords.filter((r) => r.body.kind === 'broadcast' && now - r.body.ts < ADMIN_BROADCAST_MAX_AGE)
+      .sort((a, b) => b.body.ts - a.body.ts).slice(0, ADMIN_BROADCAST_KEEP);
+    const bySuffix = new Map();
+    adminRecords.forEach((r) => {
+      if (r.body.kind !== 'delete_user' && r.body.kind !== 'restore_user') return;
+      const sfx = cleanSuffix(r.body.suffix) || hashSuffix(r.body.tag);
+      const cur = bySuffix.get(sfx);
+      if (sfx && (!cur || r.body.ts > cur.body.ts)) bySuffix.set(sfx, r);
+    });
+    adminRecords = bcasts.concat(Array.from(bySuffix.values()));
+  }
+
+  function saveAdminRecords() {
+    try { localStorage.setItem(ADMIN_RECORDS_KEY, JSON.stringify(adminRecords.map((r) => ({ b: r.b, s: r.s })))); } catch (e) {}
+  }
+
+  // Conta excluída pelo administrador? (pelo sufixo das chaves: vale também após trocar o nome)
+  function isAdminDeleted(tag) {
+    const t = normalizeTag(tag);
+    if (!t || t === OFFICIAL_TAG) return false;
+    const sfx = hashSuffix(t);
+    if (sfx && adminDeleted.has(sfx)) return true;
+    for (const v of adminDeleted.values()) if (v.tag === t) return true;
+    return false;
+  }
+
+  function isOfficialTag(tag) {
+    return normalizeTag(tag) === OFFICIAL_TAG;
+  }
+
+  // Recebe registros (da rede ou do armazenamento); aplica os novos
+  async function acceptAdminRecords(list) {
+    if (!Array.isArray(list)) return;
+    const known = new Set(adminRecords.map((r) => r.body.id));
+    const fresh = [];
+    for (const rec of list.slice(0, 80)) {
+      const id = adminRecordId(rec);
+      if (!id || known.has(id)) continue;
+      const body = await verifyAdminRecord(rec);
+      if (!body) continue;
+      known.add(id);
+      if (body.kind === 'sync_request') { answerAdminSync(body); continue; }
+      if (!['broadcast', 'delete_user', 'restore_user'].includes(body.kind)) continue;
+      if (body.kind === 'broadcast' && (typeof body.text !== 'string' || !body.text.trim())) continue;
+      fresh.push({ b: rec.b, s: rec.s, body });
+    }
+    if (!fresh.length) return;
+    adminRecords = adminRecords.concat(fresh);
+    pruneAdminRecords();
+    saveAdminRecords();
+    rebuildAdminIndex();
+    applyAdminState({ notify: true, freshIds: new Set(fresh.map((r) => r.body.id)) });
+  }
+
+  // Aplica exclusões e entrega as mensagens oficiais à conta ativa (idempotente)
+  function applyAdminState(opts = {}) {
+    // Minha conta foi excluída?
+    const mine = mySuffix();
+    if (mine && adminDeleted.has(mine)) { removeAccountDeletedByAdmin(); return; }
+    // Outras contas guardadas neste aparelho com chaves excluídas
+    if (typeof PulseShareCrypto !== 'undefined') {
+      PulseShareCrypto.ProfilesManager.getAllProfiles().forEach((p) => {
+        if (!p.pubKeyHex || !adminDeleted.has(p.pubKeyHex.slice(0, 6)) || (activeProfile && p.id === activeProfile.id)) return;
+        const acct = accountStoreId(p);
+        ACCOUNT_SCOPED_KEYS.forEach((k) => localStorage.removeItem(accountStoreKey(acct, k)));
+        PulseShareCrypto.ProfilesManager.deleteProfile(p.id);
+      });
+    }
+    // Catálogo de nomes: o nome da conta excluída fica livre
+    let regChanged = false;
+    Object.keys(nameRegistry).forEach((n) => {
+      if (adminDeleted.has(nameRegistry[n].s)) { delete nameRegistry[n]; regChanged = true; }
+    });
+    if (regChanged) scheduleNameRegistrySave();
+    if (!myTag) return;
+    // Conversas, contatos e presença de contas excluídas
+    let chatsChanged = false;
+    const contacts = getContacts();
+    new Set([...Object.keys(chatMessages), ...Object.keys(contacts), ...Object.keys(peerRegistry)]).forEach((t) => {
+      if (!isAdminDeleted(t)) return;
+      if (chatMessages[t]) {
+        chatMessages[t].forEach((m) => { try { deleteChatMedia(m.transferId || (m.media && m.media.transferId)); } catch (e) {} });
+        delete chatMessages[t];
+        chatsChanged = true;
+      }
+      if (contacts[t] && typeof PulseShareCrypto !== 'undefined') PulseShareCrypto.ProfilesManager.removeContact(t);
+      delete peerRegistry[t];
+      if (activeChatPeer === t) closeActiveChat();
+    });
+    // Mensagens oficiais (PulseShare)
+    const list = chatMessages[OFFICIAL_TAG] || [];
+    const have = new Set(list.map((m) => m.id));
+    const added = [];
+    adminRecords.filter((r) => r.body.kind === 'broadcast' && !have.has(r.body.id)).forEach((r) => {
+      const m = { id: r.body.id, sender: OFFICIAL_TAG, text: String(r.body.text).slice(0, 4000), timestamp: r.body.ts, status: 'RECEIVED', official: true };
+      list.push(m);
+      added.push(m);
+    });
+    if (added.length) {
+      list.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      chatMessages[OFFICIAL_TAG] = list;
+      chatsChanged = true;
+      const toNotify = added.filter((m) => opts.notify && (!opts.freshIds || opts.freshIds.has(m.id)) && Date.now() - m.timestamp < 7 * 24 * 3600 * 1000);
+      if (toNotify.length) {
+        const last = toNotify[toNotify.length - 1];
+        notifyIncoming(OFFICIAL_TAG, last.text, 'chat');
+        if (activeChatPeer !== OFFICIAL_TAG) {
+          const badge = document.getElementById('badge-chat-unread');
+          if (badge) {
+            badge.textContent = parseInt(badge.textContent || '0', 10) + toNotify.length;
+            badge.classList.remove('hidden');
+          }
+        }
+      }
+    }
+    if (chatsChanged) {
+      saveChatMessagesToStorage();
+      if (activeChatPeer === OFFICIAL_TAG) renderChatMessages(OFFICIAL_TAG);
+    }
+    renderConversationsList();
+    renderMeshPeers();
+  }
+
+  // A conta ativa foi excluída pelo administrador: remove-a deste aparelho
+  function removeAccountDeletedByAdmin() {
+    if (!activeProfile || typeof PulseShareCrypto === 'undefined') return;
+    const tag = myTag;
+    const sfx = mySuffix();
+    try {
+      ACCOUNT_SCOPED_KEYS.forEach((k) => localStorage.removeItem(k));
+      PulseShareCrypto.ProfilesManager.getAllProfiles()
+        .filter((p) => p.pubKeyHex && p.pubKeyHex.slice(0, 6) === sfx)
+        .forEach((p) => {
+          ACCOUNT_SCOPED_KEYS.forEach((k) => localStorage.removeItem(accountStoreKey(accountStoreId(p), k)));
+          PulseShareCrypto.ProfilesManager.deleteProfile(p.id);
+        });
+      localStorage.removeItem(LIVE_ACCOUNT_KEY);
+      localStorage.setItem('ps_admin_removed_notice', tag);
+    } catch (e) {
+      console.warn('[PulseShare] falha ao remover a conta excluída:', e);
+    }
+    activeProfile = null;
+    myTag = '';
+    chatMessages = {};
+    if (Native.isBleAvailable()) Native.stopBleMesh();
+    setTimeout(() => location.reload(), 300);
+  }
+
+  // Aviso (na tela de entrada) de que a conta foi excluída
+  function showAdminRemovedNotice() {
+    const tag = localStorage.getItem('ps_admin_removed_notice');
+    if (!tag || IS_BACKGROUND_PAGE) return;
+    localStorage.removeItem('ps_admin_removed_notice');
+    const msg = `A conta ${normalizeTag(tag)} foi excluída pelo administrador do PulseShare e removida deste aparelho.`;
+    onbStatus(msg);
+    Native.toast(msg);
+  }
+
+  // Pede aos nós online os registros que este aparelho não tem (1x por sessão;
+  // force: de novo, no máximo a cada 15 s — ex.: login de conta que estava excluída)
+  function requestAdminState(force) {
+    if (!brokersOnline()) return false;
+    if (adminStateRequested && !(force && Date.now() - adminStateRequestedAt > 15000)) return false;
+    adminStateRequested = true;
+    adminStateRequestedAt = Date.now();
+    broadcastToMesh({
+      meshType: 'ADMIN_STATE_REQUEST',
+      reqId: 'astate_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      have: adminRecords.map((r) => r.body.id).slice(0, 400)
+    });
+    return true;
+  }
+
+  function handleAdminStateRequest(packet) {
+    const rid = String(packet.reqId || '');
+    if (!rid || !adminRecords.length) return;
+    const have = new Set(Array.isArray(packet.have) ? packet.have.map(String) : []);
+    if (adminRecords.every((r) => have.has(r.body.id))) return;
+    if (!adminStateCovered.has(rid)) adminStateCovered.set(rid, new Set());
+    setTimeout(() => {
+      const covered = adminStateCovered.get(rid) || new Set();
+      const missing = adminRecords.filter((r) => !have.has(r.body.id) && !covered.has(r.body.id));
+      if (!missing.length) return;
+      for (let i = 0; i < missing.length; i += 25) {
+        broadcastToMesh({ meshType: 'ADMIN_RECORDS', reqId: rid, records: missing.slice(i, i + 25).map((r) => ({ b: r.b, s: r.s })) });
+      }
+      missing.forEach((r) => covered.add(r.body.id));
+    }, 400 + Math.random() * 2600);
+    if (adminStateCovered.size > 100) adminStateCovered.delete(adminStateCovered.keys().next().value);
+  }
+
+  // O painel pediu o relatório: respondo com a minha conta e (até 2 nós) o catálogo de nomes
+  function answerAdminSync(body) {
+    const rid = String(body.reqId || '');
+    if (!rid || !myTag || adminSyncAnswered.has(rid) || Math.abs(Date.now() - body.ts) > 10 * 60 * 1000) return;
+    adminSyncAnswered.add(rid);
+    setTimeout(() => {
+      broadcastToMesh({
+        meshType: 'ADMIN_SYNC_REPLY',
+        reqId: rid,
+        tag: myTag,
+        since: mySince(),
+        createdAt: (activeProfile && activeProfile.createdAt) || 0,
+        nodeId,
+        clientType: IS_ANDROID ? 'android' : IS_DESKTOP ? 'desktop' : IS_EXTENSION ? 'extension-app' : 'web',
+        contacts: Object.keys(getContacts()).length
+      });
+    }, 150 + Math.random() * 2500);
+    setTimeout(() => {
+      if ((adminDumpCount.get(rid) || 0) >= 2) return;
+      const entries = exportNameRegistry(NAME_REGISTRY_MAX);
+      if (!entries.length) return;
+      const parts = Math.ceil(entries.length / NAME_SYNC_MAX_ENTRIES);
+      for (let i = 0; i < parts; i++) {
+        broadcastToMesh({ meshType: 'ADMIN_REGISTRY_DUMP', reqId: rid, part: i, parts, entries: entries.slice(i * NAME_SYNC_MAX_ENTRIES, (i + 1) * NAME_SYNC_MAX_ENTRIES) });
+      }
+      adminDumpCount.set(rid, (adminDumpCount.get(rid) || 0) + 1);
+    }, 1500 + Math.random() * 5000);
+  }
+
+  // Pacotes da administração (tratados antes de qualquer filtro de remetente)
+  function handleAdminPacket(packet) {
+    switch (packet.meshType) {
+      case 'ADMIN_RECORDS': {
+        if (packet.reqId && Array.isArray(packet.records)) {
+          const set = adminStateCovered.get(packet.reqId) || new Set();
+          packet.records.forEach((r) => { const id = adminRecordId(r); if (id) set.add(id); });
+          adminStateCovered.set(packet.reqId, set);
+        }
+        acceptAdminRecords(packet.records);
+        break;
+      }
+      case 'ADMIN_STATE_REQUEST':
+        if (myTag) handleAdminStateRequest(packet);
+        break;
+      case 'ADMIN_REGISTRY_DUMP':
+        if (packet.reqId && packet.part === 0) adminDumpCount.set(packet.reqId, (adminDumpCount.get(packet.reqId) || 0) + 1);
+        if (adminDumpCount.size > 50) adminDumpCount.delete(adminDumpCount.keys().next().value);
+        mergeNameRegistryEntries(packet.entries);
+        break;
+    }
+  }
+
+  // Avatar da conversa oficial (ícone do PulseShare)
+  function officialAvatarHtml() {
+    return '<svg viewBox="0 0 128 128" class="w-full h-full" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="psOffG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4F46E5"/><stop offset="1" stop-color="#F97316"/></linearGradient></defs><rect width="128" height="128" fill="url(#psOffG)"/><path d="M72.38,15.00L78.04,15.00L66.14,52.00L95.10,52.00L53.73,110.30L61.09,68.50L34.50,68.50Z" fill="#fff" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg>';
   }
 
   function nameRuleError(name) {
     if (!/^[a-z0-9_]{2,24}$/.test(name) || /^link_/.test(name) || name === 'link') {
       return 'Use de 2 a 24 letras minúsculas, números ou "_" (não pode começar com "link_").';
     }
+    // "pulseshare" é o nome do canal oficial (mensagens do administrador)
+    if (/^pulse_?share/.test(name)) return 'Nomes começando com "pulseshare" são reservados.';
     return '';
   }
 
@@ -1558,6 +1932,8 @@
       // Ao conectar, sincroniza o catálogo de nomes com os nós online (1x por sessão)
       if (myTag) setTimeout(requestNameRegistrySync, 4000);
       if (myTag) setTimeout(migrateBareTags, 6000);
+      // Registros do administrador que este aparelho ainda não tem (1x por sessão)
+      setTimeout(requestAdminState, 5000);
     };
 
     ws.onmessage = (event) => {
@@ -1644,6 +2020,7 @@
       meshType: 'PRESENCE_ANNOUNCE',
       tag: myTag,
       nameSince: mySince(),
+      createdAt: (activeProfile && activeProfile.createdAt) || 0,
       reghash: myRegHash,
       nodeId: nodeId,
       photoHash: (activeProfile && activeProfile.photoHash) || '',
@@ -1652,7 +2029,7 @@
     });
   }
 
-  const NAME_ONLY_PACKETS = new Set(['PROBE_USER_EXISTS_REPLY', 'PRESENCE_ANNOUNCE', 'USER_REGISTERED', 'NAME_REGISTRY_SYNC']);
+  const NAME_ONLY_PACKETS = new Set(['PROBE_USER_EXISTS_REPLY', 'PRESENCE_ANNOUNCE', 'USER_REGISTERED', 'NAME_REGISTRY_SYNC', 'ADMIN_RECORDS']);
 
   function handleIncomingPacket(packet, via = 'mqtt') {
     if (!packet || !packet.meshType) return;
@@ -1665,8 +2042,13 @@
     if (packet.senderNodeId === nodeId || (packet.senderTag && normalizeTag(packet.senderTag) === normalizeTag(myTag))) return;
     // Tela de entrada (sem conta): só escuta o necessário para verificar nomes
     if (!myTag && !NAME_ONLY_PACKETS.has(packet.meshType)) return;
+    // Administração (registros assinados): vale de qualquer remetente
+    if (ADMIN_PACKETS.has(packet.meshType)) { handleAdminPacket(packet); return; }
 
     const senderTag = normalizeTag(packet.senderTag);
+    // Ninguém fala como "PulseShare" fora dos registros assinados; contas excluídas são ignoradas
+    if (senderTag && (senderTag === OFFICIAL_TAG || isAdminDeleted(senderTag))) return;
+    if (packet.meshType === 'PRESENCE_ANNOUNCE' && isAdminDeleted(packet.tag)) return;
     if (via === 'mqtt' && senderTag && peerRegistry[senderTag]) peerRegistry[senderTag].lastSeenMqtt = Date.now();
 
     switch (packet.meshType) {
@@ -1685,6 +2067,8 @@
             // Nunca usa HTML vindo da rede: identicon local (ou a foto já validada)
             avatar: prev.avatar || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 64) : null),
             clientType: packet.clientType || 'peer',
+            createdAt: Number(packet.createdAt) || prev.createdAt || 0,
+            nameSince: Number(packet.nameSince) || prev.nameSince || 0,
             relayMode: packet.relayMode !== false,
             transport: peerTransports[tag] || 'P2P',
             lastSeen: Date.now(),
@@ -1965,8 +2349,8 @@
 
   function handleDirectSignal(from, transferId, signalType, payload, via) {
     if (window.__psTrace) console.log('[sig]', signalType, from, via, transferId, JSON.stringify(payload).slice(0, 120));
-    // Usuários bloqueados: tudo é ignorado em silêncio
-    if (isBlocked(from)) return;
+    // Usuários bloqueados (ou excluídos pelo administrador): tudo é ignorado em silêncio
+    if (isBlocked(from) || isOfficialTag(from) || isAdminDeleted(from)) return;
     switch (signalType) {
       case 'CHAT_MESSAGE': {
         // O remetente real é sempre quem assinou o pacote (from)
@@ -2891,6 +3275,7 @@
   }
 
   function displayNameFor(tag) {
+    if (isOfficialTag(tag)) return 'PulseShare';
     if (isLinkVisitor(tag)) return 'Visitante do link ' + tag.slice(6, 10);
     const parts = splitTag(tag);
     return parts ? parts.name : tag.replace(/^@/, '').split('_')[0];
@@ -3122,7 +3507,7 @@
   function handleIncomingChatMessage(payload, via) {
     if (!payload || !payload.senderTag) return;
     const from = normalizeTag(payload.senderTag);
-    if (isMyTag(from) || isBlocked(from)) return;
+    if (isMyTag(from) || isBlocked(from) || isOfficialTag(from) || isAdminDeleted(from)) return;
 
     if (!chatMessages[from]) chatMessages[from] = [];
     const msgId = payload.id || ('msg_' + Date.now());
@@ -3134,6 +3519,9 @@
 
     const fileMeta = payload.media || payload.fileMeta || null;
     const mediaTid = fileMeta ? (payload.transferId || fileMeta.transferId) : null;
+    const incomingVoice = fileMeta && (payload.msgType === 'voice' || payload.type === 'voice' || payload.voiceDuration)
+      ? sanitizeVoiceInfo({ duration: payload.voiceDuration, waveform: payload.waveform }) : null;
+    const incomingLocation = sanitizeLocation(payload.location);
     chatMessages[from].push({
       id: msgId,
       sender: from,
@@ -3142,7 +3530,9 @@
       status: 'RECEIVED',
       transferId: mediaTid,
       media: fileMeta,
-      forwarded: Boolean(payload.forwarded || payload.isForwarded)
+      forwarded: Boolean(payload.forwarded || payload.isForwarded),
+      ...(incomingVoice ? { voice: incomingVoice } : {}),
+      ...(incomingLocation ? { location: incomingLocation } : {})
     });
     chatMessages[from].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     saveChatMessagesToStorage();
@@ -3174,7 +3564,8 @@
       renderTransfers();
     }
 
-    notifyIncoming(from, payload.text || (fileMeta ? `📎 ${fileMeta.name || fileMeta.fileName || 'arquivo'}` : ''), 'chat');
+    notifyIncoming(from, incomingLocation ? '📍 Localização' : incomingVoice ? `🎤 Mensagem de voz (${formatDuration(incomingVoice.duration)})`
+      : payload.text || (fileMeta ? `📎 ${fileMeta.name || fileMeta.fileName || 'arquivo'}` : ''), 'chat');
 
     if (activeChatPeer === from) {
       renderChatMessages(from);
@@ -3189,11 +3580,14 @@
     renderConversationsList();
   }
 
-  function sendChatMessage(targetTag, text) {
+  // extra.location = { lat, lon, acc } → mensagem de localização. O texto leva o link
+  // do mapa para quem tem versão antiga (e o portal) ver algo útil.
+  function sendChatMessage(targetTag, text, extra) {
     targetTag = normalizeTag(targetTag);
     if (!targetTag || !text) return;
     if (!chatMessages[targetTag]) chatMessages[targetTag] = [];
 
+    const location = extra && extra.location ? sanitizeLocation(extra.location) : null;
     const msgId = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
     const ts = Date.now();
     chatMessages[targetTag].push({
@@ -3201,7 +3595,8 @@
       sender: myTag,
       text,
       timestamp: ts,
-      status: 'SENT'
+      status: 'SENT',
+      ...(location ? { location } : {})
     });
     saveChatMessagesToStorage();
 
@@ -3209,10 +3604,11 @@
       id: msgId,
       senderTag: myTag,
       text,
-      msgType: 'text',
-      type: 'text',
+      msgType: location ? 'location' : 'text',
+      type: location ? 'location' : 'text',
       timestamp: ts
     };
+    if (location) payload.location = location;
 
     // Roteamento inteligente: as 2 melhores rotas (Bluetooth direto, internet ou
     // malha BLE via outros usuários). O destino deduplica pelo id.
@@ -3258,7 +3654,8 @@
     if (!pending.length) return;
     pendingFlushAt[tag] = now;
     pending.slice(-30).forEach((m, i) => setTimeout(() => {
-      const payload = { id: m.id, senderTag: myTag, text: m.text, msgType: 'text', type: 'text', timestamp: m.timestamp };
+      const payload = { id: m.id, senderTag: myTag, text: m.text, msgType: m.location ? 'location' : 'text', type: m.location ? 'location' : 'text', timestamp: m.timestamp };
+      if (m.location) payload.location = m.location;
       if (m.replyTo) payload.replyTo = m.replyTo;
       const vias = sendSignal(tag, m.id, 'CHAT_MESSAGE', payload);
       trackRttSent(tag, m.id, vias);
@@ -3269,7 +3666,7 @@
   // nunca chegavam a ninguém: quando o catálogo de nomes conhece o dono, move a
   // conversa para a tag completa e reenvia o que ficou pendente.
   function isBareUserTag(tag) {
-    return /^@[a-z0-9_]{2,40}$/.test(tag || '') && !splitTag(tag) && !isLinkVisitor(tag);
+    return /^@[a-z0-9_]{2,40}$/.test(tag || '') && !splitTag(tag) && !isLinkVisitor(tag) && !isOfficialTag(tag);
   }
   let bareMigrateTimer = null;
   const bareProbed = new Set();
@@ -3313,14 +3710,15 @@
     }
   }
 
-  function sendChatMessageWithMedia(targetTag, text, transferId, fileItem) {
+  function sendChatMessageWithMedia(targetTag, text, transferId, fileItem, extra) {
     targetTag = normalizeTag(targetTag);
     if (!targetTag || !fileItem) return;
     if (!chatMessages[targetTag]) chatMessages[targetTag] = [];
 
     const msgId = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
     const mime = fileItem.mimeType || fileItem.type || 'application/octet-stream';
-    const msgType = mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'file';
+    const voice = extra && extra.voice ? sanitizeVoiceInfo(extra.voice) : null;
+    const msgType = voice ? 'voice' : mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'file';
     const fileMeta = {
       name: fileItem.name,
       fileName: fileItem.name,
@@ -3341,7 +3739,8 @@
       timestamp: ts,
       status: 'SENT',
       transferId,
-      media: fileMeta
+      media: fileMeta,
+      ...(voice ? { voice } : {})
     });
     saveChatMessagesToStorage();
 
@@ -3356,6 +3755,8 @@
       fileMeta,
       media: fileMeta
     };
+    // Mesmos campos da extensão antiga (voiceDuration em segundos, waveform 0–100)
+    if (voice) { payload.voiceDuration = voice.duration; payload.waveform = voice.waveform; }
     trackRttSent(targetTag, msgId, sendSignal(targetTag, msgId, 'CHAT_MESSAGE', payload));
     scheduleChatRetry(targetTag, msgId, payload);
 
@@ -3374,7 +3775,8 @@
   }
 
   // Registra um arquivo a enviar (chat ou envio direto) e dispara a oferta
-  function queueOutgoingFile(target, fileItem, text) {
+  // extra.voice = { duration, waveform } → mensagem de voz gravada no app
+  function queueOutgoingFile(target, fileItem, text, extra) {
     const tid = 'chatmedia-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     stagedFilesMap.set(tid, fileItem);
     transfers[tid] = {
@@ -3392,7 +3794,7 @@
       isChatMedia: true,
       startTime: Date.now()
     };
-    sendChatMessageWithMedia(target, text || '', tid, fileItem);
+    sendChatMessageWithMedia(target, text || '', tid, fileItem, extra);
     captureOutgoingChatMedia(tid, fileItem);
   }
 
@@ -3493,7 +3895,7 @@
       ...Object.keys(contacts)
     ]);
 
-    let peerTags = Array.from(interactedPeers).filter(t => t && !isMyTag(t) && !isBlocked(t));
+    let peerTags = Array.from(interactedPeers).filter(t => t && !isMyTag(t) && !isBlocked(t) && !isAdminDeleted(t));
 
     // Filtra pela categoria selecionada
     if (selectedCategory && selectedCategory !== 'Todas') {
@@ -3542,23 +3944,22 @@
     listEl.innerHTML = peerTags.map(tag => {
       const contact = contacts[tag];
       const peer = peerRegistry[tag];
-      const name = (contact && contact.name) || (peer && peer.name) || displayNameFor(tag);
-      const avatar = (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 56) : '');
+      const official = isOfficialTag(tag);
+      const name = escapeHtml(official ? 'PulseShare' : (contact && contact.name) || (peer && peer.name) || displayNameFor(tag));
+      const avatar = official ? officialAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 56) : '');
       const msgs = chatMessages[tag] || [];
       const lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
       const lastTime = lastMsg ? formatTime(lastMsg.timestamp) : '';
-      const transportBadge = isContact(tag) || isLinkVisitor(tag)
+      const transportBadge = official
+        ? '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">✔ Oficial</span>'
+        : isContact(tag) || isLinkVisitor(tag)
         ? routeBadgeHtml(tag)
         : '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">✉️ Pedido</span>';
 
       let snippet = 'Toque para conversar com criptografia';
       let checkIcon = '';
       if (lastMsg) {
-        if (lastMsg.media) {
-          snippet = `📎 ${lastMsg.media.fileName || 'Arquivo'}`;
-        } else {
-          snippet = lastMsg.text || '';
-        }
+        snippet = messageSummary(lastMsg);
         if (lastMsg.sender === myTag) {
           checkIcon = '<span class="text-indigo-400 font-bold mr-1">✓✓</span>';
         }
@@ -3577,7 +3978,7 @@
               </div>
               <div class="flex items-center justify-between gap-1 mt-0.5">
                 <p class="text-xs text-slate-400 truncate flex items-center">
-                  ${checkIcon}<span>${snippet}</span>
+                  ${checkIcon}<span>${escapeHtml(snippet)}</span>
                 </p>
                 <div class="shrink-0 flex items-center gap-1.5">
                   ${transportBadge}
@@ -3585,11 +3986,11 @@
               </div>
             </div>
           </div>
-          <button type="button" data-open-contact-options="${tag}" class="p-2 ml-1 text-slate-500 hover:text-white rounded-lg active:scale-90">
+          ${official ? '' : `<button type="button" data-open-contact-options="${tag}" class="p-2 ml-1 text-slate-500 hover:text-white rounded-lg active:scale-90">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" />
             </svg>
-          </button>
+          </button>`}
         </div>
       `;
     }).join('');
@@ -3618,15 +4019,25 @@
     if (!peerTag) return;
     if (!peerTag.startsWith('@')) peerTag = '@' + peerTag;
     activeChatPeer = peerTag;
+    const official = isOfficialTag(peerTag);
     // Confirmação de leitura (✓✓ azul) para quem nos enviou mensagens
-    if ((chatMessages[peerTag] || []).some(m => m.sender === peerTag)) {
+    if (!official && (chatMessages[peerTag] || []).some(m => m.sender === peerTag)) {
       sendSignal(peerTag, 'read-' + Date.now(), 'CHAT_READ', { readerTag: myTag });
     }
+    // Canal oficial (mensagens do administrador): somente leitura
+    ['chat-bottom-input-bar', 'btn-chat-contact-menu', 'chat-contact-transport-badge'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('hidden', official);
+    });
+    const ro = document.getElementById('chat-official-readonly');
+    if (ro) ro.classList.toggle('hidden', !official);
+    toggleAttachMenu(false);
+    updateComposeButtons();
     const contacts = (typeof PulseShareCrypto !== 'undefined') ? PulseShareCrypto.ProfilesManager.getContacts() : {};
     const contact = contacts[peerTag];
     const peer = peerRegistry[peerTag];
-    const name = (contact && contact.name) || (peer && peer.name) || displayNameFor(peerTag);
-    const avatar = (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(peerTag, 40) : '');
+    const name = official ? 'PulseShare' : (contact && contact.name) || (peer && peer.name) || displayNameFor(peerTag);
+    const avatar = official ? officialAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(peerTag, 40) : '');
     const avatarSlot = document.getElementById('chat-contact-avatar');
     if (avatarSlot) avatarSlot.innerHTML = avatar;
 
@@ -3634,7 +4045,7 @@
     if (nameEl) nameEl.textContent = name;
 
     const tagEl = document.getElementById('chat-contact-tag');
-    if (tagEl) tagEl.textContent = peerTag;
+    if (tagEl) tagEl.textContent = official ? 'Mensagens oficiais' : peerTag;
 
     refreshActiveChatRouteBadge();
     refreshContactRequestBanner();
@@ -3652,7 +4063,7 @@
   // Selo da rota atual no cabeçalho da conversa
   function refreshActiveChatRouteBadge() {
     const badge = document.getElementById('chat-contact-transport-badge');
-    if (!badge || !activeChatPeer) return;
+    if (!badge || !activeChatPeer || isOfficialTag(activeChatPeer)) return;
     const tmp = document.createElement('div');
     tmp.innerHTML = routeBadgeHtml(activeChatPeer);
     const el = tmp.firstElementChild;
@@ -3667,7 +4078,7 @@
   function refreshContactRequestBanner() {
     const banner = document.getElementById('chat-contact-request-banner');
     if (!banner) return;
-    const show = Boolean(activeChatPeer && !isContact(activeChatPeer) && !isLinkVisitor(activeChatPeer));
+    const show = Boolean(activeChatPeer && !isContact(activeChatPeer) && !isLinkVisitor(activeChatPeer) && !isOfficialTag(activeChatPeer));
     banner.classList.toggle('hidden', !show);
   }
 
@@ -3691,6 +4102,8 @@
   window.openActiveChat = (tag) => openActiveChat(tag);
 
   function closeActiveChat() {
+    if (voiceRec) stopVoiceRecording(false);
+    toggleAttachMenu(false);
     activeChatPeer = null;
     const activePane = document.getElementById('chat-active-conversation-pane');
     if (activePane) activePane.classList.remove('active');
@@ -3702,6 +4115,639 @@
   }
 
   // Bolha de mídia: pré-visualização (foto/vídeo/áudio) ou cartão de arquivo com ação
+  // ==========================================================================
+  // 8b. VOZ, LOCALIZAÇÃO E PERFIL DO CONTATO
+  //     - Mensagem de voz: gravada com MediaRecorder (webm/opus) e enviada como
+  //       mídia do chat (chatmedia-) com voiceDuration + waveform no CHAT_MESSAGE.
+  //     - Localização: CHAT_MESSAGE com location {lat, lon, acc}; o texto leva o
+  //       link do mapa para versões antigas e para o portal.
+  //     - Perfil: toque na foto/nome no topo da conversa (modal-peer-profile).
+  // ==========================================================================
+  function formatDuration(sec) {
+    sec = Math.max(0, Math.round(Number(sec) || 0));
+    const m = Math.floor(sec / 60), s = sec % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  function sanitizeVoiceInfo(v) {
+    if (!v) return null;
+    const duration = Math.min(3600, Math.max(0, Number(v.duration) || 0));
+    const waveform = Array.isArray(v.waveform)
+      ? v.waveform.slice(0, 64).map((x) => Math.max(0, Math.min(100, Math.round(Number(x) || 0)))) : [];
+    return { duration: Math.round(duration * 10) / 10, waveform };
+  }
+
+  function sanitizeLocation(l) {
+    if (!l || typeof l !== 'object') return null;
+    const lat = Number(l.lat), lon = Number(l.lon);
+    if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+    const acc = Math.max(0, Math.min(100000, Math.round(Number(l.acc) || 0)));
+    return { lat: Math.round(lat * 1e6) / 1e6, lon: Math.round(lon * 1e6) / 1e6, acc };
+  }
+
+  function mapUrlFor(lat, lon) {
+    return `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
+  }
+
+  function locationLabel(loc) {
+    return `${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}${loc.acc ? ` • ±${loc.acc >= 1000 ? (loc.acc / 1000).toFixed(1) + ' km' : loc.acc + ' m'}` : ''}`;
+  }
+
+  // Resumo de uma mensagem (lista de conversas, busca, notificação)
+  function messageSummary(m) {
+    if (!m) return '';
+    if (m.location) return '📍 Localização';
+    if (m.voice) return `🎤 Mensagem de voz (${formatDuration(m.voice.duration)})`;
+    if (m.media) {
+      const name = m.media.fileName || m.media.name || 'Arquivo';
+      const kind = chatMediaKind(m.media.fileType || m.media.type, name);
+      if (kind === 'image') return m.text ? `📷 ${m.text}` : '📷 Foto';
+      if (kind === 'video') return m.text ? `🎥 ${m.text}` : '🎥 Vídeo';
+      if (kind === 'audio') return `🎵 ${name}`;
+      return `📎 ${name}`;
+    }
+    return m.text || '';
+  }
+
+  const VOICE_PLAY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 001.52.85l11.2-6.86a1 1 0 000-1.7L9.52 4.29A1 1 0 008 5.14z"/></svg>';
+  const VOICE_PAUSE_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4.5" width="4.2" height="15" rx="1.2"/><rect x="13.8" y="4.5" width="4.2" height="15" rx="1.2"/></svg>';
+
+  function voiceBars(m, tid) {
+    let wf = (m.voice && m.voice.waveform) || [];
+    if (wf.length < 8) {
+      // Sem forma de onda (mensagem antiga / outro cliente): barras estáveis a partir do id
+      let h = 0;
+      const seed = String(tid || m.id || '');
+      for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+      wf = Array.from({ length: 36 }, (_, i) => 25 + Math.abs(Math.sin(h + i * 1.7)) * 60);
+    }
+    // Reamostra para 36 barras
+    const N = 36;
+    const bars = [];
+    for (let i = 0; i < N; i++) bars.push(wf[Math.floor(i * wf.length / N)] || 0);
+    return bars.map((v) => `<i style="height:${Math.max(14, Math.min(100, v))}%"></i>`).join('');
+  }
+
+  function renderVoiceHtml(m, isMe, tid, previewUrl, action, progressBar) {
+    const dur = (m.voice && m.voice.duration) || 0;
+    const safeTid = escapeHtml(String(tid || ''));
+    const color = isMe ? 'text-indigo-100' : 'text-slate-300';
+    const control = previewUrl
+      ? `<button type="button" class="ps-voice-btn" data-voice-play title="Ouvir">${VOICE_PLAY_SVG}</button>`
+      : `<div class="shrink-0">${action}</div>`;
+    const status = isMe && !/Enviado/.test(action) ? `<span>${action}</span>` : '';
+    return `
+      <div class="space-y-1">
+        <div class="ps-voice ${color}" data-voice-tid="${safeTid}" data-voice-dur="${dur}">
+          ${control}
+          <div class="ps-voice-wave" data-voice-seek>${voiceBars(m, tid)}</div>
+          <div class="ps-voice-meta">
+            <span data-voice-time>${formatDuration(dur)}</span>
+            ${previewUrl ? '<button type="button" class="ps-voice-speed" data-voice-speed>1x</button>' : '<span>🎤</span>'}
+          </div>
+          ${previewUrl ? `<audio class="hidden" preload="metadata" src="${previewUrl}" data-voice-audio></audio>` : ''}
+        </div>
+        ${status ? `<div class="flex justify-end px-1.5">${status}</div>` : ''}
+        ${progressBar}
+      </div>`;
+  }
+
+  function renderLocationHtml(m) {
+    const loc = m.location;
+    const args = `${loc.lat}|${loc.lon}`;
+    return `
+      <div class="mt-0.5 space-y-1.5" style="width:min(16rem, 66vw)">
+        <button type="button" data-ps-call="psOpenLocation" data-ps-args="${args}" title="Abrir no mapa" class="ps-loc-map block w-full"><span class="ps-loc-pulse"></span><span class="ps-loc-pin">📍</span></button>
+        <div class="px-1.5">
+          <span class="text-[13px] font-bold block">Localização</span>
+          <span class="text-[10px] font-mono opacity-70 block truncate">${escapeHtml(locationLabel(loc))}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-1.5 px-0.5">
+          <button type="button" data-ps-call="psOpenLocation" data-ps-args="${args}" class="py-1.5 rounded-lg bg-slate-950/40 hover:bg-slate-950/60 text-[11px] font-bold active:scale-95">🗺️ Abrir mapa</button>
+          <button type="button" data-ps-call="psCopyLocation" data-ps-args="${args}" class="py-1.5 rounded-lg bg-slate-950/40 hover:bg-slate-950/60 text-[11px] font-bold active:scale-95">📋 Copiar</button>
+        </div>
+      </div>`;
+  }
+
+  window.psOpenLocation = function (lat, lon) {
+    const l = sanitizeLocation({ lat, lon });
+    if (l) Native.openUrl(mapUrlFor(l.lat, l.lon));
+  };
+  window.psCopyLocation = function (lat, lon) {
+    const l = sanitizeLocation({ lat, lon });
+    if (!l) return;
+    Native.copy(`${l.lat}, ${l.lon} — ${mapUrlFor(l.lat, l.lon)}`);
+    Native.toast('Localização copiada');
+  };
+
+  // ---------- player das mensagens de voz ----------
+  function voiceUiOf(el) { return el && el.closest ? el.closest('.ps-voice') : null; }
+  function voiceDurationOf(ui, audio) {
+    const d = Number(ui.dataset.voiceDur) || 0;
+    if (d > 0) return d;
+    return audio && isFinite(audio.duration) ? audio.duration : 0;
+  }
+  function updateVoiceUi(ui, audio) {
+    if (!ui || !audio) return;
+    const dur = voiceDurationOf(ui, audio);
+    const frac = dur > 0 ? Math.min(1, audio.currentTime / dur) : 0;
+    const bars = ui.querySelectorAll('.ps-voice-wave i');
+    const lit = Math.round(frac * bars.length);
+    bars.forEach((b, i) => b.classList.toggle('on', i < lit));
+    const t = ui.querySelector('[data-voice-time]');
+    if (t) t.textContent = formatDuration(audio.paused && audio.currentTime === 0 ? dur : audio.currentTime);
+    const btn = ui.querySelector('[data-voice-play]');
+    const playing = !audio.paused && !audio.ended;
+    if (btn && btn._psPlaying !== playing) { btn._psPlaying = playing; btn.innerHTML = playing ? VOICE_PAUSE_SVG : VOICE_PLAY_SVG; }
+  }
+  function initVoicePlayer() {
+    const container = document.getElementById('chat-messages-container');
+    if (!container || container._psVoiceInit) return;
+    container._psVoiceInit = true;
+    ['timeupdate', 'play', 'pause', 'ended', 'loadedmetadata'].forEach((ev) => {
+      container.addEventListener(ev, (e) => {
+        const a = e.target;
+        if (!a || !a.hasAttribute || !a.hasAttribute('data-voice-audio')) return;
+        if (ev === 'ended') { a.currentTime = 0; }
+        if (ev === 'play') {
+          // Uma mensagem de voz por vez
+          container.querySelectorAll('audio[data-voice-audio]').forEach((o) => { if (o !== a && !o.paused) o.pause(); });
+        }
+        updateVoiceUi(voiceUiOf(a), a);
+      }, true);
+    });
+    container.addEventListener('click', (e) => {
+      const ui = voiceUiOf(e.target);
+      if (!ui) return;
+      const audio = ui.querySelector('audio[data-voice-audio]');
+      if (!audio) return;
+      if (e.target.closest('[data-voice-play]')) {
+        if (audio.paused) audio.play().catch(() => Native.toast('Não foi possível tocar o áudio'));
+        else audio.pause();
+      } else if (e.target.closest('[data-voice-speed]')) {
+        const speeds = [1, 1.5, 2];
+        const next = speeds[(speeds.indexOf(audio.playbackRate) + 1) % speeds.length] || 1;
+        audio.playbackRate = next;
+        e.target.closest('[data-voice-speed]').textContent = `${next}x`;
+      } else if (e.target.closest('[data-voice-seek]')) {
+        const wave = e.target.closest('[data-voice-seek]');
+        const r = wave.getBoundingClientRect();
+        const dur = voiceDurationOf(ui, audio);
+        if (dur > 0 && r.width > 0) {
+          audio.currentTime = Math.max(0, Math.min(dur - 0.05, ((e.clientX - r.left) / r.width) * dur));
+          if (audio.paused) audio.play().catch(() => {});
+          updateVoiceUi(ui, audio);
+        }
+      }
+    });
+  }
+
+  // ---------- gravação de voz ----------
+  let voiceRec = null;
+  const VOICE_MAX_SEC = 15 * 60;
+
+  function micErrorText(e) {
+    const n = e && e.name;
+    if (n === 'NotAllowedError' || n === 'SecurityError') return '🎤 Permissão do microfone negada. Libere o microfone para o PulseShare nas configurações.';
+    if (n === 'NotFoundError' || n === 'OverconstrainedError') return '🎤 Nenhum microfone encontrado neste aparelho.';
+    if (n === 'NotReadableError') return '🎤 O microfone está sendo usado por outro app.';
+    return '🎤 Não foi possível usar o microfone.';
+  }
+
+  function setRecordingUi(on) {
+    document.getElementById('chat-recording-bar').classList.toggle('hidden', !on);
+    document.getElementById('chat-compose-row').classList.toggle('hidden', on);
+    document.getElementById('chat-attach-menu').classList.add('hidden');
+    if (!on) document.getElementById('voice-rec-wave').innerHTML = '';
+  }
+
+  async function startVoiceRecording() {
+    if (voiceRec || !activeChatPeer || isOfficialTag(activeChatPeer)) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+      Native.toast('Gravação de voz não é suportada aqui.');
+      return;
+    }
+    const target = activeChatPeer;
+    const st = { target, starting: true };
+    voiceRec = st;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    } catch (e) {
+      voiceRec = null;
+      Native.toast(micErrorText(e));
+      return;
+    }
+    // Cancelado (fechou a conversa) enquanto pedia o microfone
+    if (voiceRec !== st || activeChatPeer !== target) {
+      stream.getTracks().forEach((tr) => tr.stop());
+      if (voiceRec === st) voiceRec = null;
+      return;
+    }
+    const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/mp4']
+      .find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+    } catch (e) {
+      stream.getTracks().forEach((tr) => tr.stop());
+      voiceRec = null;
+      Native.toast('Gravação de voz não é suportada aqui.');
+      return;
+    }
+    Object.assign(st, { starting: false, stream, rec, mime: (rec.mimeType || mime || 'audio/webm').split(';')[0], chunks: [], levels: [], start: Date.now() });
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) st.chunks.push(e.data); };
+    // Nível do microfone para a forma de onda
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      st.ctx = new Ctx();
+      const src = st.ctx.createMediaStreamSource(stream);
+      st.analyser = st.ctx.createAnalyser();
+      st.analyser.fftSize = 512;
+      src.connect(st.analyser);
+      st.buf = new Uint8Array(st.analyser.fftSize);
+    } catch (e) { st.analyser = null; }
+    const waveEl = document.getElementById('voice-rec-wave');
+    const timeEl = document.getElementById('voice-rec-time');
+    st.timer = setInterval(() => {
+      const sec = (Date.now() - st.start) / 1000;
+      timeEl.textContent = formatDuration(Math.floor(sec));
+      let level = 8;
+      if (st.analyser) {
+        st.analyser.getByteTimeDomainData(st.buf);
+        let sum = 0;
+        for (let i = 0; i < st.buf.length; i++) { const v = (st.buf[i] - 128) / 128; sum += v * v; }
+        // Raiz do RMS: voz baixa ainda aparece, voz alta não estoura
+        level = Math.min(100, Math.round(Math.sqrt(Math.sqrt(sum / st.buf.length)) * 150));
+      }
+      st.levels.push(level);
+      const bar = document.createElement('span');
+      bar.style.height = Math.max(12, level) + '%';
+      waveEl.appendChild(bar);
+      while (waveEl.childElementCount > 90) waveEl.firstElementChild.remove();
+      if (sec >= VOICE_MAX_SEC) stopVoiceRecording(true);
+    }, 100);
+    rec.start(250);
+    setRecordingUi(true);
+  }
+
+  function stopVoiceRecording(send) {
+    const st = voiceRec;
+    voiceRec = null;
+    setRecordingUi(false);
+    if (!st || st.starting || !st.rec) return;
+    clearInterval(st.timer);
+    const duration = (Date.now() - st.start) / 1000;
+    st.rec.onstop = () => {
+      st.stream.getTracks().forEach((tr) => tr.stop());
+      try { if (st.ctx) st.ctx.close(); } catch (e) {}
+      if (!send) return;
+      if (duration < 0.8) { Native.toast('Gravação muito curta. Toque no microfone, fale e toque em enviar.'); return; }
+      const blob = new Blob(st.chunks, { type: st.mime });
+      if (!blob.size) { Native.toast('A gravação ficou vazia.'); return; }
+      // Forma de onda resumida em 48 pontos (vai no CHAT_MESSAGE)
+      const lv = st.levels.length ? st.levels : [10];
+      const waveform = Array.from({ length: 48 }, (_, i) => {
+        const a = Math.floor(i * lv.length / 48), b = Math.max(a + 1, Math.floor((i + 1) * lv.length / 48));
+        return Math.max(...lv.slice(a, b));
+      });
+      const ext = /ogg/.test(st.mime) ? 'ogg' : /mp4/.test(st.mime) ? 'm4a' : 'webm';
+      const d = new Date();
+      const p2 = (n) => String(n).padStart(2, '0');
+      const name = `voz-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.${ext}`;
+      const fileItem = { name, size: blob.size, mimeType: st.mime, file: new File([blob], name, { type: st.mime }) };
+      queueOutgoingFile(st.target, fileItem, '', { voice: { duration, waveform } });
+    };
+    try { st.rec.stop(); } catch (e) { st.rec.onstop(); }
+  }
+
+  // ---------- anexos ----------
+  function toggleAttachMenu(force) {
+    const menu = document.getElementById('chat-attach-menu');
+    if (!menu) return;
+    const show = typeof force === 'boolean' ? force : menu.classList.contains('hidden');
+    menu.classList.toggle('hidden', !show);
+  }
+
+  function chooseAttachment(kind) {
+    toggleAttachMenu(false);
+    if (!activeChatPeer) return;
+    if (kind === 'location') { openLocationModal(); return; }
+    pendingChatAttachment = true;
+    Native.pickFiles(kind === 'media' ? 'image/*,video/*' : kind === 'audio' ? 'audio/*' : '');
+  }
+
+  function updateComposeButtons() {
+    const input = document.getElementById('input-chat-text');
+    const has = Boolean((input && input.value.trim()) || chatAttachedFiles.length);
+    document.getElementById('btn-chat-send').classList.toggle('hidden', !has);
+    document.getElementById('btn-chat-mic').classList.toggle('hidden', has);
+  }
+
+  // ---------- localização ----------
+  let locationCurrent = null;
+  let locationReqSeq = 0;
+
+  function setLocationStatus(text, ok) {
+    const el = document.getElementById('location-status');
+    if (el) { el.textContent = text; el.className = `text-xs ${ok ? 'text-emerald-300' : 'text-slate-300'}`; }
+    document.getElementById('btn-location-send').disabled = !locationCurrent;
+  }
+
+  function geoErrorText(err) {
+    if (err && err.code === 1) return 'Permissão de localização negada.';
+    if (err && err.code === 3) return 'A localização demorou demais para responder.';
+    return IS_DESKTOP ? 'O computador não informou a localização.' : 'Não foi possível obter a localização (o GPS está ligado?).';
+  }
+
+  // "lat, lon", link do Google Maps (@lat,lon / q=lat,lon) ou do OpenStreetMap (mlat/mlon)
+  function parseLocationInput(raw) {
+    const s = decodeURIComponent(String(raw || '').trim());
+    let m = /mlat=(-?\d+(?:\.\d+)?).*?mlon=(-?\d+(?:\.\d+)?)/.exec(s);
+    if (!m) m = /(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)/.exec(s.replace(/^.*?(@|q=|query=|ll=)/, ''));
+    return m ? sanitizeLocation({ lat: m[1], lon: m[2] }) : null;
+  }
+
+  function requestCurrentLocation() {
+    const seq = ++locationReqSeq;
+    locationCurrent = null;
+    setLocationStatus('Obtendo sua localização...');
+    if (!navigator.geolocation) {
+      setLocationStatus('Este aparelho não informa a localização. Digite as coordenadas abaixo.');
+      document.getElementById('location-manual').classList.remove('hidden');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition((pos) => {
+      if (seq !== locationReqSeq) return;
+      locationCurrent = sanitizeLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude, acc: pos.coords.accuracy });
+      if (locationCurrent) setLocationStatus(`Sua localização: ${locationLabel(locationCurrent)}`, true);
+    }, (err) => {
+      if (seq !== locationReqSeq) return;
+      const manual = parseLocationInput(document.getElementById('input-location-manual').value);
+      locationCurrent = manual;
+      document.getElementById('location-manual').classList.remove('hidden');
+      setLocationStatus(manual ? `Localização digitada: ${locationLabel(manual)}` : `${geoErrorText(err)} Digite as coordenadas abaixo.`, Boolean(manual));
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+  }
+
+  function openLocationModal() {
+    if (!activeChatPeer) return;
+    document.getElementById('input-location-manual').value = '';
+    // No computador o navegador quase nunca sabe a posição: o campo manual já aparece
+    document.getElementById('location-manual').classList.toggle('hidden', !IS_DESKTOP);
+    document.getElementById('modal-location').classList.remove('hidden');
+    requestCurrentLocation();
+  }
+
+  function closeLocationModal() {
+    locationReqSeq++;
+    document.getElementById('modal-location').classList.add('hidden');
+  }
+
+  function sendCurrentLocation() {
+    const loc = locationCurrent;
+    if (!loc || !activeChatPeer) return;
+    sendChatMessage(activeChatPeer, `📍 Localização: ${mapUrlFor(loc.lat, loc.lon)}`, { location: loc });
+    closeLocationModal();
+  }
+
+  // ---------- perfil do contato ----------
+  let peerProfileTag = null;
+
+  function timeAgo(ts) {
+    const d = Date.now() - ts;
+    if (d < 60000) return 'agora há pouco';
+    if (d < 3600000) return `há ${Math.floor(d / 60000)} min`;
+    if (d < 86400000) return `há ${Math.floor(d / 3600000)} h`;
+    if (d < 7 * 86400000) return `há ${Math.floor(d / 86400000)} dia(s)`;
+    return `em ${formatDate(ts)}`;
+  }
+  function formatDate(ts) {
+    try { return new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }); } catch (e) { return ''; }
+  }
+  const CLIENT_LABELS = { android: '📱 Celular Android', desktop: '💻 Computador (Linux)', 'extension-app': '🧩 Extensão do Chrome', web: '🌐 Navegador' };
+
+  function openPeerProfile(tag) {
+    tag = normalizeTag(tag);
+    if (!tag) return;
+    peerProfileTag = tag;
+    renderPeerProfile();
+    const body = document.getElementById('peer-profile-body');
+    if (body) body.scrollTop = 0;
+    document.getElementById('modal-peer-profile').classList.remove('hidden');
+  }
+
+  function closePeerProfile() {
+    peerProfileTag = null;
+    document.getElementById('modal-peer-profile').classList.add('hidden');
+  }
+
+  function profileRow(label, value) {
+    return value ? `
+      <div class="flex items-center justify-between gap-3 px-3 py-2.5">
+        <span class="text-[11px] text-slate-400 shrink-0">${label}</span>
+        <span class="text-xs text-slate-100 font-semibold text-right min-w-0 truncate">${value}</span>
+      </div>` : '';
+  }
+
+  function profileAction(id, icon, label, extra) {
+    return `<button type="button" data-profile-action="${id}" class="flex flex-col items-center gap-1 py-2.5 rounded-2xl bg-slate-900 border border-slate-800 hover:bg-slate-800 active:scale-95 transition-all ${extra || ''}">
+      <span class="text-lg leading-none">${icon}</span><span class="text-[10px] font-bold text-slate-300">${label}</span></button>`;
+  }
+
+  function renderPeerProfile() {
+    const body = document.getElementById('peer-profile-body');
+    const tag = peerProfileTag;
+    if (!body || !tag) return;
+    const official = isOfficialTag(tag);
+    const c = getContacts()[tag];
+    const p = peerRegistry[tag] || {};
+    const name = official ? 'PulseShare' : (c && c.name && c.name !== tag ? c.name : '') || p.name || displayNameFor(tag);
+    const now = Date.now();
+    const parts = splitTag(tag);
+    const reg = parts && nameRegistry[parts.name] && nameRegistry[parts.name].s === parts.suffix ? nameRegistry[parts.name] : null;
+    const lastSeen = Math.max(p.lastSeen || 0, (reg && reg.seen) || 0);
+    const online = Boolean(p.lastSeen && now - p.lastSeen < 45000);
+    const status = official ? '✔ Canal oficial do PulseShare'
+      : online ? '<span class="text-emerald-400">● Online agora</span>'
+      : lastSeen ? `Visto por último ${timeAgo(lastSeen)}` : 'Ainda não foi visto online';
+    const msgs = chatMessages[tag] || [];
+    const media = msgs.filter((m) => m.media && !m.voice).reverse();
+    const thumbs = media.map((m) => {
+      const tid = m.transferId || m.media.transferId;
+      const kind = chatMediaKind(m.media.fileType || m.media.type, m.media.fileName || m.media.name);
+      const url = (kind === 'image' || kind === 'video') ? getChatMediaUrl(tid) : '';
+      return url ? { tid, kind, url } : null;
+    }).filter(Boolean).slice(0, 9);
+    const docs = media.length - media.filter((m) => ['image', 'video'].includes(chatMediaKind(m.media.fileType || m.media.type, m.media.fileName || m.media.name))).length;
+    const voices = msgs.filter((m) => m.voice).length;
+    const places = msgs.filter((m) => m.location).length;
+    const contact = isContact(tag);
+    const blocked = isBlocked(tag);
+    const lists = c && Array.isArray(c.lists) ? c.lists.filter((l) => l && l !== 'Todas') : [];
+
+    const rows = official ? [
+      profileRow('Tipo', '✔ Mensagens oficiais (somente leitura)'),
+      profileRow('Mensagens recebidas', String(msgs.length))
+    ] : [
+      profileRow('Usuário', `<span class="font-mono">${escapeHtml(tag)}</span>`),
+      profileRow('Situação', contact ? '👤 Nos seus contatos' : isLinkVisitor(tag) ? '🔗 Visitante de link' : '✉️ Fora dos contatos'),
+      profileRow('Listas', lists.map(escapeHtml).join(', ')),
+      profileRow('Aparelho', CLIENT_LABELS[p.clientType] || ''),
+      profileRow('Rota atual', online ? routeBadgeHtml(tag) : ''),
+      profileRow('Conta criada', p.createdAt ? formatDate(p.createdAt) : ''),
+      profileRow('Usa este nome desde', (p.nameSince || (reg && reg.since)) ? formatDate(p.nameSince || reg.since) : ''),
+      profileRow('Visto por último', !online && lastSeen ? `${formatDate(lastSeen)} ${formatTime(lastSeen)}` : ''),
+      profileRow('Mensagens na conversa', msgs.length ? String(msgs.length) : ''),
+      profileRow('Mensagens de voz', voices ? String(voices) : ''),
+      profileRow('Localizações', places ? String(places) : ''),
+      profileRow('Arquivos e áudios', docs ? String(docs) : '')
+    ];
+
+    body.innerHTML = `
+      <div class="flex flex-col items-center text-center pt-2 space-y-2">
+        <button type="button" id="peer-profile-photo" title="Ver foto em tamanho real" class="w-32 h-32 rounded-full overflow-hidden border-2 border-slate-700 bg-slate-800 shadow-xl active:scale-95 transition-all cursor-zoom-in" style="width:8.5rem;height:8.5rem">${avatarFor(tag, 128)}</button>
+        <div class="min-w-0 max-w-full">
+          <h2 class="text-xl font-extrabold text-white truncate" style="font-size:1.35rem">${escapeHtml(name)}</h2>
+          ${official ? '' : `<button type="button" data-profile-action="copy" class="text-xs font-mono text-slate-400 hover:text-indigo-300 truncate max-w-full">${escapeHtml(tag)} 📋</button>`}
+          <p class="text-[11px] text-slate-400 mt-1">${status}</p>
+        </div>
+      </div>
+
+      ${official ? '' : `
+      <div class="grid grid-cols-4 gap-2">
+        ${profileAction('chat', '💬', 'Conversar')}
+        ${profileAction(contact ? 'rename' : 'add', contact ? '✏️' : '➕', contact ? 'Renomear' : 'Adicionar')}
+        ${profileAction('list', '🏷️', 'Lista')}
+        ${profileAction('copy', '📋', 'Copiar @')}
+      </div>`}
+
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 divide-y divide-slate-800/60 overflow-hidden">
+        ${rows.join('')}
+      </div>
+
+      ${thumbs.length ? `
+      <div class="space-y-2">
+        <div class="flex items-center justify-between px-1">
+          <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Fotos e vídeos</span>
+          <span class="text-[10px] font-mono text-slate-500">${media.length - docs}</span>
+        </div>
+        <div class="grid grid-cols-3 gap-1.5">
+          ${thumbs.map((t) => t.kind === 'image'
+            ? `<button type="button" data-ps-call="psOpenChatImage" data-ps-args="${escapeHtml(t.tid)}" class="block rounded-xl overflow-hidden bg-slate-900 border border-slate-800" style="aspect-ratio:1"><img src="${t.url}" alt="" class="w-full h-full object-cover" /></button>`
+            : `<button type="button" data-profile-action="video" data-tid="${escapeHtml(t.tid)}" class="relative block rounded-xl overflow-hidden bg-black border border-slate-800" style="aspect-ratio:1"><video src="${t.url}" preload="metadata" muted class="w-full h-full object-cover" style="pointer-events:none"></video><span class="absolute inset-0 flex items-center justify-center text-2xl">▶️</span></button>`).join('')}
+        </div>
+      </div>` : ''}
+
+      ${official ? '' : `
+      <div class="space-y-2 pb-4">
+        <button type="button" data-profile-action="block" class="w-full py-2.5 px-3 rounded-xl ${blocked ? 'bg-slate-800 hover:bg-slate-700 text-white' : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30'} text-left text-xs font-bold">${blocked ? '✅ Desbloquear' : '🚫 Bloquear'} ${escapeHtml(name)}</button>
+        ${msgs.length ? '<button type="button" data-profile-action="delete" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold">🗑️ Excluir conversa</button>' : ''}
+      </div>`}`;
+  }
+
+  function openPeerProfilePhoto() {
+    const tag = peerProfileTag;
+    if (!tag || !window.PulseShareImageViewer) return;
+    const c = getContacts()[tag];
+    let src = c && isSafeImageDataUrl(c.photo) ? c.photo : '';
+    if (!src) {
+      // Sem foto: mostra o avatar desenhado (identicon / ícone oficial) em tamanho grande
+      const svg = isOfficialTag(tag) ? officialAvatarHtml() : (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 512) : '');
+      if (!svg) return;
+      let s = svg.replace(/\sclass="[^"]*"/, '');
+      if (!/xmlns=/.test(s)) s = s.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+      if (!/\swidth="/.test(s.slice(0, s.indexOf('>')))) s = s.replace('<svg', '<svg width="512" height="512"');
+      src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(s);
+    }
+    window.PulseShareImageViewer.open({ src, title: isOfficialTag(tag) ? 'PulseShare' : displayNameFor(tag), meta: isOfficialTag(tag) ? '' : tag });
+  }
+
+  function handlePeerProfileAction(action, el) {
+    const tag = peerProfileTag;
+    if (!tag) return;
+    switch (action) {
+      case 'chat':
+        closePeerProfile();
+        if (activeChatPeer !== tag) { switchTab('chat'); openActiveChat(tag); }
+        break;
+      case 'copy':
+        Native.copy(tag);
+        Native.toast(`${tag} copiado`);
+        break;
+      case 'add':
+        if (addContact(tag)) Native.toast(`${tag} adicionado aos contatos`);
+        renderPeerProfile();
+        break;
+      case 'rename':
+        activeMenuTargetTag = tag;
+        handleSaveContactAction();
+        renderPeerProfile();
+        break;
+      case 'list':
+        activeMenuTargetTag = tag;
+        handleAddToListAction();
+        renderPeerProfile();
+        break;
+      case 'video': {
+        const tid = el && el.getAttribute('data-tid');
+        if (tid) { closePeerProfile(); if (activeChatPeer !== tag) openActiveChat(tag); setTimeout(() => scrollToMediaMessage(tid), 350); }
+        break;
+      }
+      case 'block':
+        if (isBlocked(tag)) {
+          setBlocked(tag, false);
+          Native.toast(`${tag} desbloqueado`);
+          renderPeerProfile();
+        } else if (confirm(`Bloquear ${tag}? Mensagens e arquivos dessa pessoa serão ignorados.`)) {
+          setBlocked(tag, true);
+          closePeerProfile();
+          if (activeChatPeer === tag) closeActiveChat();
+          renderConversationsList();
+          Native.toast(`${tag} bloqueado`);
+        }
+        break;
+      case 'delete':
+        activeMenuTargetTag = tag;
+        handleDeleteChatAction();
+        if (!chatMessages[tag]) closePeerProfile(); else renderPeerProfile();
+        break;
+    }
+  }
+
+  function scrollToMediaMessage(tid) {
+    const msgs = chatMessages[activeChatPeer] || [];
+    const m = msgs.find((x) => x.transferId === tid || (x.media && x.media.transferId === tid));
+    if (m && typeof scrollToChatMessage === 'function') scrollToChatMessage(m.id);
+  }
+
+  function initVoiceLocationProfileEvents() {
+    initVoicePlayer();
+    document.getElementById('btn-chat-open-profile').onclick = () => { if (activeChatPeer) openPeerProfile(activeChatPeer); };
+    document.getElementById('btn-close-peer-profile').onclick = () => closePeerProfile();
+    document.getElementById('modal-peer-profile').addEventListener('click', (e) => {
+      if (e.target.closest('#peer-profile-photo')) { openPeerProfilePhoto(); return; }
+      const a = e.target.closest('[data-profile-action]');
+      if (a) handlePeerProfileAction(a.getAttribute('data-profile-action'), a);
+    });
+    document.getElementById('chat-attach-menu').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-attach-kind]');
+      if (b) chooseAttachment(b.getAttribute('data-attach-kind'));
+    });
+    document.getElementById('btn-chat-mic').onclick = () => startVoiceRecording();
+    document.getElementById('btn-voice-cancel').onclick = () => stopVoiceRecording(false);
+    document.getElementById('btn-voice-send').onclick = () => stopVoiceRecording(true);
+    document.getElementById('input-chat-text').addEventListener('input', updateComposeButtons);
+    document.getElementById('btn-close-location').onclick = () => closeLocationModal();
+    document.getElementById('btn-location-retry').onclick = () => requestCurrentLocation();
+    document.getElementById('btn-location-send').onclick = () => sendCurrentLocation();
+    document.getElementById('input-location-manual').addEventListener('input', (e) => {
+      const l = parseLocationInput(e.target.value);
+      if (l) { locationReqSeq++; locationCurrent = l; setLocationStatus(`Localização digitada: ${locationLabel(l)}`, true); }
+      else if (e.target.value.trim()) { locationCurrent = null; setLocationStatus('Não reconheci as coordenadas. Use o formato "-29.68, -51.13".'); }
+    });
+  }
+
   function renderChatMediaHtml(m, isMe) {
     const tid = m.transferId || (m.media && m.media.transferId);
     const tr = transfers[tid];
@@ -3733,6 +4779,8 @@
     } else {
       action = `<button type="button" data-ps-call="downloadChatMedia" data-ps-args="${safeTid}" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold shadow active:scale-95">${tr && tr.status === 'error' ? 'Tentar de novo' : 'Baixar'}</button>`;
     }
+
+    if (m.voice) return renderVoiceHtml(m, isMe, tid, previewUrl, action, progressBar);
 
     if (previewUrl) {
       let preview = '';
@@ -3775,7 +4823,7 @@
   function renderChatMessageHtml(m) {
     const isMe = m.sender === myTag;
     const timeStr = formatTime(m.timestamp);
-    const mediaHtml = (m.media || m.transferId) ? renderChatMediaHtml(m, isMe) : '';
+    const mediaHtml = m.location ? renderLocationHtml(m) : (m.media || m.transferId) ? renderChatMediaHtml(m, isMe) : '';
     const tick = !isMe ? '' : m.status === 'READ' ? '<span class="text-sky-300 font-bold ml-0.5">✓✓</span>'
       : m.status === 'DELIVERED' ? '<span class="text-indigo-200 font-bold ml-0.5">✓✓</span>'
       : '<span class="text-indigo-200 font-bold ml-0.5">✓</span>';
@@ -3785,7 +4833,7 @@
           <div class="max-w-[80%] rounded-2xl ${mediaHtml ? 'px-1.5 pt-1.5 pb-1' : 'px-3 py-1.5'} shadow-sm ${isMe ? 'bg-indigo-600 text-white rounded-tr-xs' : 'bg-slate-800 border border-slate-700/60 text-slate-100 rounded-tl-xs'}">
             ${m.forwarded ? '<span class="text-[9px] italic opacity-70 block px-1.5">↪ Encaminhada</span>' : ''}
             ${mediaHtml}
-            ${m.text ? `<p class="text-[13px] leading-snug break-words select-text ${mediaHtml ? 'px-1.5 pt-1' : ''}">${escapeHtml(m.text)}</p>` : ''}
+            ${m.text && !m.location ? `<p class="text-[13px] leading-snug break-words select-text ${mediaHtml ? 'px-1.5 pt-1' : ''}">${escapeHtml(m.text)}</p>` : ''}
             <div class="flex items-center justify-end gap-1 mt-0.5 text-[10px] ${isMe ? 'text-indigo-200' : 'text-slate-400'} font-medium select-none ${mediaHtml ? 'px-1.5' : ''}">
               ${reactions ? `<span class="mr-1">${escapeHtml(reactions)}</span>` : ''}
               <span>${timeStr}</span>
@@ -3887,6 +4935,7 @@
     let previewEl = document.getElementById('chat-attachment-preview');
     if (!previewEl) return;
 
+    updateComposeButtons();
     if (chatAttachedFiles.length === 0) {
       previewEl.classList.add('hidden');
       previewEl.innerHTML = '';
@@ -3965,6 +5014,7 @@
   }
 
   function avatarFor(tag, size) {
+    if (isOfficialTag(tag)) return officialAvatarHtml();
     const c = getContacts()[tag];
     const p = peerRegistry[tag];
     return (c && c.avatar) || (p && p.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, size || 40) : '');
@@ -4127,7 +5177,7 @@
   function userRowHtml(tag, name, contact) {
     const msgs = chatMessages[tag] || [];
     const last = msgs[msgs.length - 1];
-    const sub = last ? (last.text ? escapeHtml(last.text.slice(0, 50)) : '📎 arquivo') : escapeHtml(tag);
+    const sub = last ? escapeHtml(messageSummary(last).slice(0, 50)) : escapeHtml(tag);
     return `
       <div data-start-chat-target="${escapeHtml(tag)}" class="p-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500 transition-colors flex items-center justify-between gap-2 cursor-pointer">
         <div class="flex items-center gap-2.5 min-w-0">
@@ -4137,7 +5187,7 @@
             <span class="text-[10px] text-slate-400 block truncate">${sub}</span>
           </div>
         </div>
-        ${contact ? routeBadgeHtml(tag) : `<button type="button" data-search-add="${escapeHtml(tag)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold shrink-0">+ Adicionar</button>`}
+        ${isOfficialTag(tag) ? '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 shrink-0">✔ Oficial</span>' : contact ? routeBadgeHtml(tag) : `<button type="button" data-search-add="${escapeHtml(tag)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold shrink-0">+ Adicionar</button>`}
       </div>`;
   }
 
@@ -4745,6 +5795,17 @@
     }
     let prof = await PulseShareCrypto.deriveIdentity(cleanName || 'usuario', words);
     const suffix = prof.pubKeyHex.slice(0, 6);
+    const deletedErr = 'Esta conta foi excluída pelo administrador do PulseShare.';
+    if (adminDeleted.has(suffix)) {
+      // Pode ter sido restaurada depois: confere com a rede antes de recusar
+      status('Verificando a conta na rede...', 'info');
+      if (await ensureNetworkForProbe()) {
+        requestAdminState(true);
+        await new Promise((r) => setTimeout(r, 3500));
+      }
+      status('');
+      if (adminDeleted.has(suffix)) throw new Error(deletedErr);
+    }
 
     // Conta já salva neste aparelho: só ativa (o nome dela já foi verificado)
     const existing = PulseShareCrypto.ProfilesManager.getAllProfiles().find((p) => p.pubKeyHex === prof.pubKeyHex);
@@ -4765,6 +5826,7 @@
     }
     const res = await probeName(cleanName, suffix);
     status('');
+    if (adminDeleted.has(suffix)) throw new Error(deletedErr);
     if (!cleanName) {
       if (!res.knownName) throw new Error('Não encontramos o nome desta conta na rede (nenhum aparelho dela online). Digite o seu nome de usuário.');
       cleanName = res.knownName;
@@ -5440,7 +6502,7 @@
     initNotificationSettingsEvents();
 
     // Botões gerados em HTML dinâmico (sem onclick inline: a CSP da extensão bloqueia)
-    const PS_CALLS = ['psShareAction', 'downloadChatMedia', 'psSaveChatMedia', 'psOpenChatImage', 'acceptTransfer'];
+    const PS_CALLS = ['psShareAction', 'downloadChatMedia', 'psSaveChatMedia', 'psOpenChatImage', 'acceptTransfer', 'psOpenLocation', 'psCopyLocation'];
     document.addEventListener('click', (e) => {
       const el = e.target.closest('[data-ps-call]');
       if (!el) return;
@@ -5497,6 +6559,7 @@
         sendChatMessage(activeChatPeer, text);
       }
       input.value = '';
+      updateComposeButtons();
     };
 
     document.getElementById('input-chat-text').onkeydown = (e) => {
@@ -5505,10 +6568,9 @@
       }
     };
 
-    document.getElementById('btn-chat-attach').onclick = () => {
-      pendingChatAttachment = true;
-      Native.pickFiles();
-    };
+    // Clipe: menu com Foto e vídeo / Áudio / Documento / Localização
+    document.getElementById('btn-chat-attach').onclick = () => toggleAttachMenu();
+    initVoiceLocationProfileEvents();
 
     // Menu do contato
     document.getElementById('btn-chat-contact-menu').onclick = () => {
@@ -5730,8 +6792,12 @@
     if (!loggedIn) {
       // Sem conta neste dispositivo: tela de entrada (o fundo da extensão só espera)
       if (!IS_BACKGROUND_PAGE) showOnboarding();
+      showAdminRemovedNotice();
       return;
     }
+    // Registros do administrador já guardados: exclusões e mensagens oficiais desta conta
+    applyAdminState({ notify: false });
+    if (!activeProfile) return; // a própria conta foi excluída (recarregando)
     updateHeaderStatus();
     connectBrokers();
     switchTab('chat'); // Abertura direta no chat por padrão
