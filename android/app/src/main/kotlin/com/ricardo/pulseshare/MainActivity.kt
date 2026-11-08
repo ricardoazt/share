@@ -78,6 +78,29 @@ class MainActivity : ComponentActivity() {
         Log.i("PulseShare", "Permissão de notificação concedida: $isGranted")
     }
 
+    // Câmera pedida na hora em que a página abre o leitor de QR (getUserMedia)
+    private var pendingWebPermission: PermissionRequest? = null
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val req = pendingWebPermission
+        pendingWebPermission = null
+        if (req != null) {
+            if (granted) req.grant(req.resources) else req.deny()
+        }
+    }
+
+    private fun handleWebPermission(request: PermissionRequest) {
+        val wantsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+        if (wantsCamera && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            pendingWebPermission?.deny()
+            pendingWebPermission = request
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        } else {
+            request.grant(request.resources)
+        }
+    }
+
     private val runtimePermissionsLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -88,9 +111,7 @@ class MainActivity : ComponentActivity() {
 
     fun requestAppPermissions() {
         val needed = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            needed.add(Manifest.permission.CAMERA)
-        }
+        // A câmera não é pedida aqui: só quando o leitor de QR abre (handleWebPermission)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                 needed.add(Manifest.permission.BLUETOOTH_SCAN)
@@ -149,10 +170,8 @@ class MainActivity : ComponentActivity() {
         // Suporte WebRTC e Permissões
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest?) {
-                request?.let {
-                    // Concede permissões para WebRTC (DataChannel/Audio/Video)
-                    it.grant(it.resources)
-                }
+                // WebRTC / leitor de QR: pede a permissão do Android se faltar
+                request?.let { req -> runOnUiThread { handleWebPermission(req) } }
             }
 
             override fun onShowFileChooser(

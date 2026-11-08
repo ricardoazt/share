@@ -9,8 +9,12 @@
   const IS_ANDROID = typeof window.PulseShareNative !== 'undefined';
   const IS_EXTENSION = location.protocol === 'chrome-extension:';
   const IS_BACKGROUND_PAGE = new URLSearchParams(location.search).get('bg') === '1';
+  // App de desktop (Electron, pacote .deb): ponte em desktop/preload.js
+  const IS_DESKTOP = typeof window.PulseShareDesktop !== 'undefined';
+  const Desk = window.PulseShareDesktop || null;
   document.documentElement.classList.toggle('is-android', IS_ANDROID);
   document.documentElement.classList.toggle('is-extension', IS_EXTENSION);
+  document.documentElement.classList.toggle('is-desktop', IS_DESKTOP);
   'use strict';
 
   // ==========================================================================
@@ -124,7 +128,11 @@
   let notifyEnabled = localStorage.getItem('ps_notify_enabled') !== 'false';
   let notifySound = localStorage.getItem('ps_notify_sound') || 'pulso';
   let notifyVibration = localStorage.getItem('ps_notify_vibration') || 'dupla';
-  let backgroundMode = localStorage.getItem('ps_background_mode') !== 'false';
+  // Padrão: ligado no celular/extensão; no app de desktop só se a pessoa ligar
+  // (lá ele também abre o PulseShare sozinho ao entrar no computador)
+  let backgroundMode = IS_DESKTOP
+    ? localStorage.getItem('ps_background_mode') === 'true'
+    : localStorage.getItem('ps_background_mode') !== 'false';
   let coreLost = false; // extensão: outra janela assumiu a conexão
 
   // Registros em memória
@@ -226,6 +234,27 @@
   // ==========================================================================
   // 3. COMUNICAÇÃO NATIVA COM ANDROID (PULSESHARE NATIVE BRIDGE)
   // ==========================================================================
+  // Aviso rápido na própria página (computador/extensão; no Android é o Toast nativo)
+  let webToastTimer = 0;
+  function showWebToast(msg) {
+    console.log('Toast:', msg);
+    if (!document.body || IS_BACKGROUND_PAGE) return;
+    let el = document.getElementById('ps-web-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'ps-web-toast';
+      el.setAttribute('role', 'status');
+      el.style.cssText = 'position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:90;max-width:min(92vw,420px);' +
+        'padding:10px 14px;border-radius:12px;background:rgba(15,23,42,.96);border:1px solid #334155;color:#e2e8f0;' +
+        'font-size:12px;line-height:1.35;box-shadow:0 10px 30px rgba(0,0,0,.45);pointer-events:none;transition:opacity .2s;word-break:break-word';
+      document.body.appendChild(el);
+    }
+    el.textContent = String(msg);
+    el.style.opacity = '1';
+    clearTimeout(webToastTimer);
+    webToastTimer = setTimeout(() => { el.style.opacity = '0'; }, 3200);
+  }
+
   const Native = {
     isAvailable: () => typeof window.PulseShareNative !== 'undefined',
     pickFiles: () => {
@@ -274,23 +303,28 @@
     },
     openFile: (path) => {
       if (Native.isAvailable()) window.PulseShareNative.openDownloadedFile(path);
+      else if (IS_DESKTOP && path && path.startsWith('/')) Desk.openPath(path);
       else if (path && path.startsWith('blob:')) window.open(path, '_blank');
     },
     getDownloadDirectory: () => {
       if (Native.isAvailable() && window.PulseShareNative.getDownloadDirectory) {
         return window.PulseShareNative.getDownloadDirectory();
       }
+      if (IS_DESKTOP) return Desk.getDownloadDirectory();
       return '/storage/emulated/0/Download/' + (customDownloadFolder || 'PulseShare');
     },
     setDownloadDirectory: (folder) => {
       if (Native.isAvailable() && window.PulseShareNative.setDownloadDirectory) {
         return window.PulseShareNative.setDownloadDirectory(folder);
       }
+      if (IS_DESKTOP) return Desk.setDownloadDirectory(folder);
       return '/storage/emulated/0/Download/' + (folder || 'PulseShare');
     },
     openDownloadFolder: () => {
       if (Native.isAvailable() && window.PulseShareNative.openDownloadFolder) {
         window.PulseShareNative.openDownloadFolder();
+      } else if (IS_DESKTOP) {
+        Desk.openDownloadFolder();
       } else {
         Native.toast('Diretório: ' + Native.getDownloadDirectory());
       }
@@ -305,6 +339,7 @@
     },
     openUrl: (url) => {
       if (Native.isAvailable() && window.PulseShareNative.openUrl) window.PulseShareNative.openUrl(url);
+      else if (IS_DESKTOP) Desk.openExternal(url);
       else window.open(url, '_blank', 'noopener');
     },
     copy: (text) => {
@@ -313,7 +348,7 @@
     },
     toast: (msg) => {
       if (Native.isAvailable()) window.PulseShareNative.showToast(msg);
-      else console.log('Toast:', msg);
+      else showWebToast(msg);
     },
     startKeepAlive: (status) => {
       if (Native.isAvailable()) window.PulseShareNative.startKeepAlive(status);
@@ -331,7 +366,9 @@
         window.PulseShareNative.notifyMessage(title, body, peerTag || '', notifySound, notifyVibration);
         return;
       }
-      if (IS_EXTENSION && window.chrome && chrome.runtime && chrome.runtime.sendMessage) {
+      if (IS_DESKTOP) {
+        Desk.notify(title, body, peerTag || '');
+      } else if (IS_EXTENSION && window.chrome && chrome.runtime && chrome.runtime.sendMessage) {
         try { chrome.runtime.sendMessage({ type: 'PS_NOTIFY', title, body, peerTag: peerTag || '', kind: kind || 'chat' }); } catch (e) {}
       } else if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
         try { new Notification(title, { body, tag: peerTag || undefined, icon: 'icons/icon128.png' }); } catch (e) {}
@@ -345,8 +382,9 @@
       }
       playNotifySound(notifySound);
     },
-    setBackgroundMode: (on) => {
+    setBackgroundMode: (on, fromUser) => {
       if (IS_ANDROID && window.PulseShareNative.setBackgroundMode) window.PulseShareNative.setBackgroundMode(Boolean(on));
+      if (IS_DESKTOP) Desk.setBackgroundMode(Boolean(on), Boolean(fromUser));
       if (IS_EXTENSION && window.chrome && chrome.runtime) {
         try { chrome.runtime.sendMessage({ type: 'PS_SET_BACKGROUND', enabled: Boolean(on) }); } catch (e) {}
       }
@@ -356,6 +394,7 @@
     },
     consumePendingOpenChat: () => {
       if (IS_ANDROID && window.PulseShareNative.consumePendingOpenChat) return window.PulseShareNative.consumePendingOpenChat() || '';
+      if (IS_DESKTOP && desktopLaunch) { const t = desktopLaunch.chat || ''; desktopLaunch.chat = ''; return t; }
       return '';
     },
     // BLUETOOTH BLE MESH
@@ -393,6 +432,9 @@
 
   let pendingChatAttachment = false;
   let chatAttachedFiles = [];
+  // Desktop: conversa/links pedidos na linha de comando (notificação, pulseshare://)
+  let desktopLaunch = null;
+  try { desktopLaunch = IS_DESKTOP ? Desk.consumeLaunch() : null; } catch (e) { desktopLaunch = null; }
 
   // Callbacks globais acionados pelo Kotlin
   window.PulseShareNativeCallback = {
@@ -912,9 +954,10 @@
   async function confirmUsernameChange() {
     if (!pendingRename || !activeProfile) return;
     const vInput = document.getElementById('setting-username-verify-input');
-    const typed = String(vInput ? vInput.value : '').trim().toLowerCase();
+    const plain = (w) => String(w || '').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const typed = plain(vInput ? vInput.value : '');
     const words = (activeProfile.seedWords || '').split(/\s+/);
-    if (!typed || typed !== words[pendingRename.wordIndex]) {
+    if (!typed || typed !== plain(words[pendingRename.wordIndex])) {
       setUsernameStatus('Palavra incorreta. A verificação falhou.', 'error');
       if (vInput) vInput.select();
       return;
@@ -1036,7 +1079,7 @@
 
   function openAddAccount() {
     document.getElementById('modal-settings').classList.add('hidden');
-    ['onb-access-key', 'onb-access-name', 'onb-words', 'onb-new-name'].forEach((id) => {
+    ['onb-access-key', 'onb-access-name', 'onb-words', 'onb-words-name', 'onb-new-name'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.value = '';
     });
@@ -1604,7 +1647,7 @@
       reghash: myRegHash,
       nodeId: nodeId,
       photoHash: (activeProfile && activeProfile.photoHash) || '',
-      clientType: IS_ANDROID ? 'android' : IS_EXTENSION ? 'extension-app' : 'web',
+      clientType: IS_ANDROID ? 'android' : IS_DESKTOP ? 'desktop' : IS_EXTENSION ? 'extension-app' : 'web',
       relayMode: meshRelay
     });
   }
@@ -2144,7 +2187,7 @@
   }
 
   function myRosterSnapshot() {
-    const me = myTag ? [{ tag: myTag, nodeId, lastSeen: Date.now(), status: 'online', regHash: myRegHash, clientType: Native.isAvailable() ? 'android' : 'web' }] : [];
+    const me = myTag ? [{ tag: myTag, nodeId, lastSeen: Date.now(), status: 'online', regHash: myRegHash, clientType: Native.isAvailable() ? 'android' : IS_DESKTOP ? 'desktop' : 'web' }] : [];
     return me.concat(Object.values(peerRegistry).slice(0, 50).map((p) => ({ tag: p.tag, lastSeen: p.lastSeen, status: 'online', regHash: p.reghash })));
   }
 
@@ -4218,6 +4261,8 @@
     // Itens de texto/link não são arquivos (antes iam para a lista de envio e quebravam o envio)
     const files = items.filter(it => !it.type || it.type === 'file');
     const texts = items.filter(it => it.type === 'text' || it.type === 'link').map(it => String(it.content || ''));
+    const loginLink = texts.find(t => /^pulseshare:\/\/login\?/i.test(t.trim()));
+    if (loginLink) { handleScannedQr(loginLink.trim()); return; }
     const shareLink = texts.map(t => (t.match(/https?:\/\/\S*[#?&]share=\S+/) || [])[0]).find(Boolean);
     if (shareLink) {
       const input = document.getElementById('input-open-link');
@@ -4510,6 +4555,142 @@
     saveTextFileOnDevice(`pulseshare-recuperacao-${profile.tag.replace(/^@/, '')}.txt`, text);
   }
 
+  // ---------- backup completo do aparelho (contas, conversas, contatos) ----------
+  // Serve para levar tudo de um aparelho para outro (ex.: extensão do Chrome → app
+  // de desktop). Contém as chaves das contas: quem tiver o arquivo entra nelas.
+  // A mídia do chat (IndexedDB) não vai junto. ps_node_id não vai (é do aparelho).
+  const BACKUP_SKIP_KEYS = new Set(['ps_node_id', 'ps_live_account_id', 'ps_legacy_migrated', 'ps_background_mode',
+    'ps_download_folder']);
+
+  function buildDeviceBackup() {
+    saveChatMessagesToStorage();
+    const accounts = {};
+    const live = localStorage.getItem(LIVE_ACCOUNT_KEY) || accountStoreId(rawActiveProfile());
+    const device = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith('ps_')) continue;
+      const m = k.match(/^ps_acct_(k[0-9a-f]+)__(.+)$/);
+      if (m) {
+        if (m[2] === 'ps_node_id') continue;
+        (accounts[m[1]] = accounts[m[1]] || {})[m[2]] = localStorage.getItem(k);
+      } else if (ACCOUNT_SCOPED_KEYS.includes(k)) {
+        if (k === 'ps_node_id' || !live) continue;
+        (accounts[live] = accounts[live] || {})[k] = localStorage.getItem(k);
+      } else if (!BACKUP_SKIP_KEYS.has(k)) {
+        device[k] = localStorage.getItem(k);
+      }
+    }
+    return {
+      format: 'pulseshare-backup', v: 1, createdAt: Date.now(),
+      from: IS_ANDROID ? 'android' : IS_DESKTOP ? 'desktop' : IS_EXTENSION ? 'extension' : 'web',
+      activeProfileId: localStorage.getItem('ps_active_profile_id_v2') || '',
+      accounts, device
+    };
+  }
+
+  async function exportDeviceBackup() {
+    if (!confirm('O backup leva TODAS as contas deste aparelho com as chaves de acesso, conversas e contatos.\n\nQuem tiver o arquivo entra nas suas contas: guarde-o em local seguro e apague depois de usar.\n\nContinuar?')) return;
+    const data = JSON.stringify(buildDeviceBackup());
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+    saveTextFileOnDevice(`pulseshare-backup-${stamp}.json`, data);
+  }
+
+  // Junta dois valores JSON sem perder nada do aparelho: listas viram união
+  // (mensagens pelo id), objetos juntam as chaves (o que já existe aqui vence).
+  function mergeJsonValues(mine, theirs) {
+    if (Array.isArray(mine) && Array.isArray(theirs)) {
+      const keyOf = (x) => (x && typeof x === 'object' && x.id) ? 'id:' + x.id : 'v:' + JSON.stringify(x);
+      const seen = new Set(mine.map(keyOf));
+      const out = mine.slice();
+      theirs.forEach((x) => { const k = keyOf(x); if (!seen.has(k)) { seen.add(k); out.push(x); } });
+      if (out.some((x) => x && typeof x === 'object' && x.timestamp)) {
+        out.sort((a, b) => (Number(a && a.timestamp) || 0) - (Number(b && b.timestamp) || 0));
+      }
+      return out;
+    }
+    if (mine && theirs && typeof mine === 'object' && typeof theirs === 'object' && !Array.isArray(mine) && !Array.isArray(theirs)) {
+      const out = Object.assign({}, mine);
+      Object.keys(theirs).forEach((k) => {
+        out[k] = Object.prototype.hasOwnProperty.call(mine, k) ? mergeJsonValues(mine[k], theirs[k]) : theirs[k];
+      });
+      return out;
+    }
+    return mine === undefined || mine === null ? theirs : mine;
+  }
+
+  function mergeStoredValue(key, incoming) {
+    if (incoming === null || incoming === undefined) return;
+    const cur = localStorage.getItem(key);
+    if (cur === null) { localStorage.setItem(key, incoming); return; }
+    try {
+      localStorage.setItem(key, JSON.stringify(mergeJsonValues(JSON.parse(cur), JSON.parse(incoming))));
+    } catch (e) { /* valor simples (texto): fica o deste aparelho */ }
+  }
+
+  function importDeviceBackup(text) {
+    let b;
+    try { b = JSON.parse(text); } catch (e) { b = null; }
+    if (!b || b.format !== 'pulseshare-backup' || !b.accounts) throw new Error('Esse arquivo não é um backup do PulseShare.');
+    const theirProfiles = (() => { try { return JSON.parse((b.device || {}).ps_profiles_v2 || '[]') || []; } catch (e) { return []; } })();
+    if (!theirProfiles.length) throw new Error('O backup não tem nenhuma conta.');
+    const names = theirProfiles.map((p) => p.tag || p.name).filter(Boolean).join(', ');
+    if (!confirm(`Importar o backup?\n\nContas: ${names}\n\nAs conversas e os contatos são juntados aos deste aparelho (nada daqui é apagado).`)) return false;
+    saveChatMessagesToStorage();
+    // 1) perfis (chaves) que este aparelho ainda não tem
+    const mine = rawProfiles();
+    const have = new Set(mine.map((p) => p.pubKeyHex));
+    theirProfiles.forEach((p) => { if (p && p.pubKeyHex && !have.has(p.pubKeyHex)) { mine.push(p); have.add(p.pubKeyHex); } });
+    localStorage.setItem('ps_profiles_v2', JSON.stringify(mine));
+    // 2) dados de cada conta: na conta ao vivo ou guardados (ps_acct_…)
+    const live = localStorage.getItem(LIVE_ACCOUNT_KEY) || '';
+    Object.keys(b.accounts).forEach((acct) => {
+      if (!/^k[0-9a-f]+$/.test(acct)) return;
+      const data = b.accounts[acct] || {};
+      ACCOUNT_SCOPED_KEYS.forEach((k) => {
+        if (k === 'ps_node_id' || !(k in data)) return;
+        mergeStoredValue(acct === live ? k : accountStoreKey(acct, k), data[k]);
+      });
+    });
+    // 3) catálogo de nomes e preferências que este aparelho ainda não tem
+    const dev = b.device || {};
+    Object.keys(dev).forEach((k) => {
+      if (!/^ps_[a-z0-9_]+$/.test(k) || k === 'ps_profiles_v2' || k === 'ps_active_profile_id_v2' || BACKUP_SKIP_KEYS.has(k)) return;
+      if (k === 'ps_name_registry_v1') mergeStoredValue(k, dev[k]);
+      else if (localStorage.getItem(k) === null) localStorage.setItem(k, dev[k]);
+    });
+    // 4) sem conta ativa aqui: entra na que estava ativa no backup
+    if (!activeProfile) {
+      const act = theirProfiles.find((p) => p.id === b.activeProfileId) || theirProfiles[0];
+      const target = mine.find((p) => p.pubKeyHex === act.pubKeyHex);
+      if (target) localStorage.setItem('ps_active_profile_id_v2', target.id);
+    }
+    return true;
+  }
+
+  function pickBackupAndImport() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = () => {
+      const f = input.files && input.files[0];
+      if (!f) return;
+      f.text().then((text) => {
+        try {
+          if (importDeviceBackup(text)) {
+            Native.toast('Backup importado. Recarregando...');
+            if (Native.isBleAvailable()) Native.stopBleMesh();
+            setTimeout(() => location.reload(), 600);
+          }
+        } catch (e) {
+          alert(e && e.message ? e.message : String(e));
+        }
+      }).catch(() => Native.toast('Não foi possível ler o arquivo.'));
+    };
+    input.click();
+  }
+
   // Lê chave / palavras / nome de um texto (arquivo .txt, QR Code ou campo colado)
   function parseLoginText(text) {
     const t = String(text || '');
@@ -4534,6 +4715,8 @@
     if (!el) return;
     el.textContent = msg || '';
     el.className = 'text-center text-[11px] ' + (tone === 'info' ? 'text-slate-300' : 'text-rose-400') + (msg ? '' : ' hidden');
+    // Com o teclado aberto o aviso (no fim da tela) ficava fora da vista
+    if (msg) { try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {} }
   }
 
   function showOnboarding() {
@@ -4546,7 +4729,12 @@
   // opts.status = função para mostrar o andamento.
   async function loginWithWords(words, name, opts = {}) {
     const status = opts.status || onbStatus;
-    words = String(words || '').trim().toLowerCase().split(/\s+/).join(' ');
+    const chk = PulseShareCrypto.checkMnemonic ? PulseShareCrypto.checkMnemonic(words) : null;
+    if (chk && !chk.words) {
+      if (chk.unknown.length) throw new Error(`Palavra${chk.unknown.length > 1 ? 's' : ''} fora da lista do PulseShare: ${chk.unknown.slice(0, 4).join(', ')}. Confira a grafia.`);
+      throw new Error(`São 7 palavras — você digitou ${chk.count}.`);
+    }
+    words = chk ? chk.words : String(words || '').trim().toLowerCase().split(/\s+/).join(' ');
     if (!PulseShareCrypto.isValidMnemonic(words)) throw new Error('As 7 palavras não conferem com a lista do PulseShare.');
     let cleanName = cleanUsername(name || '');
     if (cleanName) {
@@ -4633,44 +4821,69 @@
   }
 
   function initOnboardingEvents() {
-    const run = async (fn) => {
+    // Um login por vez: a consulta do nome na rede leva alguns segundos e tocar de
+    // novo no botão disparava vários logins ao mesmo tempo
+    let onbBusy = false;
+    const busyButtons = ['onb-btn-login-key', 'onb-btn-login-words', 'onb-btn-create', 'onb-btn-import-txt', 'onb-btn-scan'];
+    const run = async (fn, btnId) => {
+      if (onbBusy) return;
+      onbBusy = true;
+      const btn = btnId && document.getElementById(btnId);
+      const label = btn ? btn.textContent : '';
+      busyButtons.forEach((id) => { const b = document.getElementById(id); if (b) { b.disabled = true; b.classList.add('opacity-60'); } });
+      if (btn) btn.textContent = 'Aguarde...';
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); // fecha o teclado
       onbStatus('');
-      try { await fn(); } catch (e) { onbStatus(e && e.message ? e.message : String(e)); }
+      try { await fn(); } catch (e) { onbStatus(e && e.message ? e.message : String(e)); } finally {
+        onbBusy = false;
+        busyButtons.forEach((id) => { const b = document.getElementById(id); if (b) { b.disabled = false; b.classList.remove('opacity-60'); } });
+        if (btn) btn.textContent = label;
+      }
     };
     document.getElementById('onb-btn-login-key').onclick = () => run(() => loginWithKey(
-      document.getElementById('onb-access-key').value, document.getElementById('onb-access-name').value));
+      document.getElementById('onb-access-key').value, document.getElementById('onb-access-name').value), 'onb-btn-login-key');
     document.getElementById('onb-btn-words').onclick = () => {
-      document.getElementById('onb-words-box').classList.toggle('hidden');
+      const box = document.getElementById('onb-words-box');
+      box.classList.toggle('hidden');
+      if (!box.classList.contains('hidden')) {
+        try { box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
+        document.getElementById('onb-words').focus();
+      }
     };
-    document.getElementById('onb-btn-login-words').onclick = () => run(() => loginWithWords(
-      document.getElementById('onb-words').value, document.getElementById('onb-access-name').value));
-    document.getElementById('onb-btn-import-txt').onclick = () => pickTextFile((text) => run(() => loginFromParsed(parseLoginText(text))));
+    document.getElementById('onb-btn-login-words').onclick = () => run(async () => {
+      const nameEl = document.getElementById('onb-words-name');
+      try {
+        await loginWithWords(document.getElementById('onb-words').value,
+          nameEl.value || document.getElementById('onb-access-name').value);
+      } catch (e) {
+        // A rede não conhece o nome desta conta: o campo de nome fica logo abaixo
+        if (!nameEl.value && /nome de usu/i.test(String(e && e.message))) setTimeout(() => nameEl.focus(), 50);
+        throw e;
+      }
+    }, 'onb-btn-login-words');
+    document.getElementById('onb-btn-import-txt').onclick = () => pickTextFile((text) => run(() => loginFromParsed(parseLoginText(text)), 'onb-btn-import-txt'));
     document.getElementById('onb-btn-scan').onclick = () => openQrScanner();
+    document.getElementById('onb-btn-import-backup').onclick = () => pickBackupAndImport();
     const btnCreate = document.getElementById('onb-btn-create');
     btnCreate.onclick = () => run(async () => {
       const name = cleanUsername(document.getElementById('onb-new-name').value);
       const ruleErr = nameRuleError(name);
       if (ruleErr) throw new Error('Nome: ' + ruleErr);
       const words = PulseShareCrypto.generate7WordMnemonic();
-      btnCreate.disabled = true;
-      let prof;
-      try {
-        prof = await loginWithWords(words, name, { showKeyFirst: true, isNew: true });
-      } finally {
-        btnCreate.disabled = false;
-      }
+      const prof = await loginWithWords(words, name, { showKeyFirst: true, isNew: true });
       const key = await PulseShareCrypto.wordsToAccessKey(words);
       document.getElementById('created-access-key').textContent = key;
       document.getElementById('created-seed-words').textContent = words;
       document.getElementById('view-account-created').classList.remove('hidden');
       document.getElementById('btn-created-export').onclick = () => exportRecoveryTxt(prof);
       document.getElementById('btn-created-continue').onclick = () => location.reload();
-    });
+    }, 'onb-btn-create');
   }
 
   // ---------- leitor de QR Code (câmera: só no celular) ----------
   let qrScanStream = null;
   let qrScanRaf = 0;
+  let qrScanSession = 0;
 
   function loadJsQr() {
     if (window.jsQR) return Promise.resolve(window.jsQR);
@@ -4688,41 +4901,82 @@
     if (el) el.textContent = text;
   }
 
+  function qrCameraErrorText(e) {
+    const n = e && e.name;
+    if (n === 'NotAllowedError' || n === 'SecurityError') {
+      return IS_ANDROID
+        ? 'Sem permissão para a câmera. Libere em Configurações do Android → Apps → PulseShare → Permissões → Câmera.'
+        : 'Sem permissão para a câmera.';
+    }
+    if (n === 'NotFoundError' || n === 'OverconstrainedError') return 'Nenhuma câmera encontrada. Cole a chave de acesso abaixo.';
+    if (n === 'NotReadableError' || n === 'AbortError') return 'A câmera está em uso por outro app. Feche-o e tente de novo.';
+    return 'Não foi possível abrir a câmera: ' + (e && e.message ? e.message : e);
+  }
+
   async function openQrScanner() {
     const modal = document.getElementById('modal-qr-pair-scanner');
     modal.classList.remove('hidden');
-    if (!IS_ANDROID) return; // computador: só colar a chave
+    const camBox = document.getElementById('qr-scan-camera-box');
+    if (qrScanStream) return; // já aberta
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      if (camBox) camBox.classList.add('hidden');
+      setQrScanStatus('Este dispositivo não tem câmera disponível. Cole a chave de acesso abaixo.');
+      return;
+    }
+    if (camBox) camBox.classList.remove('hidden');
+    const myOpen = ++qrScanSession;
     try {
       setQrScanStatus('Abrindo a câmera...');
       const decode = await loadJsQr();
-      qrScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false });
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      } catch (e1) {
+        if (e1 && (e1.name === 'NotAllowedError' || e1.name === 'SecurityError')) throw e1;
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); // webcam simples
+      }
+      // Fechou o leitor enquanto a câmera abria
+      if (myOpen !== qrScanSession || modal.classList.contains('hidden')) { stream.getTracks().forEach((t) => t.stop()); return; }
+      qrScanStream = stream;
       const video = document.getElementById('qr-scan-video');
-      video.srcObject = qrScanStream;
+      const facing = (stream.getVideoTracks()[0] && stream.getVideoTracks()[0].getSettings().facingMode) || '';
+      // Webcam frontal (computador): espelha só a imagem, a leitura usa o quadro original
+      video.classList.toggle('qr-mirror', !IS_ANDROID && facing !== 'environment');
+      video.srcObject = stream;
       await video.play();
       setQrScanStatus('Aponte para o QR Code mostrado no outro dispositivo.');
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       let last = 0;
+      let flip = false;
       const tick = (ts) => {
-        if (!qrScanStream) return;
+        if (!qrScanStream || myOpen !== qrScanSession) return;
         qrScanRaf = requestAnimationFrame(tick);
-        if (ts - last < 120 || video.readyState < 2) return;
+        if (ts - last < 150 || video.readyState < 2 || !video.videoWidth) return;
         last = ts;
-        const w = 640;
-        const h = Math.round(video.videoHeight * (w / (video.videoWidth || w))) || w;
+        // Recorte central quadrado (onde fica a moldura), reduzido para 600 px
+        const side = Math.min(video.videoWidth, video.videoHeight);
+        const sx = (video.videoWidth - side) / 2;
+        const sy = (video.videoHeight - side) / 2;
+        const w = Math.min(600, side);
         canvas.width = w;
-        canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        const res = decode(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+        canvas.height = w;
+        ctx.drawImage(video, sx, sy, side, side, 0, 0, w, w);
+        // Alterna normal/invertido (QR claro em tela escura) sem dobrar o custo de cada quadro
+        flip = !flip;
+        const res = decode(ctx.getImageData(0, 0, w, w).data, w, w, { inversionAttempts: flip ? 'dontInvert' : 'onlyInvert' });
         if (res && res.data) handleScannedQr(res.data);
       };
       qrScanRaf = requestAnimationFrame(tick);
     } catch (e) {
-      setQrScanStatus('Não foi possível abrir a câmera: ' + (e && e.message ? e.message : e));
+      if (myOpen !== qrScanSession) return;
+      if (e && e.name === 'NotFoundError' && camBox) camBox.classList.add('hidden');
+      setQrScanStatus(qrCameraErrorText(e));
     }
   }
 
   function closeQrScanner() {
+    qrScanSession++;
     if (qrScanRaf) cancelAnimationFrame(qrScanRaf);
     qrScanRaf = 0;
     if (qrScanStream) qrScanStream.getTracks().forEach((t) => t.stop());
@@ -4998,7 +5252,9 @@
     if (hint) {
       hint.textContent = IS_ANDROID
         ? 'Mantém uma notificação fixa e continua recebendo com o app fechado.'
-        : IS_EXTENSION
+        : IS_DESKTOP
+          ? 'Fechar a janela deixa o PulseShare na bandeja do sistema, recebendo, e ele abre sozinho ao entrar no computador.'
+          : IS_EXTENSION
           ? 'Continua recebendo com a janela fechada (enquanto o Chrome estiver aberto).'
           : 'No navegador, recebe apenas com a página aberta.';
     }
@@ -5008,7 +5264,7 @@
     document.getElementById('setting-notify-enabled').onchange = (e) => {
       notifyEnabled = e.target.checked;
       localStorage.setItem('ps_notify_enabled', String(notifyEnabled));
-      if (notifyEnabled && !IS_ANDROID && !IS_EXTENSION && typeof Notification !== 'undefined' && Notification.permission === 'default') {
+      if (notifyEnabled && !IS_ANDROID && !IS_EXTENSION && !IS_DESKTOP && typeof Notification !== 'undefined' && Notification.permission === 'default') {
         Notification.requestPermission();
       }
     };
@@ -5029,7 +5285,7 @@
     document.getElementById('setting-background-mode').onchange = (e) => {
       backgroundMode = e.target.checked;
       localStorage.setItem('ps_background_mode', String(backgroundMode));
-      Native.setBackgroundMode(backgroundMode);
+      Native.setBackgroundMode(backgroundMode, true);
     };
     document.getElementById('btn-battery-exemption').onclick = () => Native.requestBatteryExemption();
   }
@@ -5102,6 +5358,21 @@
   }
 
   // Abrir uma conversa vinda do toque numa notificação
+  // App de desktop: notificação clicada, links pulseshare:// e downloads concluídos
+  function initDesktopEvents() {
+    if (!IS_DESKTOP) return;
+    try { Desk.setDownloadDirectory(customDownloadFolder); } catch (e) {}
+    Desk.on('open-chat', (tag) => window.PulseShareNativeCallback.onOpenChat(tag));
+    Desk.on('open-links', (links) => handleAndroidSharedItems((links || []).map((l) => ({ type: 'link', content: l }))));
+    Desk.on('download-done', (d) => { if (d && d.name) Native.toast(`Salvo em Downloads/${customDownloadFolder || 'PulseShare'}: ${d.name}`); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) Desk.uiOpened(); });
+    Desk.uiOpened();
+    if (desktopLaunch && desktopLaunch.links && desktopLaunch.links.length) {
+      const links = desktopLaunch.links.splice(0);
+      setTimeout(() => handleAndroidSharedItems(links.map((l) => ({ type: 'link', content: l }))), 500);
+    }
+  }
+
   function openChatFromLaunch() {
     let tag = new URLSearchParams(location.search).get('chat') || Native.consumePendingOpenChat();
     tag = normalizeTag(tag);
@@ -5193,6 +5464,8 @@
     // Contas neste aparelho: adicionar / sair / voltar da tela de entrada
     document.getElementById('btn-account-add').onclick = () => openAddAccount();
     document.getElementById('btn-account-logout').onclick = () => logoutAccount();
+    document.getElementById('btn-backup-export').onclick = () => exportDeviceBackup();
+    document.getElementById('btn-backup-import').onclick = () => pickBackupAndImport();
     document.getElementById('btn-onb-back').onclick = () => closeAddAccount();
 
     // Ler QR Code (câmera só no celular) / colar chave de acesso
@@ -5452,6 +5725,7 @@
     if (!(await acquireCoreLock())) return;
     const loggedIn = await initCryptoIdentity();
     initEvents();
+    initDesktopEvents();
     renderNotificationSettings();
     if (!loggedIn) {
       // Sem conta neste dispositivo: tela de entrada (o fundo da extensão só espera)
@@ -5462,7 +5736,7 @@
     connectBrokers();
     switchTab('chat'); // Abertura direta no chat por padrão
     migrateLegacyExtensionChats();
-    if (IS_ANDROID || IS_EXTENSION) Native.setBackgroundMode(backgroundMode);
+    if (IS_ANDROID || IS_EXTENSION || IS_DESKTOP) Native.setBackgroundMode(backgroundMode);
     if (IS_EXTENSION && !IS_BACKGROUND_PAGE && window.chrome && chrome.runtime) {
       try { chrome.runtime.sendMessage({ type: 'PS_UI_OPEN' }); } catch (e) {}
     }

@@ -155,7 +155,7 @@
   // 2. DERIVAÇÃO CRIPTOGRÁFICA DE IDENTIDADE (ESTILO NOSTR BIP-39)
   async function deriveIdentity(name, seedPhrase, passphrase = '') {
     const cleanName = (name || 'Usuario').trim().replace(/[@\s]/g, '_');
-    const normalizedWords = seedPhrase.trim().toLowerCase().split(/\s+/).join(' ');
+    const normalizedWords = normalizeMnemonic(seedPhrase);
     
     // Salt para derivação de chaves (PBKDF2)
     const salt = textEncoder.encode('PulseShare-Nostr-Identity-v2:' + passphrase);
@@ -418,7 +418,7 @@
   }
 
   async function wordsToAccessKey(seedPhrase) {
-    const words = String(seedPhrase || '').trim().toLowerCase().split(/\s+/);
+    const words = normalizeMnemonic(seedPhrase).split(' ');
     if (words.length !== 7) return null;
     const idx = words.map((w) => MNEMONIC_WORDS.indexOf(w));
     if (idx.some((i) => i < 0 || i > 1023)) return null;
@@ -443,9 +443,31 @@
     return words.join(' ');
   }
 
+  // Conferência tolerante: maiúsculas, acentos esquecidos (fumaca → fumaça),
+  // espaços/quebras de linha extras e pontuação colada pelo teclado.
+  const stripAccents = (w) => String(w).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let wordByPlain = null;
+  function canonicalWord(w) {
+    if (!wordByPlain) {
+      wordByPlain = new Map();
+      MNEMONIC_WORDS.forEach((x) => wordByPlain.set(stripAccents(x), x));
+    }
+    const clean = String(w || '').toLowerCase().replace(/^[^\p{L}]+|[^\p{L}]+$/gu, '');
+    return wordByPlain.get(stripAccents(clean)) || null;
+  }
+  // Devolve { words: 'as 7 palavras na forma da lista' | null, unknown: [palavras não reconhecidas], count }
+  function checkMnemonic(seedPhrase) {
+    const raw = String(seedPhrase || '').trim().split(/[\s,;]+/).filter(Boolean);
+    const canon = raw.map(canonicalWord);
+    const unknown = raw.filter((w, i) => !canon[i]);
+    return { words: raw.length === 7 && !unknown.length ? canon.join(' ') : null, unknown, count: raw.length };
+  }
+  function normalizeMnemonic(seedPhrase) {
+    const r = checkMnemonic(seedPhrase);
+    return r.words || String(seedPhrase || '').trim().toLowerCase().split(/\s+/).join(' ');
+  }
   function isValidMnemonic(seedPhrase) {
-    const words = String(seedPhrase || '').trim().toLowerCase().split(/\s+/);
-    return words.length === 7 && words.every((w) => MNEMONIC_WORDS.includes(w));
+    return Boolean(checkMnemonic(seedPhrase).words);
   }
 
   // Exporta para o escopo global
@@ -459,6 +481,8 @@
     wordsToAccessKey,
     accessKeyToWords,
     isValidMnemonic,
+    checkMnemonic,
+    normalizeMnemonic,
     ProfilesManager
   };
 
