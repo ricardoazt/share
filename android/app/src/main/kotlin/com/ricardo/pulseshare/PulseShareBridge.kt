@@ -13,22 +13,33 @@ import android.widget.Toast
 import org.json.JSONObject
 import java.io.File
 
-class PulseShareBridge(
-    private val activity: MainActivity,
-    private val onPickFilesRequested: () -> Unit
-) {
+/**
+ * Ponte JS → Android. Vive junto com a WebView (WebViewHost), que pode estar sem
+ * tela (app fechado, rodando em segundo plano): o que precisa de tela (seletor de
+ * arquivos, telas do sistema) usa a Activity quando ela existe; o resto usa o
+ * contexto do aplicativo.
+ */
+class PulseShareBridge(private val appContext: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val bleHelper = BluetoothMeshHelper(activity).apply {
+    /** Activity se a tela estiver aberta, senão o Application (para Toast, arquivos, notificações). */
+    private val activity: Context
+        get() = WebViewHost.activity ?: appContext
+
+    private val bleHelper = BluetoothMeshHelper(appContext).apply {
         onMessageReceived = { fromTag, messageJson ->
             val safeJson = JSONObject.quote(messageJson)
             val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onBleMessageReceived) { window.PulseShareNativeCallback.onBleMessageReceived(${JSONObject.quote(fromTag)}, $safeJson); }"
-            activity.evaluateJs(js)
+            WebViewHost.evaluateJs(js)
         }
         onPeersUpdated = { peersJson ->
             val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onBlePeersUpdated) { window.PulseShareNativeCallback.onBlePeersUpdated($peersJson); }"
-            activity.evaluateJs(js)
+            WebViewHost.evaluateJs(js)
         }
+    }
+
+    fun shutdown() {
+        try { bleHelper.stopBleMesh() } catch (ignored: Exception) {}
     }
 
     @JavascriptInterface
@@ -37,7 +48,7 @@ class PulseShareBridge(
     @JavascriptInterface
     fun pickFiles() {
         mainHandler.post {
-            onPickFilesRequested()
+            WebViewHost.activity?.launchFilePicker(arrayOf("*/*"))
         }
     }
 
@@ -46,18 +57,18 @@ class PulseShareBridge(
     fun pickFilesOfType(accept: String) {
         val types = accept.split(',').map { it.trim() }.filter { it.matches(Regex("^[a-z*]+/[a-z0-9.+*-]+$")) }
         mainHandler.post {
-            activity.launchFilePicker(types.toTypedArray())
+            WebViewHost.activity?.launchFilePicker(types.toTypedArray())
         }
     }
 
     @JavascriptInterface
     fun getPendingSharedFiles(): String {
-        return activity.getSharedFilesJson()
+        return WebViewHost.getSharedFilesJson()
     }
 
     @JavascriptInterface
     fun clearPendingSharedFiles() {
-        activity.clearSharedFiles()
+        WebViewHost.clearSharedFiles()
     }
 
     @JavascriptInterface
@@ -148,6 +159,12 @@ class PulseShareBridge(
         } catch (e: Exception) {
             ""
         }
+    }
+
+    // Arquivo baixado ainda existe? (se foi apagado, o chat baixa de novo de quem enviou)
+    @JavascriptInterface
+    fun fileExists(filePath: String): Boolean {
+        return try { File(filePath).let { it.exists() && it.length() > 0 } } catch (e: Exception) { true }
     }
 
     @JavascriptInterface
@@ -255,7 +272,7 @@ class PulseShareBridge(
 
     @JavascriptInterface
     fun setBackgroundMode(enabled: Boolean) {
-        mainHandler.post { PulseShareService.setBackgroundMode(activity, enabled) }
+        mainHandler.post { PulseShareService.setBackgroundMode(appContext, enabled) }
     }
 
     // Abre a tela do sistema para tirar o app da otimização de bateria (Samsung mata apps em segundo plano)
@@ -269,6 +286,7 @@ class PulseShareBridge(
                 } else {
                     Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
                 }
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 activity.startActivity(intent)
             } catch (e: Exception) {
                 Toast.makeText(activity, "Abra Configurações → Bateria → PulseShare → Sem restrições", Toast.LENGTH_LONG).show()
@@ -278,16 +296,24 @@ class PulseShareBridge(
 
     // Conversa a abrir quando o app foi aberto pelo toque numa notificação
     @JavascriptInterface
-    fun consumePendingOpenChat(): String = activity.consumePendingOpenChat()
+    fun consumePendingOpenChat(): String {
+        val t = WebViewHost.pendingOpenChat
+        WebViewHost.pendingOpenChat = ""
+        return t
+    }
+
+    // A tela do app está aberta? (com o app fechado a WebView roda sem tela)
+    @JavascriptInterface
+    fun isUiVisible(): Boolean = WebViewHost.activity?.isUiVisible() == true
 
     @JavascriptInterface
     fun startKeepAlive(status: String) {
-        PulseShareService.start(activity, status)
+        mainHandler.post { PulseShareService.start(appContext, status) }
     }
 
     @JavascriptInterface
     fun stopKeepAlive() {
-        PulseShareService.stop(activity)
+        mainHandler.post { PulseShareService.stop(appContext) }
     }
 
     // =========================================================================

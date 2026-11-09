@@ -14,6 +14,10 @@ const ICON = path.join(WWW, 'icons', 'icon512.png');
 const TRAY_ICON = path.join(WWW, 'icons', 'icon32.png');
 
 app.setName('PulseShare');
+// Rota LAN do chat: o Chromium esconde o IP local atrás de um nome .local (mDNS) que
+// a WebView do Android nem sempre resolve. Mostrando o IP local, celular e PC na
+// mesma rede se conectam direto (o IP só vai para quem já é contato).
+app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns');
 // Perfil separado (testes / segunda instância): PULSESHARE_PROFILE=/caminho pulseshare
 if (process.env.PULSESHARE_PROFILE) app.setPath('userData', path.resolve(process.env.PULSESHARE_PROFILE));
 // Notificações e ícone na barra do GNOME ligados ao .desktop instalado pelo .deb

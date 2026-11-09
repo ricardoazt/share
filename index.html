@@ -418,6 +418,11 @@
     .chat-icon-btn { background: #1e293b; color: #fff; border-radius: 10px; padding: 0 12px; font-size: 16px; cursor: pointer; }
     .chat-send-btn { background: #f97316; color: #fff; border-radius: 10px; padding: 0 14px; font-weight: 700; font-size: 13px; cursor: pointer; }
     .chat-typing { font-size: 11px; color: #34d399; }
+    .visitor-name-input { width: 9.5rem; min-width: 0; background: #020617; border: 1px solid #334155; border-radius: 8px; padding: 4px 8px; color: #fff; font-size: 12px; outline: none; }
+    .visitor-name-input:focus { border-color: #f97316; }
+    .chat-sys { align-self: center; font-size: 11px; color: #94a3b8; background: #0f172a; border: 1px solid #1e293b; border-radius: 999px; padding: 3px 10px; }
+    .chat-deleted { font-style: italic; opacity: .7; font-size: 12px; }
+    .chat-loc { color: #fdba74; text-decoration: underline; word-break: break-all; }
     .hidden { display: none !important; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
@@ -436,14 +441,26 @@
       <span id="share-badge" class="share-badge">#---</span>
     </div>
 
-    <!-- Abas: Download do link / Chat temporário com o remetente -->
+    <!-- Chat de link: descrição definida por quem compartilhou -->
+    <div id="room-header" class="card-info hidden">
+      <h1 id="room-title" class="card-title">Compartilhamento</h1>
+      <div class="card-meta">
+        <span id="room-owner">de @---</span>
+        <span id="room-exp" class="exp-badge">⏳ --</span>
+      </div>
+    </div>
+
+    <!-- Abas: Chat com quem compartilhou / Arquivos do link -->
     <div id="portal-tabs" class="portal-tabs hidden">
-      <button id="tab-btn-download" type="button" class="portal-tab active">📥 Download</button>
       <button id="tab-btn-chat" type="button" class="portal-tab">💬 Chat <span id="chat-unread-badge" class="tab-badge hidden">0</span></button>
+      <button id="tab-btn-download" type="button" class="portal-tab active">📥 Arquivos <span id="files-count-badge"></span></button>
     </div>
 
     <div id="panel-chat" class="chat-panel hidden">
-      <span id="chat-owner-status" class="chat-owner-status">⚪ Remetente</span>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <span id="chat-owner-status" class="chat-owner-status">⚪ Remetente</span>
+        <input id="chat-visitor-name" type="text" maxlength="30" placeholder="Seu nome (opcional)" autocomplete="off" class="visitor-name-input" />
+      </div>
       <div id="chat-list" class="chat-list"></div>
       <span id="chat-typing" class="chat-typing hidden">digitando...</span>
       <div class="chat-composer">
@@ -464,8 +481,8 @@
     <!-- Tela de Desbloqueio com Senha (se houver) -->
     <div id="password-section" class="password-card hidden">
       <div style="font-size: 28px;">🔑</div>
-      <h2 style="font-size: 15px; font-weight: 700; color: #fff;">Pacote Protegido por Senha</h2>
-      <p style="font-size: 12px; color: #94a3b8;">O remetente definiu uma senha para liberar o download.</p>
+      <h2 style="font-size: 15px; font-weight: 700; color: #fff;">Link protegido por senha</h2>
+      <p style="font-size: 12px; color: #94a3b8;">Quem compartilhou definiu uma senha para liberar este link.</p>
       <div class="password-input-wrap">
         <input
           id="password-input"
@@ -617,7 +634,15 @@
     const expParam = hashParams.get('exp') || searchParams.get('exp') || '';
 
     const visitorNodeId = crypto.randomUUID();
-    const visitorTag = `@link_${visitorNodeId.slice(0, 6)}`;
+    // A mesma tag de visitante para este link em todas as aberturas (o dono guarda
+    // a conversa e o histórico volta ao reabrir). Guarda também a senha já conferida.
+    const VISITOR_STORE = `ps_link_visitor_${shareId}`;
+    let visitorStore = {};
+    try { visitorStore = JSON.parse(localStorage.getItem(VISITOR_STORE) || '{}') || {}; } catch {}
+    if (!/^[0-9a-f]{6}$/.test(visitorStore.id || '')) visitorStore.id = visitorNodeId.replace(/-/g, '').slice(0, 6);
+    function saveVisitorStore() { try { if (shareId) localStorage.setItem(VISITOR_STORE, JSON.stringify(visitorStore)); } catch {} }
+    saveVisitorStore();
+    const visitorTag = `@link_${visitorStore.id}`;
 
     const meshEngine = typeof PulseShareMeshEngine !== 'undefined' ? new PulseShareMeshEngine() : null;
     if (meshEngine) {
@@ -1034,10 +1059,18 @@
       alertCard.classList.add('hidden');
     }
 
-    function requestPackInfo() {
-      if (packData) return;
-      statusHeader.textContent = `Aguardando remetente (${ownerTag})...`;
-      broadcastSignal('PACK_INFO_REQUEST', { shareId });
+    // Senha conferida por quem compartilhou: ele manda salt + nonce, a página
+    // responde proof = sha256(sha256(senha + salt) + nonce)
+    let pwChallenge = null; // { salt, nonce }
+    function requestPackInfo(force) {
+      if ((packData && !force) || (pwChallenge && !force)) return;
+      if (!packData) statusHeader.textContent = `Aguardando remetente (${ownerTag})...`;
+      broadcastSignal('PACK_INFO_REQUEST', { shareId, visitorName: visitorStore.name || '' });
+    }
+    async function sendPasswordProof(pwHash) {
+      if (!pwChallenge) return;
+      const proof = await computeSha256(pwHash + pwChallenge.nonce);
+      broadcastSignal('PACK_INFO_REQUEST', { shareId, proof, nonce: pwChallenge.nonce, visitorName: visitorStore.name || '' });
     }
 
     function base64ToUint8Array(base64) {
@@ -1206,6 +1239,31 @@
 
     function onPackInfoResponse(payload) {
       clearInterval(packInfoRetryTimer);
+      if (!payload.ok && payload.error === 'PASSWORD_REQUIRED') {
+        if (payload.ownerTag) ownerTag = payload.ownerTag;
+        pwChallenge = { salt: payload.passwordSalt || '', nonce: payload.nonce || '' };
+        statusDot.className = 'dot green';
+        statusHeader.textContent = '🔑 Link protegido por senha';
+        hideAlert();
+        passwordSection.classList.remove('hidden');
+        btnUnlock.disabled = false;
+        btnUnlock.textContent = 'Liberar';
+        if (payload.wrong) {
+          visitorStore.pw = '';
+          saveVisitorStore();
+          passwordError.textContent = 'Senha incorreta. Verifique e tente novamente.';
+          passwordError.classList.remove('hidden');
+        } else if (visitorStore.pw) {
+          // Senha já conferida antes neste navegador
+          sendPasswordProof(visitorStore.pw);
+        }
+        return;
+      }
+      if (packData && packData.roomChat && payload.ok) {
+        // Atualização (dono voltou a ficar online): mescla o histórico
+        mergeRoomPayload(payload);
+        return;
+      }
       if (!payload.ok) {
         if (payload.error === 'EXPIRED') {
           showAlert('⏳ Este link temporário expirou. O tempo limite definido pelo remetente foi atingido.');
@@ -1227,6 +1285,12 @@
         ownerTag = payload.ownerTag;
       }
       packData = payload;
+      pwChallenge = null;
+      if (payload.roomChat) {
+        unlocked = true;
+        passwordSection.classList.add('hidden');
+        setupRoomChat(payload);
+      }
       statusDot.className = 'dot green';
       statusHeader.textContent = '🟢 Remetente Online (P2P Pronto)';
       hideAlert();
@@ -1247,6 +1311,18 @@
       if (!pwd) {
         passwordError.textContent = 'Digite a senha.';
         passwordError.classList.remove('hidden');
+        return;
+      }
+      if (pwChallenge) {
+        // Versão nova: quem compartilhou confere a senha
+        const pwHash = await computeSha256(pwd + pwChallenge.salt);
+        visitorStore.pw = pwHash;
+        saveVisitorStore();
+        passwordError.classList.add('hidden');
+        btnUnlock.disabled = true;
+        btnUnlock.textContent = 'Conferindo...';
+        sendPasswordProof(pwHash);
+        setTimeout(() => { if (btnUnlock.disabled && !packData) { btnUnlock.disabled = false; btnUnlock.textContent = 'Liberar'; } }, 12000);
         return;
       }
 
@@ -1278,12 +1354,13 @@
     function showPackUI() {
       packContent.classList.remove('hidden');
       if (typeof revealChatTab === 'function') revealChatTab();
-      packTitle.textContent = packData.packName || 'Pacote de Arquivos';
+      packTitle.textContent = packData.roomChat ? 'Arquivos compartilhados' : (packData.packName || 'Pacote de Arquivos');
       packSender.textContent = `Remetente: ${packData.ownerTag || ownerTag}`;
       const totalSize = packData.totalSize || (packData.files || []).reduce((acc, f) => acc + (f.size || 0), 0);
       packSummary.textContent = `${(packData.files || []).length} arquivo(s) • ${formatBytes(totalSize)}`;
 
       updateExpirationCountdown();
+      if (typeof updateFilesCount === 'function') updateFilesCount();
       clearInterval(countdownTimer);
       countdownTimer = setInterval(updateExpirationCountdown, 1000);
 
@@ -1291,21 +1368,26 @@
     }
 
     function updateExpirationCountdown() {
+      const roomExp = document.getElementById('room-exp');
       if (!packData || !packData.expiresAt) {
         expBadge.textContent = '⏳ Sem limite';
+        if (roomExp) roomExp.textContent = '⏳ Sem expiração';
         return;
       }
       const remainingSec = Math.max(0, Math.floor((packData.expiresAt - Date.now()) / 1000));
       if (remainingSec <= 0) {
         expBadge.textContent = '⏳ Expirado';
         expBadge.style.color = '#fb7185';
+        if (roomExp) roomExp.textContent = '⏳ Expirado';
         showAlert('⏳ O tempo limite deste link acabou. Novos downloads não podem ser iniciados.');
         btnDownloadAll.disabled = true;
         return;
       }
       const min = Math.floor(remainingSec / 60);
       const sec = remainingSec % 60;
-      expBadge.textContent = `⏳ Expira em: ${min}m ${sec < 10 ? '0' : ''}${sec}s`;
+      const days = Math.floor(min / 1440), hours = Math.floor((min % 1440) / 60);
+      expBadge.textContent = days ? `⏳ Expira em: ${days}d ${hours}h` : min >= 60 ? `⏳ Expira em: ${hours}h ${min % 60}m` : `⏳ Expira em: ${min}m ${sec < 10 ? '0' : ''}${sec}s`;
+      if (roomExp) roomExp.textContent = expBadge.textContent;
     }
 
     function renderFilesList() {
@@ -1943,7 +2025,7 @@
       const btnDl = document.getElementById(`btn-dl-${dl.fileId}`);
       if (btnDl) {
         btnDl.classList.remove('hidden');
-        btnDl.textContent = '✓ Salvo';
+        btnDl.textContent = dl.returnBufferOnly && roomMode ? '✓ No chat' : '✓ Salvo';
         btnDl.disabled = false;
       }
 
@@ -1957,6 +2039,7 @@
     }
 
     function updateFileUI(fileId, { status, pct, speedBps, receivedBytes, totalBytes }) {
+      if (typeof onRoomFileProgress === 'function') onRoomFileProgress(fileId, status);
       const stEl = document.getElementById(`st-${fileId}`);
       const pctEl = document.getElementById(`pct-${fileId}`);
       const barEl = document.getElementById(`bar-${fileId}`);
@@ -2018,9 +2101,7 @@
         renderChatBadge();
         renderChat();
         setTimeout(() => chatInput.focus(), 50);
-        if (chat.messages.some((m) => !m.mine)) {
-          broadcastSignal('CHAT_READ', { readerTag: visitorTag }, ownerTag, `read-${Date.now()}`);
-        }
+        sendPortalReadReceipt();
       }
     }
     tabBtnDownload.addEventListener('click', () => switchPortalTab('download'));
@@ -2033,6 +2114,7 @@
 
     function renderOwnerStatus() {
       const online = Date.now() - chat.ownerLastSeen < 45000;
+      chat.ownerOnline = online;
       chatOwnerStatus.textContent = online ? `🟢 ${ownerTag} online` : `⚪ ${ownerTag} — aguardando ficar online`;
       chatOwnerStatus.style.color = online ? '#34d399' : '#94a3b8';
     }
@@ -2049,19 +2131,60 @@
       return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
     }
 
+    let renderChatTimer = null;
+    function scheduleRenderChat() {
+      if (renderChatTimer) return;
+      renderChatTimer = setTimeout(() => { renderChatTimer = null; renderChat(); }, 250);
+    }
+
+    // Arquivo publicado no chat do link (baixado pelo fileId, como na aba Arquivos)
+    function roomFileMediaHtml(m) {
+      const f = m.media;
+      const st = roomFiles.get(f.fileId) || {};
+      const isImg = /^image\//.test(f.type || '') && st.url;
+      const isVid = /^video\//.test(f.type || '') && st.url;
+      const isAud = /^audio\//.test(f.type || '') && st.url;
+      let action;
+      if (st.url) action = `<a class="chat-media-btn" href="${st.url}" download="${escapeHtmlPortal(f.name)}">💾 Salvar</a>`;
+      else if (st.state === 'done') action = `<span style="color:#34d399">✓ Baixado</span> <button type="button" class="chat-media-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}" title="Baixar de novo">⬇</button>`;
+      else if (st.state === 'downloading') action = `${st.pct || 0}%`;
+      else if (st.state === 'error') action = `<span style="color:#fb7185">${escapeHtmlPortal(st.error || 'Falhou')}</span> <button type="button" class="chat-media-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}">Tentar de novo</button>`;
+      else action = `<button type="button" class="chat-media-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}">⬇ Baixar</button>`;
+      const icon = /^image\//.test(f.type || '') ? '📷' : /^video\//.test(f.type || '') ? '🎥' : /^audio\//.test(f.type || '') ? (m.voice ? '🎤' : '🎵') : '📁';
+      return `
+        <div class="chat-media">
+          ${isImg ? `<img src="${st.url}" alt="" class="chat-img">` : ''}
+          ${isVid ? `<video src="${st.url}" controls playsinline class="chat-img"></video>` : ''}
+          ${isAud ? `<audio src="${st.url}" controls style="width:100%"></audio>` : ''}
+          <div class="chat-media-row">
+            <span class="chat-media-name">${icon} ${escapeHtmlPortal(m.voice ? 'Mensagem de voz' : f.name)}<br><small>${formatBytes(f.size || 0)}</small></span>
+            <span class="chat-media-action">${action}</span>
+          </div>
+          ${st.state === 'downloading' ? `<div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${st.pct || 0}%"></div></div>` : ''}
+        </div>`;
+    }
+
     function renderChat() {
       if (!chat.messages.length) {
-        chatList.innerHTML = `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal(ownerTag)}</b> enquanto esta página estiver aberta.<br>Você também pode enviar arquivos pelo 📎.<br><span style="opacity:.7">O histórico é apagado ao fechar a página.</span></div>`;
+        chatList.innerHTML = roomMode
+          ? `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal(ownerTag)}</b>.<br>Os arquivos que forem enviados aqui também aparecem na aba 📥 Arquivos.<br>Você pode mandar arquivos pelo 📎.<br><span style="opacity:.7">A conversa fica guardada enquanto o link existir.</span></div>`
+          : `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal(ownerTag)}</b> enquanto esta página estiver aberta.<br>Você também pode enviar arquivos pelo 📎.<br><span style="opacity:.7">O histórico é apagado ao fechar a página.</span></div>`;
         return;
       }
+      const nearBottom = chatList.scrollHeight - chatList.scrollTop - chatList.clientHeight < 120;
       chatList.innerHTML = chat.messages.map((m) => {
         let mediaHtml = '';
-        if (m.media) {
+        if (m.deleted) {
+          return `<div class="chat-row ${m.mine ? 'mine' : ''}"><div class="chat-bubble"><div class="chat-deleted">🚫 Mensagem apagada</div><div class="chat-meta">${chatTime(m.ts)}</div></div></div>`;
+        }
+        if (m.media && m.media.fileId && !m.mine) {
+          mediaHtml = roomFileMediaHtml(m);
+        } else if (m.media) {
           const tr = chat.transfers.get(m.media.transferId) || {};
           const isImg = /^image\//.test(m.media.type || '') && tr.url;
           let action = '';
           if (m.mine) {
-            action = tr.status === 'done' ? '✔ Enviado' : tr.status === 'sending' ? `${tr.pct || 0}%` : tr.status === 'error' ? 'Falhou' : 'Aguardando o remetente aceitar...';
+            action = (tr.status === 'done' || m.fromHistory) ? '✔ Enviado' : tr.status === 'sending' ? `${tr.pct || 0}%` : tr.status === 'error' ? 'Falhou' : 'Aguardando o remetente aceitar...';
           } else if (tr.url) {
             action = `<a class="chat-media-btn" href="${tr.url}" download="${escapeHtmlPortal(m.media.name)}">💾 Salvar</a>`;
           } else if (tr.status === 'receiving' || tr.status === 'connecting') {
@@ -2079,22 +2202,27 @@
               ${(tr.status === 'sending' || tr.status === 'receiving') ? `<div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${tr.pct || 0}%"></div></div>` : ''}
             </div>`;
         }
-        const tick = !m.mine ? '' : m.status === 'READ' ? '<span style="color:#38bdf8">✓✓</span>' : m.status === 'DELIVERED' ? '✓✓' : '✓';
+        const tick = !m.mine ? '' : m.status === 'READ' ? '<span style="color:#38bdf8;font-weight:700" title="Lida">✓✓</span>' : m.status === 'DELIVERED' ? '<span style="opacity:.75" title="Entregue (ainda não lida)">✓✓</span>' : '<span style="opacity:.75" title="Enviada (ainda não chegou)">✓</span>';
+        const locHtml = m.location ? `<div class="chat-text">📍 Localização<br><a class="chat-loc" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${Number(m.location.lat)},${Number(m.location.lon)}">${Number(m.location.lat).toFixed(5)}, ${Number(m.location.lon).toFixed(5)}</a></div>` : '';
         return `
           <div class="chat-row ${m.mine ? 'mine' : ''}">
             <div class="chat-bubble">
-              ${m.text ? `<div class="chat-text">${escapeHtmlPortal(m.text)}</div>` : ''}
+              ${locHtml}
+              ${m.text && !m.location ? `<div class="chat-text">${escapeHtmlPortal(m.text)}</div>` : ''}
               ${mediaHtml}
               <div class="chat-meta">${chatTime(m.ts)} ${tick}</div>
             </div>
           </div>`;
       }).join('');
-      chatList.scrollTop = chatList.scrollHeight;
+      if (nearBottom || chat.forceBottom) chatList.scrollTop = chatList.scrollHeight;
+      chat.forceBottom = false;
     }
 
     chatList.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-dl-chat]');
       if (btn) acceptChatMedia(btn.getAttribute('data-dl-chat'));
+      const fb = e.target.closest('[data-dl-file]');
+      if (fb) downloadRoomFile(fb.getAttribute('data-dl-file'));
     });
 
     function newChatId(prefix) {
@@ -2119,8 +2247,9 @@
       const id = newChatId('cmsg');
       const ts = Date.now();
       chat.messages.push({ id, mine: true, text, ts, status: 'SENT' });
+      chat.forceBottom = true;
       renderChat();
-      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text, msgType: 'text', type: 'text', timestamp: ts });
+      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text, msgType: 'text', type: 'text', timestamp: ts, shareId, visitorName: visitorStore.name || '' });
     }
     chatSendBtn.addEventListener('click', sendChatText);
     chatInput.addEventListener('keydown', (e) => {
@@ -2152,8 +2281,9 @@
       const media = { transferId, name: file.name, fileName: file.name, size: file.size, fileSize: file.size, type, fileType: type };
       chat.transfers.set(transferId, { dir: 'up', file, name: file.name, size: file.size, type, status: 'waiting', pct: 0, msgId: id });
       chat.messages.push({ id, mine: true, text: '', ts, status: 'SENT', media });
+      chat.forceBottom = true;
       renderChat();
-      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: '', msgType: kind, type: kind, timestamp: ts, transferId, fileMeta: { name: file.name, size: file.size, type }, media });
+      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: '', msgType: kind, type: kind, timestamp: ts, transferId, fileMeta: { name: file.name, size: file.size, type }, media, shareId, visitorName: visitorStore.name || '' });
       broadcastSignal('FILE_OFFER', { isChatMedia: true, chatMsgId: id, fileName: file.name, fileSize: file.size, fileType: type }, ownerTag, transferId);
     }
 
@@ -2315,11 +2445,26 @@
     }
 
     // Retorna true quando o pacote pertence ao chat (e já foi tratado)
+    // ✓✓ azul só com a aba do chat aberta, a página visível e em foco
+    function portalReadingChat() {
+      try { return chat.open && !document.hidden && document.hasFocus(); } catch (e) { return chat.open && !document.hidden; }
+    }
+    function sendPortalReadReceipt() {
+      if (!portalReadingChat()) return;
+      const ids = chat.messages.filter((m) => !m.mine).map((m) => m.id);
+      if (!ids.length) return;
+      broadcastSignal('CHAT_READ', { readerTag: visitorTag, msgIds: ids.slice(-200) }, ownerTag, `read-${Date.now()}`);
+    }
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) sendPortalReadReceipt(); });
+    window.addEventListener('focus', () => sendPortalReadReceipt());
+
     function handleChatPacket(pkt) {
       if (!pkt) return false;
       if (pkt.senderTag === ownerTag) {
+        const wasOnline = Date.now() - chat.ownerLastSeen < 45000;
         chat.ownerLastSeen = Date.now();
         renderOwnerStatus();
+        if (!wasOnline && roomMode) onOwnerBackOnline();
       }
       if (pkt.meshType !== 'DIRECT_SIGNAL' || pkt.to !== visitorTag) return false;
       if (pkt.senderTag !== ownerTag) return false; // só conversa com o dono do link
@@ -2332,8 +2477,20 @@
       }
 
       if (signalType === 'CHAT_MESSAGE') {
+        if (payload.shareId && payload.shareId !== shareId) return true; // de outro link do mesmo dono
         const id = payload.id || transferId;
-        broadcastSignal('CHAT_ACK', { msgId: id, senderTag: visitorTag, status: chat.open ? 'READ' : 'DELIVERED' }, ownerTag, id);
+        if (roomMode && payload.media && payload.media.fileId) {
+          // Arquivo novo no link: entra também na aba Arquivos
+          addRoomFile(payload.media);
+          broadcastSignal('CHAT_ACK', { msgId: id, senderTag: visitorTag, status: portalReadingChat() ? 'READ' : 'DELIVERED' }, ownerTag, id);
+          if (chat.messages.some((m) => m.id === id)) return true;
+          chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media: sanitizeRoomMedia(payload.media), voice: payload.voiceDuration ? { duration: payload.voiceDuration } : null });
+          chat.messages.sort((a, b) => a.ts - b.ts);
+          if (!chat.open) { chat.unread++; renderChatBadge(); }
+          renderChat();
+          return true;
+        }
+        broadcastSignal('CHAT_ACK', { msgId: id, senderTag: visitorTag, status: portalReadingChat() ? 'READ' : 'DELIVERED' }, ownerTag, id);
         if (chat.messages.some((m) => m.id === id)) return true;
         const meta = payload.media || payload.fileMeta || null;
         const tid = meta ? (payload.transferId || meta.transferId) : null;
@@ -2341,7 +2498,7 @@
         if (media && !chat.transfers.has(tid)) {
           chat.transfers.set(tid, { dir: 'down', name: media.name, size: media.size, type: media.type, status: 'idle', pct: 0, msgId: id });
         }
-        chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media });
+        chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media, location: sanitizeLocation(payload.location) });
         chat.messages.sort((a, b) => a.ts - b.ts);
         chatTyping.classList.add('hidden');
         if (!chat.open) {
@@ -2360,7 +2517,8 @@
         return true;
       }
       if (signalType === 'CHAT_READ') {
-        chat.messages.forEach((m) => { if (m.mine) m.status = 'READ'; });
+        const readIds = Array.isArray(payload.msgIds) ? payload.msgIds.map(String) : null;
+        chat.messages.forEach((m) => { if (m.mine && (readIds ? readIds.includes(m.id) : m.status === 'DELIVERED')) m.status = 'READ'; });
         renderChat();
         return true;
       }
@@ -2371,6 +2529,16 @@
         return true;
       }
       if (signalType === 'CHAT_REACTION') return true;
+      if (signalType === 'CHAT_DELETE') {
+        // O dono apagou mensagens "para todos"
+        const ids = Array.isArray(payload.msgIds) ? payload.msgIds.map(String) : [];
+        chat.messages.forEach((m) => {
+          if (!m.mine && ids.includes(m.id)) { m.deleted = true; m.text = ''; m.media = null; m.location = null; }
+        });
+        broadcastSignal('CHAT_ACK', { msgIds: ids, msgId: ids[0], senderTag: visitorTag, status: 'DELETED' }, ownerTag, ids[0] || 'del');
+        renderChat();
+        return true;
+      }
 
       const tr = chat.transfers.get(transferId);
       if (signalType === 'FILE_OFFER' && payload.isChatMedia) {
@@ -2400,7 +2568,7 @@
     }
 
     window.addEventListener('beforeunload', (e) => {
-      if (chat.messages.length || activeDownloads.size) {
+      if ((chat.messages.length && !roomMode) || activeDownloads.size) {
         e.preventDefault();
         e.returnValue = '';
       }
@@ -2416,6 +2584,142 @@
       tabBar.classList.remove('hidden');
       renderOwnerStatus();
       renderChat();
+      if (roomMode && !chat.tabChosen) { chat.tabChosen = true; switchPortalTab('chat'); }
+    }
+
+    // ============================================================================
+    // Chat de link (versão nova do app): o link é uma conversa com quem compartilhou.
+    // Histórico vem no PACK_INFO_RESPONSE (messages); arquivos enviados no chat
+    // têm fileId e são baixados como os da aba Arquivos (PACK_FILE_PULL).
+    // ============================================================================
+    let roomMode = false;
+    const roomFiles = new Map(); // fileId -> { state, pct, url, error }
+    const visitorNameInput = document.getElementById('chat-visitor-name');
+    if (visitorNameInput) {
+      visitorNameInput.value = visitorStore.name || '';
+      visitorNameInput.addEventListener('change', () => {
+        visitorStore.name = visitorNameInput.value.replace(/[<>]/g, '').trim().slice(0, 30);
+        saveVisitorStore();
+        if (roomMode) broadcastSignal('LINK_PING', { shareId, visitorName: visitorStore.name }, ownerTag, `ping-${Date.now()}`);
+      });
+    }
+
+    function sanitizeLocation(loc) {
+      if (!loc) return null;
+      const lat = Number(loc.lat), lon = Number(loc.lon);
+      if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+      return { lat, lon };
+    }
+    function sanitizeRoomMedia(f) {
+      return { fileId: String(f.fileId || ''), name: String(f.name || 'arquivo'), size: Number(f.size) || 0, type: String(f.type || '') };
+    }
+    function addRoomFile(f) {
+      if (!packData || !f || !f.fileId) return;
+      packData.files = packData.files || [];
+      if (packData.files.some((x) => x.fileId === f.fileId)) return;
+      packData.files.push(sanitizeRoomMedia(f));
+      packData.totalSize = packData.files.reduce((a, x) => a + (x.size || 0), 0);
+      if (!packContent.classList.contains('hidden')) showPackUI();
+      updateFilesCount();
+    }
+    function updateFilesCount() {
+      const el = document.getElementById('files-count-badge');
+      const n = packData && packData.files ? packData.files.length : 0;
+      if (el) el.textContent = n ? `(${n})` : '';
+    }
+
+    function historyToMessage(h) {
+      const m = { id: String(h.id), mine: h.from === 'me', text: h.text || '', ts: Number(h.ts) || Date.now(), fromHistory: true };
+      if (h.deleted) m.deleted = true;
+      if (h.location) m.location = sanitizeLocation(h.location);
+      if (h.voice) m.voice = { duration: Number(h.voice.duration) || 0 };
+      if (h.media) {
+        if (h.media.fileId && !m.mine) m.media = sanitizeRoomMedia(h.media);
+        else if (m.mine) m.media = { transferId: String(h.media.transferId || ''), name: String(h.media.name || 'arquivo'), size: Number(h.media.size) || 0, type: String(h.media.type || '') };
+      }
+      if (m.mine) m.status = h.status === 'READ' ? 'READ' : 'DELIVERED';
+      return m;
+    }
+
+    function mergeHistory(list) {
+      let changed = false;
+      (Array.isArray(list) ? list : []).forEach((h) => {
+        if (!h || !h.id) return;
+        const m = historyToMessage(h);
+        const cur = chat.messages.find((x) => x.id === m.id);
+        if (!cur) { chat.messages.push(m); changed = true; return; }
+        if (m.deleted && !cur.deleted) { cur.deleted = true; cur.text = ''; cur.media = null; changed = true; }
+        if (cur.mine && cur.status === 'SENT') { cur.status = m.status; changed = true; }
+      });
+      if (changed) { chat.messages.sort((a, b) => a.ts - b.ts); renderChat(); }
+    }
+
+    function setupRoomChat(payload) {
+      roomMode = true;
+      const title = payload.title || payload.packName || 'Compartilhamento';
+      document.title = `${title} — PulseShare`;
+      document.getElementById('room-title').textContent = '🔗 ' + title;
+      document.getElementById('room-owner').textContent = `de ${payload.ownerName || ''} ${payload.ownerTag || ownerTag}`.trim();
+      document.getElementById('room-header').classList.remove('hidden');
+      if (payload.visitorName && !visitorStore.name) {
+        visitorStore.name = payload.visitorName;
+        saveVisitorStore();
+        if (visitorNameInput) visitorNameInput.value = payload.visitorName;
+      }
+      chat.ownerLastSeen = Date.now();
+      chat.forceBottom = true;
+      mergeHistory(payload.messages);
+      updateFilesCount();
+      // Mantém o "online" no aparelho de quem compartilhou
+      setInterval(() => broadcastSignal('LINK_PING', { shareId }, ownerTag, `ping-${Date.now()}`), 25000);
+    }
+
+    function mergeRoomPayload(payload) {
+      (payload.files || []).forEach(addRoomFile);
+      if (payload.expiresAt !== undefined) packData.expiresAt = payload.expiresAt;
+      mergeHistory(payload.messages);
+    }
+
+    // Quem compartilhou voltou: atualiza o histórico e reenvia o que ficou em ✓
+    function onOwnerBackOnline() {
+      requestPackInfo(true);
+      chat.messages.filter((m) => m.mine && m.status === 'SENT' && !m.media && !m.fromHistory).forEach((m, i) => setTimeout(() => {
+        broadcastSignal('CHAT_MESSAGE', { id: m.id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: m.text, msgType: 'text', type: 'text', timestamp: m.ts, shareId, visitorName: visitorStore.name || '' }, ownerTag, m.id);
+      }, 300 + i * 200));
+    }
+
+    function downloadRoomFile(fileId) {
+      const st = roomFiles.get(fileId) || {};
+      if (st.state === 'downloading' || activeDownloads.has(fileId)) return;
+      if (!packData || !(packData.files || []).some((f) => f.fileId === fileId)) return;
+      roomFiles.set(fileId, { state: 'downloading', pct: 0 });
+      renderChat();
+      const file = packData.files.find((f) => f.fileId === fileId);
+      const preview = /^(image|video|audio)\//.test(file.type || '') && (file.size || 0) <= 64 * 1024 * 1024;
+      // Foto/vídeo/áudio: mostra no chat (o 💾 Salvar grava); demais arquivos são salvos direto
+      startFileDownload(fileId, (buffer) => {
+        const cur = roomFiles.get(fileId) || {};
+        cur.state = 'done';
+        cur.pct = 100;
+        if (preview && buffer) cur.url = URL.createObjectURL(new Blob([buffer], { type: file.type || 'application/octet-stream' }));
+        roomFiles.set(fileId, cur);
+        renderChat();
+      }, preview);
+    }
+
+    function onRoomFileProgress(fileId, status) {
+      if (!roomMode) return;
+      const dl = activeDownloads.get(fileId);
+      let st = roomFiles.get(fileId);
+      if (!st) { st = {}; roomFiles.set(fileId, st); }
+      if (status && /^Erro/.test(status)) { st.state = 'error'; st.error = status.replace(/^Erro:\s*/, ''); }
+      else if (completedFileIds.has(fileId) || (dl && dl.completed) || /conclu[ií]do/i.test(status || '')) { st.state = 'done'; st.pct = 100; }
+      else if (dl) {
+        st.state = 'downloading';
+        const p = fileProgressMap.get(fileId);
+        st.pct = p ? p.pct : st.pct || 0;
+      }
+      if (chat.messages.some((m) => m.media && m.media.fileId === fileId)) scheduleRenderChat();
     }
   </script>
 </body>

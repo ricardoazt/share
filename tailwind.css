@@ -1087,3 +1087,7 @@ body.expanded-view #btn-chat-back-list {
 .text-right { text-align: right; }
 .hover\:bg-slate-800\/60:hover { background-color: rgb(30 41 59 / 0.6); }
 .hover\:bg-slate-950\/60:hover { background-color: rgb(2 6 23 / 0.6); }
+/* adicionadas manualmente (chat de link, 2026-11-08) */
+.break-all { word-break: break-all; }
+.text-orange-200 { color: rgb(254 215 170); }
+.text-emerald-300 { color: rgb(110 231 183); }

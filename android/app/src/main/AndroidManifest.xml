@@ -14,6 +14,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Voltar a receber mensagens depois de reiniciar o aparelho (com "Rodar em segundo plano") -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- Notificações (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -91,7 +93,19 @@
         <service
             android:name=".PulseShareService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|remoteMessaging" />
+            android:foregroundServiceType="dataSync|remoteMessaging"
+            android:stopWithTask="false" />
+
+        <!-- Religa o serviço em segundo plano após reiniciar o aparelho ou atualizar o app -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <!-- Provedor Seguro de Arquivos para Compartilhamento e Abertura -->
         <provider

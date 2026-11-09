@@ -172,6 +172,11 @@
     #peer-profile-photo svg, #peer-profile-photo img { width: 100% !important; height: 100% !important; display: block; object-fit: cover; }
     /* Mensagem encontrada pela busca */
     .search-hit > div > div { outline: 2px solid #f59e0b; outline-offset: 2px; transition: outline-color 0.4s; }
+    /* Seleção de mensagens (toque longo / clique direito) */
+    #chat-messages-container > [data-mid] { border-radius: 10px; transition: background-color 0.15s; }
+    #chat-messages-container > .msg-selected { background-color: rgba(99, 102, 241, 0.32); }
+    #chat-messages-container.chat-selecting > [data-mid] { cursor: pointer; }
+    .is-android #chat-messages-container, .is-android #chat-messages-container *, .is-android #chat-conversations-list, .is-android #chat-conversations-list *, .is-android #chat-categories-bar { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none; }
   </style>
 </head>
 <body class="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden relative">
@@ -248,6 +253,13 @@
           <!-- preenchido dinamicamente com os cards de conversas -->
         </div>
 
+        <!-- Botão Flutuante: novo chat de link (link público que abre uma conversa) -->
+        <button id="btn-fab-new-link" type="button" title="Novo link de compartilhamento" class="absolute right-4 z-30 w-12 h-12 rounded-full bg-gradient-to-tr from-orange-600 to-orange-500 text-white shadow-xl flex items-center justify-center active:scale-90 transition-transform" style="bottom:5.25rem;margin-right:4px;box-shadow:0 10px 24px rgba(234,88,12,.4)">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
+          </svg>
+        </button>
+
         <!-- Botão Flutuante (FAB) para Iniciar Conversa / Buscar -->
         <button id="btn-fab-new-chat" type="button" class="absolute right-4 bottom-4 z-30 w-14 h-14 rounded-full bg-gradient-to-tr from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white shadow-xl shadow-indigo-600/40 flex items-center justify-center active:scale-90 transition-transform">
           <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -259,7 +271,19 @@
       <!-- SUB-PAINEL 2: CONVERSA ATIVA FULL-SCREEN EDGE-TO-EDGE (Desliza ocupando 100% da tela) -->
       <div id="chat-active-conversation-pane" class="chat-slide-pane">
         <!-- Barra de Cabeçalho do Contato (WhatsApp style) -->
-        <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0 shadow-md">
+        <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0 shadow-md relative">
+          <!-- Seleção de mensagens (toque longo / clique direito numa mensagem) -->
+          <div id="chat-selection-bar" class="hidden absolute inset-0 z-10 px-3 bg-slate-900 flex items-center justify-between gap-2">
+            <div class="flex items-center gap-2 min-w-0">
+              <button id="btn-selection-cancel" type="button" title="Cancelar seleção" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95">✕</button>
+              <span id="chat-selection-count" class="text-sm font-bold text-white">1 selecionada</span>
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+              <button id="btn-selection-copy" type="button" title="Copiar texto" class="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold active:scale-95">📋 Copiar</button>
+              <button id="btn-selection-forward" type="button" title="Encaminhar para outras conversas" class="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold active:scale-95">↪ Encaminhar</button>
+              <button id="btn-selection-delete" type="button" title="Apagar" class="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-bold active:scale-95">🗑️</button>
+            </div>
+          </div>
           <div class="flex items-center gap-2 min-w-0 flex-1">
             <button id="btn-chat-back" type="button" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95 transition-all shrink-0">
               <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
@@ -281,6 +305,10 @@
             </button>
           </div>
           <div class="flex items-center gap-1 shrink-0">
+            <button id="btn-chat-link-share" type="button" title="Compartilhar o link" class="hidden px-2.5 py-1.5 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold active:scale-95 flex items-center gap-1">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" /></svg>
+              <span>Compartilhar</span>
+            </button>
             <button id="btn-chat-contact-menu" type="button" class="p-2 rounded-xl text-slate-400 hover:text-white active:scale-95">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 12.75a.75.75 0 110-1.5.75.75 0 010 1.5zM12 18.75a.75.75 0 110-1.5.75.75 0 010 1.5z" />
@@ -391,27 +419,12 @@
       <!-- Ações Rápidas -->
       <div class="space-y-2">
         <span class="text-xs font-bold uppercase tracking-wider text-slate-400 px-1">Ações Rápidas</span>
-        
-        <div class="grid grid-cols-1 gap-2.5">
-          <!-- Ação: Criar Link Público -->
-          <button id="btn-action-create-link" type="button" class="p-3.5 rounded-2xl bg-gradient-to-b from-orange-900/40 to-slate-900 border border-orange-500/30 text-left hover:border-orange-500 transition-all active:scale-98 glow-orange flex flex-col justify-between h-28">
-            <div class="w-8 h-8 rounded-xl bg-orange-500/20 text-orange-400 flex items-center justify-center">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-              </svg>
-            </div>
-            <div>
-              <span class="font-bold text-sm text-white block">Gerar Link WebRTC</span>
-              <span class="text-[10px] text-slate-400">Compartilhe no WhatsApp</span>
-            </div>
-          </button>
-        </div>
 
-        <!-- Ação: Baixar via Link -->
+        <!-- Abrir um link recebido (portal: chat + arquivos). Para criar um link: botão 🔗 na lista de conversas -->
         <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2">
-          <input id="input-open-link" type="url" placeholder="Colar link PulseShare para baixar..." class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 font-mono outline-none focus:border-orange-500" />
+          <input id="input-open-link" type="url" placeholder="Colar link PulseShare para abrir..." class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 font-mono outline-none focus:border-orange-500" />
           <button id="btn-open-link-go" type="button" class="px-3.5 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shrink-0 active:scale-95 shadow-md shadow-orange-600/30">
-            Baixar
+            Abrir
           </button>
         </div>
       </div>
@@ -460,19 +473,6 @@
     </section>
 
     <!-- ===================================================================== -->
-    <!-- ABA 4: LINKS PÚBLICOS -->
-    <!-- ===================================================================== -->
-    <section id="view-shares" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
-        <h3 class="text-sm font-bold text-white">🔗 Meus Links de Download Ativos</h3>
-        <button id="btn-new-share-link" type="button" class="px-2.5 py-1 rounded-lg bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shadow active:scale-95">+ Novo</button>
-      </div>
-      <div id="shares-list" class="space-y-2.5">
-        <!-- preenchido dinamicamente -->
-      </div>
-    </section>
-
-    <!-- ===================================================================== -->
     <!-- ABA 5: USUÁRIOS E DISPOSITIVOS NA MALHA -->
     <!-- ===================================================================== -->
     <section id="view-mesh" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
@@ -498,9 +498,9 @@
   </main>
 
   <!-- ===================================================================== -->
-  <!-- BARRA DE NAVEGAÇÃO INFERIOR NATIVA (5 ABAS - CHAT FIRST) -->
+  <!-- BARRA DE NAVEGAÇÃO INFERIOR NATIVA (4 ABAS - CHAT FIRST) -->
   <!-- ===================================================================== -->
-  <nav id="app-bottom-nav" class="grid grid-cols-5 bg-slate-900/95 border-t border-slate-800/80 shrink-0 select-none pb-1 z-30 shadow-lg">
+  <nav id="app-bottom-nav" class="grid grid-cols-4 bg-slate-900/95 border-t border-slate-800/80 shrink-0 select-none pb-1 z-30 shadow-lg">
     <!-- 1. CHAT (Primeira aba padrão) -->
     <button id="nav-chat" type="button" class="nav-tab active py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-bold text-indigo-400 relative">
       <div class="relative">
@@ -529,14 +529,6 @@
         <span id="badge-transfers-count" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-sky-500 text-slate-950 font-mono">0</span>
       </div>
       <span>Envios</span>
-    </button>
-
-    <!-- 4. LINKS -->
-    <button id="nav-shares" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244" />
-      </svg>
-      <span>Links</span>
     </button>
 
     <!-- 5. USUÁRIOS -->
@@ -698,16 +690,47 @@
         <h3 id="contact-menu-title" class="text-sm font-bold text-white">Opções da Conversa</h3>
         <button id="btn-close-contact-menu" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
       </div>
+      <!-- Preenchido por renderContactMenu (app.js): salvar/renomear, listas, limpar, excluir conversa, remover contato -->
+      <div id="contact-menu-actions" class="space-y-2 overflow-y-auto" style="max-height:70vh custom-scroll"></div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- ENCAMINHAR MENSAGENS (escolha das conversas / contatos de destino) -->
+  <!-- ===================================================================== -->
+  <div id="modal-forward" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col">
+    <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center gap-2 shrink-0 shadow-md">
+      <button id="btn-close-forward" type="button" title="Voltar" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95 transition-all shrink-0">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
+      </button>
+      <div class="min-w-0">
+        <h3 class="text-sm font-bold text-white leading-tight">Encaminhar para…</h3>
+        <span id="forward-summary" class="text-[11px] text-slate-400 block truncate leading-tight"></span>
+      </div>
+    </div>
+    <div class="p-3 border-b border-slate-800 shrink-0">
+      <input id="input-forward-search" type="text" placeholder="Buscar conversa ou contato" autocomplete="off" autocapitalize="none" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-indigo-500" />
+    </div>
+    <div id="forward-target-list" class="flex-1 min-h-0 overflow-y-auto custom-scroll divide-y divide-slate-800/60"></div>
+    <div class="p-3 border-t border-slate-800 bg-slate-900 shrink-0 flex items-center gap-2">
+      <span id="forward-selected-names" class="flex-1 min-w-0 text-[11px] text-slate-300 truncate">Escolha uma ou mais conversas</span>
+      <button id="btn-forward-send" type="button" disabled class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold active:scale-95 disabled:opacity-40">↪ Enviar</button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- APAGAR MENSAGENS (para mim / para todos) -->
+  <!-- ===================================================================== -->
+  <div id="modal-delete-messages" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 shadow-2xl relative">
+      <div class="border-b border-slate-800 pb-2">
+        <h3 id="delete-messages-title" class="text-sm font-bold text-white">Apagar mensagem?</h3>
+        <p id="delete-messages-hint" class="text-[11px] text-slate-400 mt-1"></p>
+      </div>
       <div class="space-y-2">
-        <button id="btn-contact-save" type="button" class="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-semibold text-white flex items-center gap-2">
-          <span>👤 Salvar nos Contatos</span>
-        </button>
-        <button id="btn-contact-add-list" type="button" class="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-left text-xs font-semibold text-white flex items-center gap-2">
-          <span>🏷️ Adicionar a uma Lista (Favoritos/Família...)</span>
-        </button>
-        <button id="btn-contact-delete-chat" type="button" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold flex items-center gap-2">
-          <span>🗑️ Excluir Conversa</span>
-        </button>
+        <button id="btn-delete-for-all" type="button" class="w-full py-2.5 px-3 rounded-xl bg-rose-600/80 hover:bg-rose-500 text-white text-left text-xs font-bold">🗑️ Apagar para todos</button>
+        <button id="btn-delete-for-me" type="button" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold">🗑️ Apagar só para mim</button>
+        <button id="btn-delete-cancel" type="button" class="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-left text-xs font-semibold">Cancelar</button>
       </div>
     </div>
   </div>
@@ -768,7 +791,81 @@
   </div>
 
   <!-- ===================================================================== -->
-  <!-- MODAL: ENVIAR ARQUIVOS (DIRETO OU VIA LINK) -->
+  <!-- MODAL: NOVO CHAT DE LINK (descrição, senha, prazo) -->
+  <!-- ===================================================================== -->
+  <div id="modal-new-link" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+        <h3 class="text-sm font-bold text-white">🔗 Novo link de compartilhamento</h3>
+        <button id="btn-close-new-link" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
+      </div>
+      <p class="text-[11px] text-slate-400">Cria um chat: tudo o que você mandar nele fica disponível para quem abrir o link, que também pode conversar com você e enviar arquivos.</p>
+      <div class="space-y-1">
+        <label for="input-new-link-title" class="text-[11px] font-semibold text-slate-300">Descrição</label>
+        <input id="input-new-link-title" type="text" maxlength="120" placeholder="Ex.: Fotos da viagem, Contrato assinado..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-orange-500" />
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label for="input-new-link-password" class="text-[11px] font-semibold text-slate-300 block mb-1">Senha (opcional)</label>
+          <input id="input-new-link-password" type="text" autocomplete="off" autocapitalize="none" placeholder="Sem senha" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-orange-500" />
+        </div>
+        <div>
+          <label for="select-new-link-expiration" class="text-[11px] font-semibold text-slate-300 block mb-1">Revogar em</label>
+          <select id="select-new-link-expiration" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-slate-200 outline-none">
+            <option value="15">15 minutos</option>
+            <option value="30">30 minutos</option>
+            <option value="60">1 hora</option>
+            <option value="360">6 horas</option>
+            <option value="1440" selected>24 horas</option>
+            <option value="10080">7 dias</option>
+            <option value="43200">30 dias</option>
+            <option value="0">Nunca</option>
+          </select>
+        </div>
+      </div>
+      <label for="input-new-link-allow-zip" class="flex items-start gap-2 p-2.5 rounded-xl bg-slate-950 border border-slate-700 cursor-pointer">
+        <input id="input-new-link-allow-zip" type="checkbox" checked style="accent-color:#f97316;width:16px;height:16px;margin-top:1px;flex-shrink:0" />
+        <span class="flex flex-col">
+          <span class="text-[11px] font-semibold text-slate-200">🗜️ Permitir baixar tudo compactado (.zip)</span>
+          <span class="text-[10px] text-slate-400">Em "Baixar tudo", quem abriu o link escolhe entre .zip ou arquivos separados.</span>
+        </span>
+      </label>
+      <button id="btn-create-new-link" type="button" class="w-full py-3 rounded-2xl bg-gradient-to-r from-orange-600 to-indigo-600 text-white font-bold text-sm shadow-xl active:scale-98">Criar chat de link</button>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: COMPARTILHAR CHAT DE LINK -->
+  <!-- ===================================================================== -->
+  <div id="modal-link-share" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 gap-2">
+        <h3 id="link-share-title" class="text-sm font-bold text-white truncate min-w-0">Link</h3>
+        <button id="btn-close-link-share" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white shrink-0">✕</button>
+      </div>
+      <div id="link-share-url" class="p-2.5 rounded-xl bg-slate-950 border border-slate-800 text-[11px] font-mono text-orange-200 break-all select-text"></div>
+      <p id="link-share-meta" class="text-[10px] text-slate-400"></p>
+      <button id="btn-link-copy" type="button" class="w-full p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-left flex items-center gap-3 active:scale-98">
+        <span class="text-lg">🔗</span>
+        <span class="flex flex-col"><span class="text-xs font-bold text-white">Copiar link</span><span class="text-[10px] text-slate-400">Só o endereço</span></span>
+      </button>
+      <button id="btn-link-copy-full" type="button" class="w-full p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-left flex items-center gap-3 active:scale-98">
+        <span class="text-lg">📋</span>
+        <span class="flex flex-col"><span class="text-xs font-bold text-white">Copiar link completo</span><span class="text-[10px] text-slate-400">Descrição, link, prazo de revogação e senha</span></span>
+      </button>
+      <button id="btn-link-share-native" type="button" class="android-only w-full p-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-left flex items-center gap-3 active:scale-98">
+        <span class="text-lg">📤</span>
+        <span class="flex flex-col"><span class="text-xs font-bold text-white">Enviar por outro app…</span><span class="text-[10px] text-slate-400">WhatsApp, e-mail… (texto completo)</span></span>
+      </button>
+      <div class="grid grid-cols-2 gap-2 pt-1">
+        <button id="btn-link-share-stop" type="button" class="py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-bold active:scale-95">⛔ Encerrar link</button>
+        <button id="btn-link-share-delete" type="button" class="py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-bold active:scale-95">🗑️ Excluir chat</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL: ENVIAR ARQUIVOS (DIRETO PARA @USUÁRIO) -->
   <!-- ===================================================================== -->
   <div id="modal-send" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
     <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
@@ -779,12 +876,6 @@
         <button id="btn-close-send-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
       </div>
 
-      <!-- Modo de Envio (Direto vs Link Público) -->
-      <div class="grid grid-cols-2 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
-        <button id="btn-mode-p2p" type="button" class="py-2 text-xs font-bold rounded-lg bg-indigo-600 text-white transition-all">Para @usuário</button>
-        <button id="btn-mode-link" type="button" class="py-2 text-xs font-medium text-slate-400 hover:text-white rounded-lg transition-all">Link Público</button>
-      </div>
-
       <!-- Destinatário (quando no modo P2P) -->
       <div id="field-target-user" class="space-y-1">
         <label class="text-[11px] font-semibold text-slate-300">Destinatário:</label>
@@ -792,33 +883,6 @@
           <input id="input-target-user" type="text" placeholder="@nome_do_usuario" class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500" />
           <button id="btn-pick-peer" type="button" class="px-3 py-2 bg-slate-800 text-xs text-slate-200 rounded-xl border border-slate-700">Lista</button>
         </div>
-      </div>
-
-      <!-- Configurações de Link Público (quando no modo Link) -->
-      <div id="field-link-options" class="hidden space-y-2">
-        <div class="grid grid-cols-2 gap-2">
-          <div>
-            <label class="text-[10px] text-slate-400 block mb-1">Expira em:</label>
-            <select id="select-link-expiration" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-slate-200 outline-none">
-              <option value="900000">15 Minutos</option>
-              <option value="1800000" selected>30 Minutos</option>
-              <option value="3600000">1 Hora</option>
-              <option value="21600000">6 Horas</option>
-              <option value="86400000">24 Horas</option>
-            </select>
-          </div>
-          <div>
-            <label class="text-[10px] text-slate-400 block mb-1">Senha (Opcional):</label>
-            <input id="input-link-password" type="text" placeholder="Sem senha" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none" />
-          </div>
-        </div>
-        <label for="input-link-allow-zip" class="flex items-start gap-2 p-2.5 rounded-xl bg-slate-950 border border-slate-700 cursor-pointer">
-          <input id="input-link-allow-zip" type="checkbox" checked style="accent-color:#f97316;width:16px;height:16px;margin-top:1px;flex-shrink:0" />
-          <span class="flex flex-col">
-            <span class="text-[11px] font-semibold text-slate-200">🗜️ Permitir baixar compactado (.zip)</span>
-            <span class="text-[10px] text-slate-400">Ao tocar em Baixar, o destinatário escolhe entre .zip ou arquivos separados.</span>
-          </span>
-        </label>
       </div>
 
       <!-- Seletor de Arquivos Nativo do Android -->

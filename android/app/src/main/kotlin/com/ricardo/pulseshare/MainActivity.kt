@@ -30,9 +30,11 @@ import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
 
+    // A WebView pertence ao WebViewHost (continua viva com o app fechado, em segundo plano)
     private lateinit var webView: WebView
+    private lateinit var rootLayout: FrameLayout
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
-    private val pendingSharedFiles = mutableListOf<JSONObject>()
+    private var resumed = false
 
     // Launcher para seleção de múltiplos arquivos nativa do Android
     private val filePickerLauncher = registerForActivityResult(
@@ -61,7 +63,7 @@ class MainActivity : ComponentActivity() {
 
             // Notifica o frontend PulseShare
             val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onFilesPicked) { window.PulseShareNativeCallback.onFilesPicked(${jsonArray.toString()}); }"
-            webView.evaluateJavascript(js, null)
+            WebViewHost.evaluateJs(js)
 
             // Se for resposta ao input file padrão do HTML
             fileUploadCallback?.onReceiveValue(uris.toTypedArray())
@@ -104,7 +106,7 @@ class MainActivity : ComponentActivity() {
         if (allowed.isEmpty()) request.deny() else request.grant(allowed.toTypedArray())
     }
 
-    private fun handleWebPermission(request: PermissionRequest) {
+    fun handleWebPermission(request: PermissionRequest) {
         val missing = request.resources.mapNotNull { androidPermissionFor(it) }
             .filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
@@ -131,6 +133,26 @@ class MainActivity : ComponentActivity() {
     private fun hasLocationPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    fun handleGeolocationPrompt(origin: String?, callback: GeolocationPermissions.Callback) {
+        if (hasLocationPermission()) {
+            callback.invoke(origin, true, false)
+        } else {
+            pendingGeoCallback?.invoke(pendingGeoOrigin, false, false)
+            pendingGeoOrigin = origin
+            pendingGeoCallback = callback
+            geoPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+    }
+
+    // <input type=file> da página
+    fun openFileChooser(callback: ValueCallback<Array<Uri>>?) {
+        fileUploadCallback?.onReceiveValue(null)
+        fileUploadCallback = callback
+        filePickerLauncher.launch(arrayOf("*/*"))
+    }
+
+    fun isUiVisible(): Boolean = resumed
 
     // Seletor de arquivos com filtro de tipo ("image/*,video/*", "audio/*")
     fun launchFilePicker(mimeTypes: Array<String>) {
@@ -167,11 +189,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    fun evaluateJs(js: String) {
-        runOnUiThread {
-            webView.evaluateJavascript(js, null)
-        }
-    }
+    fun evaluateJs(js: String) = WebViewHost.evaluateJs(js)
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -181,81 +199,8 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermission()
         requestAppPermissions()
 
-        WebView.setWebContentsDebuggingEnabled(true)
-
-        // Configuração da WebView
-        webView = WebView(this).apply {
-            layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-            setBackgroundColor(0xFF020617.toInt()) // slate-950
-        }
-
-        val settings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.databaseEnabled = true
-        settings.allowFileAccess = true
-        settings.allowContentAccess = true
-        settings.mediaPlaybackRequiresUserGesture = false
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
-        settings.setGeolocationEnabled(true)
-        settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
-
-        // Suporte WebRTC e Permissões
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onPermissionRequest(request: PermissionRequest?) {
-                // WebRTC / leitor de QR: pede a permissão do Android se faltar
-                request?.let { req -> runOnUiThread { handleWebPermission(req) } }
-            }
-
-            override fun onGeolocationPermissionsShowPrompt(origin: String?, callback: GeolocationPermissions.Callback?) {
-                if (callback == null) return
-                runOnUiThread {
-                    if (hasLocationPermission()) {
-                        callback.invoke(origin, true, false)
-                    } else {
-                        pendingGeoCallback?.invoke(pendingGeoOrigin, false, false)
-                        pendingGeoOrigin = origin
-                        pendingGeoCallback = callback
-                        geoPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-                    }
-                }
-            }
-
-            override fun onShowFileChooser(
-                webView: WebView?,
-                filePathCallback: ValueCallback<Array<Uri>>?,
-                fileChooserParams: FileChooserParams?
-            ): Boolean {
-                fileUploadCallback = filePathCallback
-                filePickerLauncher.launch(arrayOf("*/*"))
-                return true
-            }
-
-            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
-                Log.d("PulseShareWeb", "[${consoleMessage?.messageLevel()}] ${consoleMessage?.message()} (${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()})")
-                return true
-            }
-        }
-
-        webView.webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
-                deliverPendingSharedFiles()
-            }
-        }
-
-        // Bridge Nativo PulseShare
-        val bridge = PulseShareBridge(this) {
-            filePickerLauncher.launch(arrayOf("*/*"))
-        }
-        webView.addJavascriptInterface(bridge, "PulseShareNative")
-
         // Container raiz que aplica insets da barra de status e navegação do Android
-        val rootLayout = FrameLayout(this).apply {
+        rootLayout = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -274,23 +219,22 @@ class MainActivity : ComponentActivity() {
             windowInsets
         }
 
-        rootLayout.addView(webView)
         setContentView(rootLayout)
 
         // Processa Intents recebidos (ex: compartilhar arquivo de outros apps)
         handleIntent(intent)
 
-        // Carrega a aplicação PulseShare empacotada localmente
-        webView.loadUrl("file:///android_asset/www/index.html")
+        // Usa a WebView que já está rodando em segundo plano (ou cria e carrega o app)
+        webView = WebViewHost.attach(this, rootLayout)
 
         // Botão Voltar do Android
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
                 val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onBackPressed) { window.PulseShareNativeCallback.onBackPressed(); } else { 'HANDLED'; }"
-                webView.evaluateJavascript(js) { res ->
+                WebViewHost.evaluateJs(js) { res ->
                     if (res == null || res == "null" || res == "\"EXIT\"") {
-                        if (webView.canGoBack()) {
-                            webView.goBack()
+                        if (WebViewHost.canGoBack()) {
+                            WebViewHost.goBack()
                         } else {
                             moveTaskToBack(true)
                         }
@@ -304,15 +248,19 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntent(intent)
-        deliverPendingSharedFiles()
+        WebViewHost.deliverPendingSharedFiles()
     }
 
-    // Toque numa notificação de mensagem → abre a conversa
-    private var pendingOpenChat: String = ""
-    fun consumePendingOpenChat(): String {
-        val t = pendingOpenChat
-        pendingOpenChat = ""
-        return t
+    override fun onResume() {
+        super.onResume()
+        resumed = true
+        evaluateJs("window.PulseShareNativeCallback && window.PulseShareNativeCallback.onUiVisibility && window.PulseShareNativeCallback.onUiVisibility(true)")
+    }
+
+    override fun onPause() {
+        resumed = false
+        evaluateJs("window.PulseShareNativeCallback && window.PulseShareNativeCallback.onUiVisibility && window.PulseShareNativeCallback.onUiVisibility(false)")
+        super.onPause()
     }
 
     private fun handleIntent(intent: Intent?) {
@@ -321,7 +269,7 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(NotificationHelper.EXTRA_OPEN_CHAT)
             val safe = tag.replace(Regex("[^a-z0-9_@]"), "")
             if (safe.isNotEmpty()) {
-                pendingOpenChat = safe
+                WebViewHost.pendingOpenChat = safe
                 // App já carregado: avisa o JS direto
                 evaluateJs("window.PulseShareNativeCallback && window.PulseShareNativeCallback.onOpenChat && window.PulseShareNativeCallback.onOpenChat('$safe')")
             }
@@ -346,7 +294,7 @@ class MainActivity : ComponentActivity() {
                         put("type", "text")
                         put("content", text)
                     }
-                    pendingSharedFiles.add(obj)
+                    synchronized(WebViewHost.pendingSharedFiles) { WebViewHost.pendingSharedFiles.add(obj) }
                 }
             }
         } else if (Intent.ACTION_SEND_MULTIPLE == action && type != null) {
@@ -366,7 +314,7 @@ class MainActivity : ComponentActivity() {
                     put("type", "link")
                     put("content", dataUri.toString())
                 }
-                pendingSharedFiles.add(obj)
+                synchronized(WebViewHost.pendingSharedFiles) { WebViewHost.pendingSharedFiles.add(obj) }
             }
         }
     }
@@ -384,26 +332,7 @@ class MainActivity : ComponentActivity() {
             put("mimeType", details.mimeType)
             put("uri", details.uriString)
         }
-        pendingSharedFiles.add(obj)
-    }
-
-    fun getSharedFilesJson(): String {
-        val array = JSONArray()
-        pendingSharedFiles.forEach { array.put(it) }
-        return array.toString()
-    }
-
-    fun clearSharedFiles() {
-        pendingSharedFiles.clear()
-    }
-
-    private fun deliverPendingSharedFiles() {
-        if (pendingSharedFiles.isNotEmpty()) {
-            val jsonStr = getSharedFilesJson()
-            val js = "if (window.PulseShareNativeCallback && window.PulseShareNativeCallback.onSharedFilesReceived) { window.PulseShareNativeCallback.onSharedFilesReceived($jsonStr); }"
-            webView.evaluateJavascript(js, null)
-            clearSharedFiles()
-        }
+        synchronized(WebViewHost.pendingSharedFiles) { WebViewHost.pendingSharedFiles.add(obj) }
     }
 
     private fun requestNotificationPermission() {
@@ -419,7 +348,18 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        webView.destroy()
+        fileUploadCallback?.onReceiveValue(null)
+        fileUploadCallback = null
+        pendingWebPermission?.deny()
+        pendingWebPermission = null
+        if (PulseShareService.isBackgroundMode(this)) {
+            // Como o WhatsApp: fechar o app não desliga. A WebView sai da tela e continua
+            // conectada dentro do serviço em primeiro plano, recebendo e notificando.
+            WebViewHost.detach(this)
+            PulseShareService.start(this, PulseShareService.BACKGROUND_STATUS)
+        } else {
+            WebViewHost.destroy()
+        }
         super.onDestroy()
     }
 }

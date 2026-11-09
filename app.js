@@ -44,7 +44,7 @@
   // Só a conta ativa fica conectada e recebe mensagens.
   // ==========================================================================
   const ACCOUNT_SCOPED_KEYS = ['ps_chat_messages', 'ps_contacts_catalog_v2', 'ps_custom_categories', 'ps_blocked_tags',
-    'ps_previous_tags', 'ps_my_tag', 'ps_my_reghash', 'ps_node_id'];
+    'ps_previous_tags', 'ps_my_tag', 'ps_my_reghash', 'ps_node_id', 'ps_hidden_chats', 'ps_dismissed_official', 'ps_link_rooms_v1'];
   const LIVE_ACCOUNT_KEY = 'ps_live_account_id';
   function accountStoreId(profile) {
     return profile && profile.pubKeyHex ? 'k' + profile.pubKeyHex.slice(0, 16) : '';
@@ -141,7 +141,6 @@
   const directDataChannels = new Map(); // tag -> RTCDataChannel
   const blePeers = new Map(); // tag -> { rssi, address, lastSeen }
   const transfers = {}; // transferId -> transfer info
-  const publicShares = {}; // shareId -> share info
   let chatMessages = {}; // tag -> array de msgs
   try {
     const savedChats = localStorage.getItem('ps_chat_messages');
@@ -199,6 +198,19 @@
     tag = normalizeTag(tag);
     if (blocked) blockedTags.add(tag); else blockedTags.delete(tag);
     try { localStorage.setItem('ps_blocked_tags', JSON.stringify(Array.from(blockedTags))); } catch (e) {}
+  }
+  // Conversas excluídas da lista: somem enquanto não houver mensagem (contato
+  // salvo continua nos contatos). Mensagem nova faz a conversa voltar sozinha.
+  let hiddenChats = {};
+  try { hiddenChats = JSON.parse(localStorage.getItem('ps_hidden_chats') || '{}') || {}; } catch (e) {}
+  function isChatHidden(tag) {
+    return Boolean(hiddenChats[tag]) && !(chatMessages[tag] && chatMessages[tag].length);
+  }
+  function setChatHidden(tag, hidden) {
+    tag = normalizeTag(tag);
+    if (!tag || Boolean(hiddenChats[tag]) === Boolean(hidden)) return;
+    if (hidden) hiddenChats[tag] = Date.now(); else delete hiddenChats[tag];
+    try { localStorage.setItem('ps_hidden_chats', JSON.stringify(hiddenChats)); } catch (e) {}
   }
   // Tags antigas deste mesmo perfil (após renomear): continuam chegando sinais
   // de quem ainda não soube da troca. Têm o mesmo sufixo de hash → só nós.
@@ -298,6 +310,11 @@
       if (Native.isAvailable() && window.PulseShareNative.cancelTransfer) {
         window.PulseShareNative.cancelTransfer(id);
       }
+    },
+    // O arquivo baixado ainda existe? (sem a função nativa: assume que sim)
+    fileExists: (path) => {
+      if (Native.isAvailable() && window.PulseShareNative.fileExists) return window.PulseShareNative.fileExists(path);
+      return true;
     },
     readUriChunkBase64: (uri, offset, length) => {
       if (Native.isAvailable() && window.PulseShareNative.readUriChunkBase64) {
@@ -440,8 +457,53 @@
   let desktopLaunch = null;
   try { desktopLaunch = IS_DESKTOP ? Desk.consumeLaunch() : null; } catch (e) { desktopLaunch = null; }
 
+  // Android: com "Rodar em segundo plano", fechar o app só tira a WebView da tela
+  // (ela continua conectada dentro do serviço). Aqui sabemos se a tela está aberta.
+  let nativeUiVisible = true;
+  try { if (IS_ANDROID && window.PulseShareNative.isUiVisible) nativeUiVisible = Boolean(window.PulseShareNative.isUiVisible()); } catch (e) {}
+  function isUiShowing() {
+    return !IS_BACKGROUND_PAGE && !document.hidden && nativeUiVisible;
+  }
+  // "Lida" (✓✓ azul) só quando a conversa está aberta NA TELA: app visível e, no
+  // PC/navegador, com a janela em foco (janela atrás de outra não conta como lida).
+  function isReadingChat(tag) {
+    if (!tag || activeChatPeer !== tag || !isUiShowing()) return false;
+    if (IS_ANDROID) return true;
+    try { return document.hasFocus(); } catch (e) { return true; }
+  }
+  // Avisa quem nos mandou mensagens que elas foram lidas. Leva os ids: o remetente
+  // marca de azul só essas (nunca uma mensagem que ainda não chegou aqui).
+  const lastReadSentFor = {};
+  function sendReadReceiptIfViewing() {
+    const tag = activeChatPeer;
+    if (!tag || !myTag || isOfficialTag(tag) || !isReadingChat(tag)) return;
+    const room = roomByKey(tag);
+    if (room) { sendRoomReadReceipts(room); return; }
+    const ids = (chatMessages[tag] || []).filter((m) => m.sender === tag && !m.deleted).map((m) => m.id);
+    if (!ids.length) return;
+    const last = ids[ids.length - 1];
+    if (lastReadSentFor[tag] === last + '|' + ids.length) return; // nada novo para confirmar
+    lastReadSentFor[tag] = last + '|' + ids.length;
+    sendSignal(tag, 'read-' + Date.now(), 'CHAT_READ', { readerTag: myTag, msgIds: ids.slice(-200) });
+  }
+  // Voltou para a janela / o app com a conversa aberta: agora sim foi lida
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) sendReadReceiptIfViewing(); });
+  window.addEventListener('focus', () => sendReadReceiptIfViewing());
+
   // Callbacks globais acionados pelo Kotlin
   window.PulseShareNativeCallback = {
+    // A tela do app apareceu / sumiu
+    onUiVisibility: (visible) => {
+      nativeUiVisible = Boolean(visible);
+      if (nativeUiVisible) sendReadReceiptIfViewing();
+    },
+    // O app foi aberto de novo e pegou a WebView que estava rodando sem tela
+    onUiAttached: () => {
+      nativeUiVisible = true;
+      renderConversationsList();
+      if (activeChatPeer) renderChatMessages(activeChatPeer);
+      sendReadReceiptIfViewing();
+    },
     onFilesPicked: (files) => {
       if (pendingChatAttachment) {
         pendingChatAttachment = false;
@@ -505,6 +567,15 @@
         modalPair.classList.add('hidden');
         return 'HANDLED';
       }
+      const modalLinkShare = document.getElementById('modal-link-share');
+      if (modalLinkShare && !modalLinkShare.classList.contains('hidden')) { closeLinkShareSheet(); return 'HANDLED'; }
+      const modalNewLink = document.getElementById('modal-new-link');
+      if (modalNewLink && !modalNewLink.classList.contains('hidden')) { modalNewLink.classList.add('hidden'); return 'HANDLED'; }
+      const modalFwd = document.getElementById('modal-forward');
+      if (modalFwd && !modalFwd.classList.contains('hidden')) { closeForwardModal(); return 'HANDLED'; }
+      const modalDel = document.getElementById('modal-delete-messages');
+      if (modalDel && !modalDel.classList.contains('hidden')) { closeDeleteMessagesModal(); return 'HANDLED'; }
+      if (isSelectingMessages()) { clearMessageSelection(); return 'HANDLED'; }
       const modalContact = document.getElementById('modal-contact-menu');
       if (modalContact && !modalContact.classList.contains('hidden')) {
         modalContact.classList.add('hidden');
@@ -1083,6 +1154,7 @@
     // Mensagens oficiais (PulseShare)
     const list = chatMessages[OFFICIAL_TAG] || [];
     const have = new Set(list.map((m) => m.id));
+    dismissedOfficialIds().forEach((id) => have.add(id));
     const added = [];
     adminRecords.filter((r) => r.body.kind === 'broadcast' && !have.has(r.body.id)).forEach((r) => {
       const m = { id: r.body.id, sender: OFFICIAL_TAG, text: String(r.body.text).slice(0, 4000), timestamp: r.body.ts, status: 'RECEIVED', official: true };
@@ -1240,7 +1312,7 @@
   }
 
   function nameRuleError(name) {
-    if (!/^[a-z0-9_]{2,24}$/.test(name) || /^link_/.test(name) || name === 'link') {
+    if (!/^[a-z0-9_]{2,24}$/.test(name) || /^link_/.test(name) || /^linkchat/.test(name) || name === 'link') {
       return 'Use de 2 a 24 letras minúsculas, números ou "_" (não pode começar com "link_").';
     }
     // "pulseshare" é o nome do canal oficial (mensagens do administrador)
@@ -1662,6 +1734,8 @@
     const online = brokersOnline() > 0;
     const bleFits = packetSize <= BLE_FRAME_MAX && Native.isBleAvailable();
     const routes = [];
+    // Canal direto na mesma rede: não sai para a internet
+    if (!opts.noLan && lanOpenChannel(tag)) routes.push({ via: 'lan', cost: 5 });
     if (bleFits && isBleNeighbor(tag)) {
       const rssi = Number(blePeers.get(tag).rssi) || -85;
       // Sinal forte (≈ -50 dBm) custa pouco; perto de -100 dBm fica caro
@@ -1709,11 +1783,13 @@
     const size = JSON.stringify(packet).length;
     const routes = rankRoutes(tag, size, opts);
     if (!routes.length) return [];
-    const howMany = opts.allRoutes ? routes.length : opts.redundant ? Math.min(2, routes.length) : 1;
+    // Com a LAN aberta, uma rota só (sem cópia pela internet); retentativas usam todas
+    const howMany = opts.allRoutes ? routes.length : (opts.redundant && routes[0].via !== 'lan') ? Math.min(2, routes.length) : 1;
     const used = [];
     routes.slice(0, howMany).forEach((r) => {
       let ok = false;
-      if (r.via === 'mqtt') ok = publishRawToBrokers(packet) > 0;
+      if (r.via === 'lan') ok = sendViaLan(tag, packet);
+      else if (r.via === 'mqtt') ok = publishRawToBrokers(packet) > 0;
       else if (r.via === 'ble') ok = sendBleFrame(tag, packet, 3, 0) !== false;
       else if (r.via === 'mesh') ok = floodBle(packet, null, 3, 0) > 0;
       if (ok) used.push(r.via);
@@ -1725,6 +1801,7 @@
 
   function sendSignal(to, transferId, signalType, payload, opts = {}) {
     const target = normalizeTag(to);
+    if (isRoomKey(target)) return []; // conversa de link: quem recebe são os visitantes (roomBroadcast)
     const packet = buildMeshPacket({
       meshType: 'DIRECT_SIGNAL',
       to: target,
@@ -1735,6 +1812,7 @@
     seenPacketIds.add(packet.pktId);
     const isChat = CHAT_SIGNALS.has(signalType);
     return routePacket(target, packet, {
+      noLan: LAN_SIGNALS.has(signalType),
       redundant: isChat,
       allRoutes: Boolean(opts.allRoutes),
       latencySensitive: !isChat && signalType !== 'CHAT_TYPING'
@@ -1823,6 +1901,8 @@
   // Rótulo/selo da rota atual de um contato
   function currentRouteFor(tag) {
     tag = normalizeTag(tag);
+    const lan = lanLinks.get(tag);
+    if (lan && lan.state === 'open' && lanOpenChannel(tag)) return lan.isLan === false ? 'DIRECT' : 'LAN';
     const st = statsFor(tag);
     if (st.lanAt && Date.now() - st.lanAt < LAN_FRESH_MS) return 'LAN';
     const best = rankRoutes(tag, 400)[0];
@@ -1835,6 +1915,7 @@
   function routeBadgeHtml(tag) {
     const r = currentRouteFor(tag);
     if (r === 'LAN') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0" title="Mesma rede local (WebRTC direto)">🟢 LAN</span>';
+    if (r === 'DIRECT') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0" title="Conexão direta entre os aparelhos (sem servidor no meio)">⚡ Direto</span>';
     if (r === 'BLE') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-sky-500/20 text-sky-400 border border-sky-500/30 shrink-0" title="Bluetooth direto">📶 BLE</span>';
     if (r === 'MESH') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0" title="Via outros usuários (malha Bluetooth)">🔀 Malha</span>';
     if (r === 'OFF') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-slate-800 text-slate-500 border border-slate-700 shrink-0" title="Sem rota no momento: a mensagem é reenviada quando houver">⚪ Sem rota</span>';
@@ -1851,10 +1932,8 @@
       });
       if (!pair) stats.forEach((r) => { if (!pair && r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) pair = r; });
       if (!pair) return;
-      const local = stats.get(pair.localCandidateId);
-      const remote = stats.get(pair.remoteCandidateId);
       const st = statsFor(tag);
-      if (local && remote && local.candidateType === 'host' && remote.candidateType === 'host') {
+      if (await webrtcPathIsLocal(pc)) {
         st.lanAt = Date.now();
         peerTransports[normalizeTag(tag)] = 'LAN';
       } else {
@@ -1864,6 +1943,248 @@
       if (typeof renderConversationsList === 'function') renderConversationsList();
       if (activeChatPeer === normalizeTag(tag)) refreshActiveChatRouteBadge();
     } catch (e) {}
+  }
+
+
+  // --------------------------------------------------------------------------
+  // 5c. ROTA LAN DIRETA (WebRTC só com candidatos locais)
+  //     Na mesma rede, o chat não deveria sair para a internet. Cada contato
+  //     online ganha uma RTCPeerConnection SEM servidores STUN/TURN: só conecta
+  //     se os dois aparelhos se enxergam direto (Wi-Fi/cabo da mesma rede).
+  //     Aberta, ela vira a rota preferida ('lan') de TODOS os sinais (chat, ACK,
+  //     sinalização dos arquivos) — a internet só entra nas retentativas.
+  //     Sinais: LAN_OFFER / LAN_ANSWER / LAN_ICE (sempre pela internet/BLE).
+  //     Quem tem a tag "menor" é o lado educado (cede se as duas ofertas cruzarem).
+  // --------------------------------------------------------------------------
+  const lanLinks = new Map();   // tag -> { pc, dc, id, state, initiator, lastRx, pendingIce, isLan }
+  const lanBackoff = {};        // tag -> { until, fails }
+  const LAN_SIGNALS = new Set(['LAN_OFFER', 'LAN_ANSWER', 'LAN_ICE']);
+  const LAN_CONNECT_TIMEOUT = 15000;
+
+  function lanOpenChannel(tag) {
+    const l = lanLinks.get(normalizeTag(tag));
+    return l && l.dc && l.dc.readyState === 'open' ? l.dc : null;
+  }
+
+  function lanEligible(tag) {
+    tag = normalizeTag(tag);
+    if (!tag || !myTag || isMyTag(tag) || isLinkVisitor(tag) || isOfficialTag(tag) || isBlocked(tag) || isAdminDeleted(tag)) return false;
+    if (typeof RTCPeerConnection === 'undefined') return false;
+    return isContact(tag) || Boolean(chatMessages[tag] && chatMessages[tag].length);
+  }
+
+  function closeLanLink(tag, failed) {
+    tag = normalizeTag(tag);
+    const l = lanLinks.get(tag);
+    if (!l) return;
+    lanLinks.delete(tag);
+    clearTimeout(l.timer);
+    try { l.dc && l.dc.close(); } catch (e) {}
+    try { l.pc && l.pc.close(); } catch (e) {}
+    if (failed && l.state !== 'open') {
+      // Não está na mesma rede (ou o roteador isola os aparelhos): tenta de novo mais tarde
+      const b = lanBackoff[tag] || { fails: 0 };
+      b.fails = Math.min(b.fails + 1, 4);
+      b.until = Date.now() + [0, 60000, 3 * 60000, 10 * 60000, 20 * 60000][b.fails];
+      lanBackoff[tag] = b;
+    }
+    if (peerTransports[tag] === 'LAN') delete peerTransports[tag];
+    if (activeChatPeer === tag) refreshActiveChatRouteBadge();
+    if (l.state === 'open') renderConversationsList();
+  }
+
+  function newLanPeer(tag, id, initiator) {
+    const pc = new RTCPeerConnection({ iceServers: [] }); // sem STUN: só caminho local
+    const link = { pc, dc: null, id, state: 'connecting', initiator, lastRx: Date.now(), pendingIce: [] };
+    lanLinks.set(tag, link);
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      const c = e.candidate.toJSON ? e.candidate.toJSON() : e.candidate;
+      sendSignal(tag, id, 'LAN_ICE', { candidate: c });
+    };
+    pc.onconnectionstatechange = () => {
+      if (['failed', 'closed'].includes(pc.connectionState) && lanLinks.get(tag) === link) closeLanLink(tag, true);
+    };
+    link.timer = setTimeout(() => {
+      if (lanLinks.get(tag) === link && link.state !== 'open') closeLanLink(tag, true);
+    }, LAN_CONNECT_TIMEOUT);
+    return link;
+  }
+
+  function wireLanChannel(tag, link, dc) {
+    link.dc = dc;
+    dc.onopen = async () => {
+      if (lanLinks.get(tag) !== link) return;
+      link.state = 'open';
+      link.lastRx = Date.now();
+      clearTimeout(link.timer);
+      delete lanBackoff[tag];
+      link.isLan = await webrtcPathIsLocal(link.pc);
+      // A escolha do par ainda pode estar se acomodando logo após abrir
+      setTimeout(async () => {
+        if (lanLinks.get(tag) !== link) return;
+        const v = await webrtcPathIsLocal(link.pc);
+        if (v !== link.isLan) { link.isLan = v; renderConversationsList(); if (activeChatPeer === tag) refreshActiveChatRouteBadge(); }
+      }, 3000);
+      peerTransports[tag] = 'LAN';
+      renderConversationsList();
+      if (activeChatPeer === tag) refreshActiveChatRouteBadge();
+      // Pendências seguem já pela LAN
+      pendingFlushAt[tag] = 0;
+      if (chatMessages[tag]) flushPendingMessages(tag);
+    };
+    dc.onclose = () => { if (lanLinks.get(tag) === link) closeLanLink(tag, false); };
+    dc.onmessage = (e) => {
+      link.lastRx = Date.now();
+      if (typeof e.data !== 'string') return;
+      let msg;
+      try { msg = JSON.parse(e.data); } catch (err) { return; }
+      if (msg.t === 'pkt' && msg.p && msg.p.meshType) {
+        // Só aceita pacotes do próprio dono do canal (sem falar em nome de outro)
+        if (normalizeTag(msg.p.senderTag) !== tag) return;
+        handleIncomingPacket(msg.p, 'lan');
+      }
+    };
+  }
+
+  async function startLanLink(tag) {
+    tag = normalizeTag(tag);
+    if (!lanEligible(tag) || lanLinks.has(tag) || brokersOnline() === 0 && !isBleNeighbor(tag)) return;
+    const b = lanBackoff[tag];
+    if (b && Date.now() < b.until) return;
+    const id = 'lan-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const link = newLanPeer(tag, id, true);
+    wireLanChannel(tag, link, link.pc.createDataChannel('pulseshare-lan', { ordered: true }));
+    try {
+      const offer = await link.pc.createOffer();
+      await link.pc.setLocalDescription(offer);
+      sendSignal(tag, id, 'LAN_OFFER', { sdp: { type: offer.type, sdp: offer.sdp } });
+    } catch (e) {
+      closeLanLink(tag, true);
+    }
+  }
+
+  async function handleLanSignal(from, id, signalType, payload) {
+    from = normalizeTag(from);
+    if (!lanEligible(from) || !id) return;
+    let link = lanLinks.get(from);
+    if (signalType === 'LAN_OFFER') {
+      if (!payload.sdp) return;
+      if (link && link.id !== id) {
+        // Ofertas cruzadas: a tag menor mantém a sua; a maior cede e responde
+        const iAmPolite = normalizeTag(myTag) > from;
+        if (link.state === 'open' && !link.initiator) { /* canal antigo: troca pelo novo */ }
+        else if (link.initiator && link.state !== 'open' && !iAmPolite) return;
+        closeLanLink(from, false);
+        link = null;
+      }
+      if (!link) {
+        link = newLanPeer(from, id, false);
+        link.pc.ondatachannel = (ev) => wireLanChannel(from, link, ev.channel);
+      }
+      try {
+        await link.pc.setRemoteDescription(payload.sdp);
+        for (const c of link.pendingIce.splice(0)) { try { await link.pc.addIceCandidate(c); } catch (e) {} }
+        const answer = await link.pc.createAnswer();
+        await link.pc.setLocalDescription(answer);
+        sendSignal(from, id, 'LAN_ANSWER', { sdp: { type: answer.type, sdp: answer.sdp } });
+      } catch (e) {
+        closeLanLink(from, true);
+      }
+      return;
+    }
+    if (!link || link.id !== id) return;
+    if (signalType === 'LAN_ANSWER' && payload.sdp && link.pc.signalingState === 'have-local-offer') {
+      try {
+        await link.pc.setRemoteDescription(payload.sdp);
+        for (const c of link.pendingIce.splice(0)) { try { await link.pc.addIceCandidate(c); } catch (e) {} }
+      } catch (e) { closeLanLink(from, true); }
+    } else if (signalType === 'LAN_ICE' && payload.candidate) {
+      if (link.pc.remoteDescription) link.pc.addIceCandidate(payload.candidate).catch(() => {});
+      else link.pendingIce.push(payload.candidate);
+    }
+  }
+
+  function sendViaLan(tag, packet) {
+    const dc = lanOpenChannel(tag);
+    if (!dc) return false;
+    try {
+      dc.send(JSON.stringify({ t: 'pkt', p: packet }));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Presença de um contato: tenta abrir a rota LAN (a tag menor toma a iniciativa;
+  // a maior só tenta se a outra não tomou em ~6 s)
+  function maybeStartLanLink(tag, packet) {
+    tag = normalizeTag(tag);
+    if (!packet || !packet.lan || lanLinks.has(tag) || !lanEligible(tag)) return;
+    if (normalizeTag(myTag) < tag) startLanLink(tag);
+    else setTimeout(() => { if (!lanLinks.has(tag)) startLanLink(tag); }, 6000);
+  }
+
+  // Manutenção: ping a cada 15 s; sem nada recebido em 45 s, o canal caiu
+  setInterval(() => {
+    const now = Date.now();
+    lanLinks.forEach((l, tag) => {
+      if (l.state !== 'open') return;
+      if (now - l.lastRx > 45000) { closeLanLink(tag, false); return; }
+      try { l.dc.send('{"t":"ping"}'); } catch (e) {}
+      // O par de candidatos pode mudar depois de aberto: confere de novo
+      webrtcPathIsLocal(l.pc).then((v) => {
+        if (v === l.isLan || lanLinks.get(tag) !== l) return;
+        l.isLan = v;
+        if (activeChatPeer === tag) refreshActiveChatRouteBadge();
+        renderConversationsList();
+      });
+    });
+  }, 15000);
+  // Rede mudou (trocou de Wi-Fi, voltou a internet): recomeça as tentativas
+  try {
+    window.addEventListener('online', () => {
+      Object.keys(lanBackoff).forEach((k) => delete lanBackoff[k]);
+      lanLinks.forEach((l, tag) => closeLanLink(tag, false));
+    });
+  } catch (e) {}
+
+  // O par de candidatos escolhido é da rede local? (endereços privados, link-local,
+  // .local do mDNS ou par host/prflx sem servidor no meio)
+  function isLocalAddress(addr) {
+    const a = String(addr || '').toLowerCase();
+    if (!a) return false;
+    if (a.endsWith('.local')) return true;
+    if (/^(10\.|192\.168\.|169\.254\.|127\.)/.test(a) || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(a)) return true;
+    if (/^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./.test(a)) return false; // CGNAT da operadora
+    if (/^(fe80:|fc|fd)/.test(a)) return true;
+    return false;
+  }
+
+  async function webrtcPathIsLocal(pc) {
+    try {
+      const stats = await pc.getStats();
+      let pair = null;
+      stats.forEach((r) => {
+        if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId);
+      });
+      if (!pair) stats.forEach((r) => { if (!pair && r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) pair = r; });
+      if (!pair) return false;
+      const local = stats.get(pair.localCandidateId);
+      const remote = stats.get(pair.remoteCandidateId);
+      if (!local || !remote) return false;
+      const direct = (t) => t === 'host' || t === 'prflx';
+      if (!direct(local.candidateType) || !direct(remote.candidateType)) return false;
+      const la = String(local.address || local.ip || ''), ra = String(remote.address || remote.ip || '');
+      // Endereço escondido pelo mDNS (nome .local): só resolve dentro da rede local
+      if (!la || !ra) return true;
+      if (isLocalAddress(la) || isLocalAddress(ra)) return true;
+      // IPv6 global dos dois no mesmo /64 = mesma rede
+      const v6 = (a) => a.includes(':') ? a.toLowerCase().split(':').slice(0, 4).join(':') : '';
+      return Boolean(v6(la) && v6(la) === v6(ra));
+    } catch (e) {
+      return false;
+    }
   }
 
   let presenceTimer = null;
@@ -2025,7 +2346,8 @@
       nodeId: nodeId,
       photoHash: (activeProfile && activeProfile.photoHash) || '',
       clientType: IS_ANDROID ? 'android' : IS_DESKTOP ? 'desktop' : IS_EXTENSION ? 'extension-app' : 'web',
-      relayMode: meshRelay
+      relayMode: meshRelay,
+      lan: 1 // aceita a rota LAN direta (LAN_OFFER)
     });
   }
 
@@ -2074,6 +2396,8 @@
             lastSeen: Date.now(),
             lastSeenMqtt: via === 'mqtt' ? Date.now() : prev.lastSeenMqtt
           };
+          // Mesma rede? Abre o canal direto (o chat deixa de passar pela internet)
+          maybeStartLanLink(tag, packet);
           // Destino apareceu: reenvia o que ficou pendente para ele
           if (chatMessages[tag]) flushPendingMessages(tag);
           // Só contatos adicionados são exibidos: evita re-render a cada anúncio de estranhos
@@ -2326,7 +2650,7 @@
       tr.finishedAt = Date.now();
     }
     renderTransfers();
-    const peer = tr.type === 'send' ? tr.target : tr.sender;
+    const peer = chatKeyFor(tr.type === 'send' ? tr.target : tr.sender);
     if (activeChatPeer && peer === activeChatPeer) renderChatMessages(activeChatPeer);
     if (tr.shareId) renderShares();
   }
@@ -2342,7 +2666,7 @@
     tr.speed = speedBps > 1048576 ? (speedBps / 1048576).toFixed(1) + ' MB/s' : (speedBps / 1024).toFixed(0) + ' KB/s';
     tr.progress = tr.totalBytes > 0 ? Math.min(99, Math.round((bytes / tr.totalBytes) * 100)) : 50;
     renderTransfers();
-    const peer = tr.type === 'send' ? tr.target : tr.sender;
+    const peer = chatKeyFor(tr.type === 'send' ? tr.target : tr.sender);
     if (activeChatPeer && peer === activeChatPeer) renderChatMessages(activeChatPeer);
     if (tr.shareId) renderShares();
   }
@@ -2355,6 +2679,13 @@
       case 'CHAT_MESSAGE': {
         // O remetente real é sempre quem assinou o pacote (from)
         handleIncomingChatMessage({ ...payload, senderTag: from }, via);
+        break;
+      }
+
+      case 'LAN_OFFER':
+      case 'LAN_ANSWER':
+      case 'LAN_ICE': {
+        handleLanSignal(from, transferId, signalType, payload);
         break;
       }
 
@@ -2373,37 +2704,64 @@
         break;
       }
 
+      case 'CHAT_DELETE': {
+        handleIncomingChatDelete(from, payload);
+        break;
+      }
+
       case 'CHAT_ACK': {
+        if (payload.status === 'DELETED') { handleChatDeleteAck(from, payload); break; }
         const msgId = payload.msgId || transferId;
         trackRttAck(from, msgId, via);
         if (activeChatPeer === from) refreshActiveChatRouteBadge();
-        const m = (chatMessages[from] || []).find((x) => x.id === msgId);
-        if (m && isMyTag(m.sender) && m.status !== 'READ') {
+        const ackKey = chatKeyFor(from);
+        const m = (chatMessages[ackKey] || []).find((x) => x.id === msgId);
+        if (m && isMyTag(m.sender) && m.status !== 'READ' && !m.deleted) {
           m.status = payload.status === 'READ' ? 'READ' : 'DELIVERED';
           saveChatMessagesToStorage();
-          if (activeChatPeer === from) renderChatMessages(from);
+          if (activeChatPeer === ackKey) renderChatMessages(ackKey);
+          renderConversationsList();
         }
         break;
       }
 
       case 'CHAT_READ': {
+        // Com ids: só essas. Sem ids (versão antiga / portal): só as que já tinham
+        // chegado (✓✓) — uma mensagem ainda em ✓ não pode ter sido lida.
         let changed = false;
-        (chatMessages[from] || []).forEach((m) => {
-          if (m.sender === myTag && m.status !== 'READ') {
+        const readIds = Array.isArray(payload.msgIds) ? new Set(payload.msgIds.map(String)) : null;
+        const readKey = chatKeyFor(from);
+        (chatMessages[readKey] || []).forEach((m) => {
+          if (!isMyTag(m.sender) || m.status === 'READ' || m.deleted) return;
+          if (readIds ? readIds.has(m.id) : m.status === 'DELIVERED') {
             m.status = 'READ';
             changed = true;
           }
         });
         if (changed) {
           saveChatMessagesToStorage();
-          if (activeChatPeer === from) renderChatMessages(from);
+          if (activeChatPeer === readKey) renderChatMessages(readKey);
+          renderConversationsList();
         }
         break;
       }
 
       case 'CHAT_TYPING': {
+        const typingRoom = roomOfVisitor(from);
+        if (typingRoom) {
+          peerTypingState[typingRoom.key] = { status: payload.status || 'idle', at: Date.now(), who: visitorLabel(from) };
+          if (activeChatPeer === typingRoom.key) { refreshRoomHeader(); setTimeout(refreshRoomHeader, 6100); }
+          break;
+        }
         peerTypingState[from] = { status: payload.status || 'idle', at: Date.now() };
         if (activeChatPeer === from) updateChatHeaderTyping();
+        break;
+      }
+
+      // Visitante de um chat de link com a página aberta (mantém o "online")
+      case 'LINK_PING': {
+        const pingRoom = linkRooms[payload.shareId];
+        if (pingRoom && pingRoom.visitors && pingRoom.visitors[from]) touchVisitor(pingRoom, from);
         break;
       }
 
@@ -2453,7 +2811,7 @@
           savedPath: (existing && existing.savedPath) || null
         });
         renderTransfers();
-        if (activeChatPeer === from) renderChatMessages(from);
+        if (activeChatPeer === chatKeyFor(from)) renderChatMessages(activeChatPeer);
         // Envio direto (fora do chat): avisa na barra de notificações
         if (!isChatMedia && !existing) {
           notifyIncoming(from, `${payload.fileName || 'arquivo'} (${formatBytes(payload.fileSize || 0)})${shouldAccept ? '' : ' — toque para aceitar'}`, 'file');
@@ -2464,7 +2822,7 @@
       }
 
       case 'FILE_ACCEPT': {
-        startSenderWebRTC(transferId, from);
+        handleFileAccept(from, transferId, payload);
         break;
       }
 
@@ -2472,7 +2830,7 @@
       case 'TRANSFER_REJECT': {
         const tr = transfers[transferId];
         if (tr && !['completed'].includes(tr.status)) {
-          setTransferStatus(tr, 'error', { error: payload.error || 'Recusado pelo destinatário' });
+          setTransferStatus(tr, 'error', { error: payload.error || 'Recusado pelo destinatário', gone: Boolean(payload.gone) });
         }
         break;
       }
@@ -2493,18 +2851,7 @@
 
       case 'ICE_CANDIDATE': {
         if (payload.candidate) {
-          // Detecta se o candidato é LAN host direto (mesmo roteador/Wi-Fi)
-          const candStr = payload.candidate.candidate || '';
-          if (candStr.includes('typ host') && /(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(candStr)) {
-            peerTransports[from] = 'LAN';
-            if (activeChatPeer === from) {
-              const badge = document.getElementById('chat-contact-transport-badge');
-              if (badge) {
-                badge.className = 'text-[9px] font-bold px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0';
-                badge.textContent = '🟢 LAN';
-              }
-            }
-          }
+          // (A rota LAN é detectada pelo par de candidatos escolhido: detectWebRtcPath)
           handleIncomingIce(transferId, payload.candidate);
         }
         break;
@@ -2524,9 +2871,10 @@
       }
 
       case 'PACK_DOWNLOAD_COMPLETE': {
-        const share = publicShares[payload.shareId];
-        if (share) {
+        const share = linkRooms[payload.shareId];
+        if (share && share.visitors && share.visitors[from]) {
           share.downloads = (share.downloads || 0) + 1;
+          saveLinkRooms();
           renderShares();
         }
         break;
@@ -2543,6 +2891,8 @@
     const tr = transfers[transferId];
     if (!tr) return;
     tr.status = 'connecting';
+    tr.error = null;
+    tr.gone = false;
     tr.startTime = Date.now();
     renderTransfers();
     if (tr.routedVia) {
@@ -2555,9 +2905,12 @@
         roster: myRosterSnapshot()
       });
     } else {
+      // requestId: cada pedido de download é novo (o remetente distingue de aceite repetido)
+      tr.requestId = 'rq' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       sendSignal(tr.offerFrom || tr.sender, transferId, 'FILE_ACCEPT', {
         isChatMedia: Boolean(tr.isChatMedia),
         chatMsgId: tr.chatMsgId || null,
+        requestId: tr.requestId,
         roster: myRosterSnapshot()
       });
     }
@@ -2802,10 +3155,7 @@
     setTransferStatus(tr, 'completed');
     Native.stopKeepAlive();
     if (!tr.shareId) Native.toast(`Envio de ${tr.fileName} concluído!`);
-    if (tr.shareId && publicShares[tr.shareId]) {
-      publicShares[tr.shareId].bytesServed = (publicShares[tr.shareId].bytesServed || 0) + (tr.totalBytes || 0);
-      renderShares();
-    }
+    if (tr.shareId && linkRooms[tr.shareId]) renderShares();
     setTimeout(() => {
       try { pc && pc.close(); } catch {}
       if (activePeerConnections.get(transferId) === pc) activePeerConnections.delete(transferId);
@@ -3038,89 +3388,249 @@
   }
 
   // ==========================================================================
-  // 7b. LINK PÚBLICO SERVIDO PELO APP (portal GitHub Pages ↔ app)
+  // 7b. CHAT DE LINK (portal GitHub Pages ↔ app)
+  //     O link público é uma CONVERSA: o botão 🔗 da lista de conversas cria um
+  //     chat com descrição, senha opcional e prazo. Tudo o que o dono manda ali
+  //     (texto, arquivos, voz, localização) fica disponível para quem abrir o
+  //     link; quem abre conversa com o dono pelo portal como um usuário normal
+  //     (mensagens dos visitantes são só para o dono).
+  //     - Conversa: chatMessages['@linkchat_<8 hex>'] (chave = roomKeyFor(shareId))
+  //     - Sala: linkRooms[shareId] em ps_link_rooms_v1 (por conta) — arquivos pela
+  //       origem guardada (rememberOutgoingSource), então o link sobrevive a
+  //       reabrir o app (só funciona com o app aberto/em segundo plano).
+  //     - Visitante: @link_xxxxxx (o portal guarda a tag por link). Com senha, o
+  //       dono confere: PACK_INFO_REQUEST → PASSWORD_REQUIRED {passwordSalt, nonce}
+  //       → PACK_INFO_REQUEST {proof = sha256(sha256(senha+salt) + nonce)}.
+  //       Só visitantes liberados recebem histórico, baixam e conversam.
   // ==========================================================================
   const DEFAULT_PORTAL_URL = 'https://ricardoazt.github.io/share/';
+  const LINK_ROOMS_KEY = 'ps_link_rooms_v1';
+  const ROOM_VISITOR_FRESH_MS = 10 * 60 * 1000;
+  const ROOM_ONLINE_MS = 60000;
 
-  function createPublicShare(files, opts = {}) {
-    const shareId = 'ps-' + Array.from(crypto.getRandomValues(new Uint8Array(4))).map((b) => b.toString(16).padStart(2, '0')).join('');
-    const list = files.map((f, i) => ({
-      fileId: 'f-' + i,
-      name: f.name,
-      size: f.size || 0,
-      type: f.mimeType || f.type || 'application/octet-stream',
-      item: f
-    }));
-    const expiresAt = opts.expiresMin > 0 ? Date.now() + opts.expiresMin * 60000 : null;
-    const portal = (localStorage.getItem('ps_portal_url') || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
-    const shareUrl = `${portal}#share=${shareId}&owner=${encodeURIComponent(myTag)}${expiresAt ? `&exp=${expiresAt}` : ''}`;
-    publicShares[shareId] = {
-      shareId,
-      files: list,
-      packName: list.length === 1 ? list[0].name : `Pack (${list.length} arquivos)`,
-      totalSize: list.reduce((acc, f) => acc + f.size, 0),
-      expiresAt,
-      allowZip: opts.allowZip !== false,
-      createdAt: Date.now(),
-      shareUrl,
-      downloads: 0,
-      status: 'active'
-    };
-    renderShares();
-    return publicShares[shareId];
+  function loadLinkRooms() {
+    try { return JSON.parse(localStorage.getItem(LINK_ROOMS_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  const linkRooms = loadLinkRooms(); // shareId -> sala
+  let roomsSaveTimer = null;
+  function saveLinkRooms(now) {
+    if (liveAccountChanged()) return;
+    clearTimeout(roomsSaveTimer);
+    const write = () => { try { localStorage.setItem(LINK_ROOMS_KEY, JSON.stringify(linkRooms)); } catch (e) {} };
+    if (now) write(); else roomsSaveTimer = setTimeout(write, 400);
   }
 
-  function shareUnavailableReason(share) {
-    if (!share) return { error: 'NOT_FOUND', message: 'Link não encontrado ou encerrado.' };
-    if (share.status === 'cancelled') return { error: 'CANCELLED', message: 'O compartilhamento foi cancelado pelo remetente.' };
-    if (share.expiresAt && Date.now() >= share.expiresAt) return { error: 'EXPIRED', message: 'Este link expirou.' };
+  function roomKeyFor(shareId) { return '@linkchat_' + String(shareId || '').replace(/^ps-/, ''); }
+  function isRoomKey(tag) { return /^@linkchat_[0-9a-f]{8}$/.test(String(tag || '')); }
+  function roomByKey(key) {
+    if (!isRoomKey(key)) return null;
+    const r = linkRooms['ps-' + key.slice(10)];
+    return r || null;
+  }
+  function roomOfVisitor(tag) {
+    tag = normalizeTag(tag);
+    if (!isLinkVisitor(tag)) return null;
+    return Object.values(linkRooms).find((r) => r.visitors && r.visitors[tag]) || null;
+  }
+  // Conversa onde aparece o que vem de um remetente (visitante de link → sala)
+  function chatKeyFor(tag) {
+    const r = roomOfVisitor(tag);
+    return r ? r.key : tag;
+  }
+  function visitorLabel(tag) {
+    const r = roomOfVisitor(tag);
+    const v = r && r.visitors[normalizeTag(tag)];
+    return (v && v.name) ? v.name : 'Visitante ' + String(tag || '').slice(6, 10);
+  }
+
+  function roomUrl(room) {
+    const portal = (localStorage.getItem('ps_portal_url') || DEFAULT_PORTAL_URL).trim().replace(/\/+$/, '') + '/';
+    return `${portal}#share=${room.shareId}&owner=${encodeURIComponent(myTag)}${room.expiresAt ? `&exp=${room.expiresAt}` : ''}`;
+  }
+
+  function roomUnavailable(room) {
+    if (!room) return { error: 'NOT_FOUND', message: 'Link não encontrado ou encerrado.' };
+    if (room.status === 'cancelled') return { error: 'CANCELLED', message: 'O link foi encerrado por quem compartilhou.' };
+    if (room.expiresAt && Date.now() >= room.expiresAt) return { error: 'EXPIRED', message: 'Este link expirou.' };
     return null;
   }
 
-  function handlePackInfoRequest(from, transferId, payload) {
-    const share = publicShares[payload.shareId];
-    const bad = shareUnavailableReason(share);
-    if (bad) {
-      // Só responde NOT_FOUND se o link for deste app (evita ruído entre dispositivos)
-      if (share) sendSignal(from, transferId || payload.shareId, 'PACK_INFO_RESPONSE', { ok: false, ...bad });
-      return;
-    }
-    sendSignal(from, transferId || share.shareId, 'PACK_INFO_RESPONSE', {
-      ok: true,
-      shareId: share.shareId,
-      packName: share.packName,
-      totalSize: share.totalSize,
-      files: share.files.map(({ fileId, name, size, type }) => ({ fileId, name, size, type })),
-      hasPassword: Boolean(share.passwordHash),
-      passwordSalt: share.passwordSalt || '',
-      passwordHash: share.passwordHash || '',
-      allowZip: share.allowZip !== false,
-      expiresAt: share.expiresAt,
-      ownerTag: myTag
-    });
+  function roomExpiryText(room, long) {
+    if (room.status === 'cancelled') return 'encerrado';
+    if (!room.expiresAt) return 'sem expiração';
+    if (Date.now() >= room.expiresAt) return 'expirou';
+    const d = new Date(room.expiresAt);
+    const full = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()} às ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return long ? full : 'expira ' + formatTime(room.expiresAt);
   }
 
-  function handlePackFilePull(from, transferId, payload, viaRelay) {
-    const share = publicShares[payload.shareId];
-    const fileId = payload.fileId || 'f-0';
-    const bad = shareUnavailableReason(share);
-    if (bad) {
-      if (share) sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: bad.message });
-      return;
+  function roomOnlineVisitors(room) {
+    const now = Date.now();
+    return Object.entries(room.visitors || {}).filter(([, v]) => v.ok && now - (v.lastSeen || 0) < ROOM_ONLINE_MS).map(([t]) => t);
+  }
+
+  function roomAvatarHtml() {
+    return '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f97316,#4f46e5);color:#fff;font-size:1.15em">🔗</div>';
+  }
+
+  async function sha256Hex(str) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+    return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  function randomHex(bytes) {
+    return Array.from(crypto.getRandomValues(new Uint8Array(bytes))).map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function createLinkRoom(opts) {
+    const shareId = 'ps-' + randomHex(4);
+    const room = {
+      shareId,
+      key: roomKeyFor(shareId),
+      title: String(opts.title || '').trim().slice(0, 120) || 'Compartilhamento',
+      createdAt: Date.now(),
+      expiresAt: opts.expiresMin > 0 ? Date.now() + opts.expiresMin * 60000 : null,
+      allowZip: opts.allowZip !== false,
+      files: [],
+      nextFileId: 0,
+      visitors: {},
+      downloads: 0,
+      status: 'active'
+    };
+    if (opts.password) {
+      room.password = opts.password; // fica só neste aparelho (para "Copiar link completo")
+      room.passwordSalt = randomHex(8);
+      room.passwordHash = await sha256Hex(opts.password + room.passwordSalt);
     }
-    const file = share.files.find((f) => f.fileId === fileId);
-    if (!file) {
-      sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Arquivo não encontrado no link' });
-      return;
+    linkRooms[shareId] = room;
+    chatMessages[room.key] = [];
+    setChatHidden(room.key, false);
+    saveLinkRooms(true);
+    saveChatMessagesToStorage();
+    return room;
+  }
+
+  function touchVisitor(room, tag, name) {
+    if (!room.visitors) room.visitors = {};
+    let v = room.visitors[tag];
+    if (!v) {
+      // Limite de visitantes guardados por link (os mais antigos sem conversa saem)
+      const keys = Object.keys(room.visitors);
+      if (keys.length >= 200) {
+        const msgs = chatMessages[room.key] || [];
+        const old = keys.filter((k) => !msgs.some((m) => m.sender === k)).sort((a, b) => (room.visitors[a].lastSeen || 0) - (room.visitors[b].lastSeen || 0));
+        if (old.length) delete room.visitors[old[0]];
+      }
+      v = room.visitors[tag] = { firstSeen: Date.now(), lastSeen: Date.now(), ok: false };
     }
+    const wasOnline = Date.now() - (v.lastSeen || 0) < ROOM_ONLINE_MS;
+    v.lastSeen = Date.now();
+    if (typeof name === 'string') {
+      const clean = name.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 30);
+      if (clean) v.name = clean;
+    }
+    saveLinkRooms();
+    if (!wasOnline && activeChatPeer === room.key) refreshRoomHeader();
+    return v;
+  }
+
+  // O que o visitante vê ao abrir: mensagens do dono + as dele (últimas 120)
+  function roomHistoryFor(room, visitorTag) {
+    return (chatMessages[room.key] || [])
+      .filter((m) => isMyTag(m.sender) || m.sender === visitorTag)
+      .slice(-120)
+      .map((m) => {
+        const mine = isMyTag(m.sender);
+        const h = { id: m.id, from: mine ? 'owner' : 'me', ts: m.timestamp };
+        if (m.deleted) { h.deleted = true; return h; }
+        if (m.text) h.text = String(m.text).slice(0, 2000);
+        if (m.location) h.location = m.location;
+        if (m.voice) h.voice = { duration: m.voice.duration };
+        const meta = m.media || {};
+        if (mine && m.roomFileId) h.media = { fileId: m.roomFileId, name: meta.fileName || meta.name || 'arquivo', size: meta.fileSize || meta.size || 0, type: meta.fileType || meta.type || '' };
+        else if (!mine && (m.media || m.transferId)) h.media = { transferId: m.transferId || meta.transferId, name: meta.fileName || meta.name || 'arquivo', size: meta.fileSize || meta.size || 0, type: meta.fileType || meta.type || '' };
+        if (!mine) h.status = m.readByOwner ? 'READ' : 'DELIVERED';
+        return h;
+      });
+  }
+
+  function roomFilesInfo(room) {
+    return (room.files || []).filter((f) => !f.removed).map(({ fileId, name, size, type }) => ({ fileId, name, size, type }));
+  }
+
+  async function handlePackInfoRequest(from, transferId, payload) {
+    const room = linkRooms[payload.shareId];
+    if (!room || !isLinkVisitor(from)) return; // link de outro aparelho: fica quieto
+    const tid = transferId || room.shareId;
+    const bad = roomUnavailable(room);
+    if (bad) { sendSignal(from, tid, 'PACK_INFO_RESPONSE', { ok: false, ...bad }); return; }
+    const v = touchVisitor(room, from, payload.visitorName);
+    if (room.passwordHash && !v.ok) {
+      let passed = false;
+      if (payload.proof && payload.nonce && v.nonce && payload.nonce === v.nonce) {
+        passed = (await sha256Hex(room.passwordHash + v.nonce)) === String(payload.proof);
+      }
+      if (!passed) {
+        // Tentativas erradas seguidas: espera crescente (dificulta adivinhar a senha)
+        if (payload.proof) v.wrong = (v.wrong || 0) + 1;
+        const wait = Math.min(30000, v.wrong > 3 ? 2000 * (v.wrong - 3) : 0);
+        v.nonce = randomHex(12);
+        saveLinkRooms();
+        setTimeout(() => sendSignal(from, tid, 'PACK_INFO_RESPONSE', {
+          ok: false, error: 'PASSWORD_REQUIRED', hasPassword: true, passwordSalt: room.passwordSalt,
+          nonce: v.nonce, wrong: Boolean(payload.proof), ownerTag: myTag
+        }), wait);
+        return;
+      }
+      v.wrong = 0;
+    }
+    v.ok = true;
+    delete v.nonce;
+    saveLinkRooms();
+    const files = roomFilesInfo(room);
+    sendSignal(from, tid, 'PACK_INFO_RESPONSE', {
+      ok: true,
+      roomChat: true,
+      shareId: room.shareId,
+      title: room.title,
+      packName: room.title,
+      totalSize: files.reduce((a, f) => a + (f.size || 0), 0),
+      files,
+      hasPassword: false, // já conferida aqui (o portal não recebe o hash)
+      allowZip: room.allowZip !== false,
+      expiresAt: room.expiresAt,
+      ownerTag: myTag,
+      ownerName: displayNameFor(myTag),
+      visitorName: v.name || '',
+      messages: roomHistoryFor(room, from)
+    });
+    if (activeChatPeer === room.key) refreshRoomHeader();
+  }
+
+  async function handlePackFilePull(from, transferId, payload, viaRelay) {
+    const room = linkRooms[payload.shareId];
+    if (!room) return;
+    const fileId = payload.fileId || 'f-1';
+    const bad = roomUnavailable(room);
+    if (bad) { sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: bad.message }); return; }
+    const v = room.visitors && room.visitors[from];
+    if (!v || !v.ok) { sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Abra o link (e informe a senha) antes de baixar.' }); return; }
+    touchVisitor(room, from);
+    const file = (room.files || []).find((f) => f.fileId === fileId && !f.removed);
+    if (!file) { sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'Arquivo não encontrado no link' }); return; }
     let tr = transfers[transferId];
     if (!tr) {
+      const item = stagedFilesMap.get(file.transferId) || await loadOutgoingSource(file.transferId, { name: file.name, size: file.size, type: file.type });
+      if (!item) {
+        sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: 'O arquivo não está mais no aparelho de quem compartilhou.', gone: true });
+        return;
+      }
+      stagedFilesMap.set(file.transferId, item);
       tr = transfers[transferId] = {
         id: transferId,
         type: 'send',
         target: from,
-        targetLabel: 'Visitante do link',
-        shareId: share.shareId,
+        targetLabel: visitorLabel(from),
+        shareId: room.shareId,
         fileName: file.name,
         totalBytes: file.size,
         fileType: file.type,
@@ -3128,13 +3638,235 @@
         status: 'connecting',
         progress: 0,
         speed: '0 KB/s',
-        fileItem: file.item,
+        fileItem: item,
         startTime: Date.now()
       };
       renderTransfers();
     }
-    if (viaRelay) startRelaySend(transferId, from, file);
-    else startSenderWebRTC(transferId, from, { fileItem: file.item, fileId, isLinkPull: true });
+    const fileRef = { fileId, name: file.name, size: file.size, type: file.type, item: tr.fileItem };
+    if (viaRelay) startRelaySend(transferId, from, fileRef);
+    else startSenderWebRTC(transferId, from, { fileItem: tr.fileItem, fileId, isLinkPull: true });
+  }
+
+  // Envia um sinal da sala a todos os visitantes liberados vistos há pouco
+  // (quem estiver offline recebe tudo pelo histórico ao abrir o link de novo)
+  function roomBroadcast(room, signalType, tid, payload) {
+    const now = Date.now();
+    let n = 0;
+    Object.entries(room.visitors || {}).forEach(([tag, v]) => {
+      if (!v.ok || now - (v.lastSeen || 0) > ROOM_VISITOR_FRESH_MS) return;
+      sendSignal(tag, tid, signalType, payload);
+      n++;
+    });
+    return n;
+  }
+
+  function roomCanPost(room) {
+    if (roomUnavailable(room)) { Native.toast('Este link ' + (room.status === 'cancelled' ? 'foi encerrado.' : 'expirou.')); return false; }
+    return true;
+  }
+
+  function roomSendText(room, text, extra) {
+    if (!roomCanPost(room)) return;
+    const location = extra && extra.location ? sanitizeLocation(extra.location) : null;
+    const id = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+    const ts = Date.now();
+    const msg = { id, sender: myTag, text, timestamp: ts, status: 'SENT', ...(location ? { location } : {}), ...(extra && extra.forwarded ? { forwarded: true } : {}) };
+    (chatMessages[room.key] = chatMessages[room.key] || []).push(msg);
+    saveChatMessagesToStorage();
+    const payload = { id, senderTag: myTag, text, msgType: location ? 'location' : 'text', type: location ? 'location' : 'text', timestamp: ts, shareId: room.shareId };
+    if (location) payload.location = location;
+    roomBroadcast(room, 'CHAT_MESSAGE', id, payload);
+    renderChatMessages(room.key);
+    renderConversationsList();
+  }
+
+  function roomAddFile(room, fileItem, text, extra) {
+    if (!roomCanPost(room) || !fileItem) return;
+    const tid = 'chatmedia-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+    room.nextFileId = (room.nextFileId || 0) + 1;
+    const fileId = 'f-' + room.nextFileId;
+    const mime = fileItem.mimeType || fileItem.type || 'application/octet-stream';
+    const name = fileItem.name || 'arquivo';
+    const size = fileItem.size || 0;
+    const voice = extra && extra.voice ? sanitizeVoiceInfo(extra.voice) : null;
+    const msgType = voice ? 'voice' : mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'file';
+    stagedFilesMap.set(tid, fileItem);
+    room.files.push({ fileId, transferId: tid, name, size, type: mime, addedAt: Date.now() });
+    saveLinkRooms(true);
+    const fileMeta = { name, fileName: name, size, fileSize: size, type: mime, fileType: mime, transferId: tid, fileId };
+    const id = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+    const ts = Date.now();
+    (chatMessages[room.key] = chatMessages[room.key] || []).push({
+      id, sender: myTag, text: text || '', timestamp: ts, status: 'SENT', transferId: tid, media: fileMeta, roomFileId: fileId,
+      ...(voice ? { voice } : {}), ...(extra && extra.forwarded ? { forwarded: true } : {})
+    });
+    saveChatMessagesToStorage();
+    captureOutgoingChatMedia(tid, fileItem).then(() => rememberOutgoingSource(tid, fileItem)).then(() => scheduleChatMediaRerender());
+    // O visitante baixa pelo fileId (PACK_FILE_PULL): cada download tem a sua conexão
+    const payload = { id, senderTag: myTag, text: text || '', msgType, type: msgType, timestamp: ts, shareId: room.shareId, media: { fileId, name, size, type: mime } };
+    if (voice) payload.voiceDuration = voice.duration;
+    roomBroadcast(room, 'CHAT_MESSAGE', id, payload);
+    renderChatMessages(room.key);
+    renderConversationsList();
+  }
+
+  // Mensagem de um visitante liberado: entra na conversa do link
+  function roomVisitorAllowed(room, from) {
+    const v = room && room.visitors && room.visitors[from];
+    return Boolean(v && v.ok && !roomUnavailable(room));
+  }
+
+  // Dono abriu a conversa do link: avisa cada visitante que as mensagens dele foram lidas
+  function sendRoomReadReceipts(room) {
+    const byVisitor = {};
+    let changed = false;
+    (chatMessages[room.key] || []).forEach((m) => {
+      if (isMyTag(m.sender) || m.deleted || m.readByOwner || !isLinkVisitor(m.sender)) return;
+      (byVisitor[m.sender] = byVisitor[m.sender] || []).push(m.id);
+      m.readByOwner = true;
+      changed = true;
+    });
+    Object.entries(byVisitor).forEach(([tag, ids]) => sendSignal(tag, 'read-' + Date.now(), 'CHAT_READ', { readerTag: myTag, msgIds: ids.slice(-200) }));
+    if (changed) saveChatMessagesToStorage();
+  }
+
+  function refreshRoomHeader() {
+    const room = roomByKey(activeChatPeer);
+    if (!room) return;
+    const nameEl = document.getElementById('chat-contact-name');
+    if (nameEl) nameEl.textContent = room.title;
+    const tagEl = document.getElementById('chat-contact-tag');
+    if (tagEl) {
+      const online = roomOnlineVisitors(room).length;
+      const st = peerTypingState[room.key];
+      const typing = st && st.status && st.status !== 'idle' && Date.now() - st.at < 6000;
+      tagEl.textContent = typing ? `${st.who || 'Visitante'} está digitando...`
+        : `🔗 Link • ${roomExpiryText(room)}${room.passwordHash ? ' • 🔑' : ''} • ${online ? online + ' online' : 'ninguém agora'}`;
+    }
+    const badge = document.getElementById('chat-contact-transport-badge');
+    if (badge) badge.classList.add('hidden');
+    const bad = roomUnavailable(room);
+    const bar = document.getElementById('chat-bottom-input-bar');
+    if (bar) bar.classList.toggle('hidden', Boolean(bad));
+    const ro = document.getElementById('chat-official-readonly');
+    if (ro) {
+      ro.classList.toggle('hidden', !bad);
+      if (bad) ro.textContent = room.status === 'cancelled' ? '⛔ Link encerrado — ninguém mais abre este chat pelo link' : '⏳ Link expirado — ninguém mais abre este chat pelo link';
+    }
+  }
+  setInterval(() => { if (activeChatPeer && isRoomKey(activeChatPeer)) refreshRoomHeader(); }, 15000);
+
+  function renderShares() {
+    if (activeChatPeer && isRoomKey(activeChatPeer)) refreshRoomHeader();
+  }
+
+  function roomShareText(room) {
+    const lines = [
+      `🔗 PulseShare — ${room.title}`,
+      `Link: ${roomUrl(room)}`,
+      `⏳ ${room.expiresAt ? 'Expira em ' + roomExpiryText(room, true) : 'Sem expiração'}`
+    ];
+    if (room.password) lines.push(`🔑 Senha: ${room.password}`);
+    lines.push('', 'Abra o link para conversar e baixar os arquivos direto do meu aparelho (P2P, sem servidor).');
+    return lines.join('\n');
+  }
+
+  // Folha "Compartilhar" do chat de link (botão no topo da conversa e menu ⋮)
+  let linkSheetRoom = null;
+  function openLinkShareSheet(key) {
+    const room = roomByKey(key);
+    const modal = document.getElementById('modal-link-share');
+    if (!room || !modal) return;
+    linkSheetRoom = room;
+    document.getElementById('link-share-title').textContent = room.title;
+    document.getElementById('link-share-url').textContent = roomUrl(room);
+    const files = (room.files || []).filter((f) => !f.removed);
+    const visitors = Object.values(room.visitors || {}).filter((v) => v.ok).length;
+    document.getElementById('link-share-meta').textContent =
+      `${room.expiresAt ? 'Expira em ' + roomExpiryText(room, true) : 'Sem expiração'}${roomUnavailable(room) ? ' (' + roomExpiryText(room) + ')' : ''} • ${room.passwordHash ? '🔑 com senha' : 'sem senha'} • ${files.length} arquivo(s) • ${visitors} visitante(s) • ${room.downloads || 0} download(s)`;
+    document.getElementById('btn-link-share-stop').classList.toggle('hidden', Boolean(roomUnavailable(room)));
+    modal.classList.remove('hidden');
+  }
+  function closeLinkShareSheet() {
+    const modal = document.getElementById('modal-link-share');
+    if (modal) modal.classList.add('hidden');
+    linkSheetRoom = null;
+  }
+
+  function deleteLinkRoom(room) {
+    (chatMessages[room.key] || []).forEach((m) => discardMessageMedia(m));
+    (room.files || []).forEach((f) => forgetOutgoingSource(f.transferId));
+    Object.values(transfers).forEach((t) => {
+      if (t.shareId === room.shareId && ['connecting', 'transferring'].includes(t.status)) t.cancelled = true;
+    });
+    delete chatMessages[room.key];
+    delete linkRooms[room.shareId];
+    saveLinkRooms(true);
+    saveChatMessagesToStorage();
+    if (activeChatPeer === room.key) closeActiveChat();
+    renderConversationsList();
+  }
+
+  function initLinkRoomEvents() {
+    const fab = document.getElementById('btn-fab-new-link');
+    if (fab) fab.onclick = () => {
+      document.getElementById('input-new-link-title').value = '';
+      document.getElementById('input-new-link-password').value = '';
+      document.getElementById('modal-new-link').classList.remove('hidden');
+      setTimeout(() => document.getElementById('input-new-link-title').focus(), 150);
+    };
+    document.getElementById('btn-close-new-link').onclick = () => document.getElementById('modal-new-link').classList.add('hidden');
+    document.getElementById('btn-create-new-link').onclick = async () => {
+      const title = document.getElementById('input-new-link-title').value.trim();
+      if (!title) { Native.toast('Escreva uma descrição para o link.'); document.getElementById('input-new-link-title').focus(); return; }
+      const password = document.getElementById('input-new-link-password').value.trim();
+      const expMin = parseInt(document.getElementById('select-new-link-expiration').value || '0', 10);
+      const allowZip = document.getElementById('input-new-link-allow-zip').checked;
+      const room = await createLinkRoom({ title, password, expiresMin: expMin, allowZip });
+      document.getElementById('modal-new-link').classList.add('hidden');
+      renderConversationsList();
+      openActiveChat(room.key);
+      Native.toast('Chat de link criado! Envie arquivos e toque em Compartilhar.');
+    };
+    document.getElementById('btn-chat-link-share').onclick = () => { if (activeChatPeer) openLinkShareSheet(activeChatPeer); };
+    document.getElementById('btn-close-link-share').onclick = () => closeLinkShareSheet();
+    document.getElementById('btn-link-copy').onclick = () => {
+      if (!linkSheetRoom) return;
+      Native.copy(roomUrl(linkSheetRoom));
+      Native.toast('Link copiado!');
+      closeLinkShareSheet();
+    };
+    document.getElementById('btn-link-copy-full').onclick = () => {
+      if (!linkSheetRoom) return;
+      Native.copy(roomShareText(linkSheetRoom));
+      Native.toast('Link completo copiado (descrição, link, prazo' + (linkSheetRoom.password ? ' e senha' : '') + ')!');
+      closeLinkShareSheet();
+    };
+    const btnShare = document.getElementById('btn-link-share-native');
+    if (btnShare) btnShare.onclick = () => {
+      if (!linkSheetRoom) return;
+      Native.shareText('PulseShare', roomShareText(linkSheetRoom));
+      closeLinkShareSheet();
+    };
+    document.getElementById('btn-link-share-stop').onclick = () => {
+      const room = linkSheetRoom;
+      if (!room || !confirm('Encerrar este link? Quem tiver o link não consegue mais abrir o chat nem baixar. As mensagens continuam aqui.')) return;
+      room.status = 'cancelled';
+      Object.values(transfers).forEach((t) => {
+        if (t.shareId === room.shareId && ['connecting', 'transferring'].includes(t.status)) t.cancelled = true;
+      });
+      saveLinkRooms(true);
+      closeLinkShareSheet();
+      if (activeChatPeer === room.key) refreshRoomHeader();
+      renderConversationsList();
+    };
+    document.getElementById('btn-link-share-delete').onclick = () => {
+      const room = linkSheetRoom;
+      if (!room || !confirm(`Excluir o chat de link "${room.title}"? O link deixa de funcionar e as mensagens e arquivos dele somem deste aparelho.`)) return;
+      closeLinkShareSheet();
+      deleteLinkRoom(room);
+    };
   }
 
   // Envio do arquivo em blocos base64 pela malha MQTT (portal em CGNAT/firewall)
@@ -3211,60 +3943,6 @@
     }
   }
 
-  function renderShares() {
-    const list = document.getElementById('shares-list');
-    if (!list) return;
-    const shares = Object.values(publicShares).sort((a, b) => b.createdAt - a.createdAt);
-    if (!shares.length) {
-      list.innerHTML = '<div class="text-center py-10 text-slate-500 text-xs">Nenhum link público ativo. Use "Criar Link" na aba Início.</div>';
-      return;
-    }
-    list.innerHTML = shares.map((s) => {
-      const bad = shareUnavailableReason(s);
-      const active = Object.values(transfers).filter((t) => t.shareId === s.shareId && ['connecting', 'transferring'].includes(t.status)).length;
-      const expTxt = s.expiresAt ? `Expira ${formatTime(s.expiresAt)}` : 'Sem expiração';
-      return `
-        <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
-          <div class="flex items-start justify-between gap-2">
-            <div class="min-w-0">
-              <span class="text-xs font-bold text-white block truncate">🔗 ${escapeHtml(s.packName)}</span>
-              <span class="text-[10px] text-slate-400 font-mono">${formatBytes(s.totalSize)} • ${s.files.length} arquivo(s) • ${expTxt}</span>
-            </div>
-            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${bad ? 'bg-slate-800 text-slate-400' : 'bg-emerald-500/20 text-emerald-400'}">${bad ? 'encerrado' : (active ? `${active} baixando` : 'ativo')}</span>
-          </div>
-          <div class="text-[10px] text-slate-500">Downloads concluídos: <b class="text-slate-300">${s.downloads || 0}</b> • O app precisa ficar aberto para o link funcionar.</div>
-          <div class="flex gap-2">
-            <button type="button" data-ps-call="psShareAction" data-ps-args="copy|${s.shareId}" class="flex-1 py-1.5 rounded-lg bg-slate-800 text-white text-[10px] font-bold">Copiar link</button>
-            <button type="button" data-ps-call="psShareAction" data-ps-args="share|${s.shareId}" class="flex-1 py-1.5 rounded-lg bg-indigo-600 text-white text-[10px] font-bold">Compartilhar</button>
-            ${bad ? '' : `<button type="button" data-ps-call="psShareAction" data-ps-args="stop|${s.shareId}" class="py-1.5 px-2.5 rounded-lg bg-rose-600/80 text-white text-[10px] font-bold">Encerrar</button>`}
-          </div>
-        </div>`;
-    }).join('');
-  }
-
-  window.psShareAction = function (action, shareId) {
-    const s = publicShares[shareId];
-    if (!s) return;
-    if (action === 'copy') {
-      Native.copy(s.shareUrl);
-      Native.toast('Link copiado!');
-    } else if (action === 'share') {
-      Native.shareText('PulseShare', formatShareMessage(s));
-    } else if (action === 'stop') {
-      s.status = 'cancelled';
-      Object.values(transfers).forEach((t) => {
-        if (t.shareId === shareId && ['connecting', 'transferring'].includes(t.status)) t.cancelled = true;
-      });
-      renderShares();
-    }
-  };
-
-  function formatShareMessage(s) {
-    const files = s.files.map((f) => `  • ${f.name} (${formatBytes(f.size)})`).join('\n');
-    const exp = (s.password ? `\n🔑 Senha: ${s.password}` : '') + (s.expiresAt ? `\n⏳ Expira às ${formatTime(s.expiresAt)}` : '');
-    return `📦 PulseShare — Compartilhamento de Arquivos P2P\n🔗 Link: ${s.shareUrl}${exp}\n📁 Arquivos (${s.files.length}):\n${files}\n\n⚡ Baixe direto pelo navegador (WebRTC P2P), sem instalar nada!`;
-  }
-
   // ==========================================================================
   // 8. CHAT-FIRST UI, CONVERSAS & EDGE-TO-EDGE FULL SCREEN
   // ==========================================================================
@@ -3276,6 +3954,7 @@
 
   function displayNameFor(tag) {
     if (isOfficialTag(tag)) return 'PulseShare';
+    if (isRoomKey(tag)) { const r = roomByKey(tag); return r ? '🔗 ' + r.title : 'Link'; }
     if (isLinkVisitor(tag)) return 'Visitante do link ' + tag.slice(6, 10);
     const parts = splitTag(tag);
     return parts ? parts.name : tag.replace(/^@/, '').split('_')[0];
@@ -3284,6 +3963,7 @@
   function updateChatHeaderTyping() {
     const el = document.getElementById('chat-contact-tag');
     if (!el || !activeChatPeer) return;
+    if (isRoomKey(activeChatPeer)) { refreshRoomHeader(); return; }
     const st = peerTypingState[activeChatPeer];
     const typing = st && st.status && st.status !== 'idle' && Date.now() - st.at < 6000;
     el.textContent = typing ? (st.status === 'recording' ? '🎤 gravando áudio...' : 'digitando...') : activeChatPeer;
@@ -3401,6 +4081,152 @@
     if (url) { try { URL.revokeObjectURL(url); } catch {} }
     chatMediaUrls.delete(transferId);
     chatMediaDbOp('readwrite', (st) => st.delete(transferId));
+    forgetOutgoingSource(transferId);
+  }
+
+  // --------------------------------------------------------------------------
+  // Origem dos arquivos enviados no chat: o download não "vence". Enquanto o
+  // arquivo existir aqui, quem recebeu pode baixar (de novo) a qualquer hora,
+  // mesmo depois de reabrir os apps. Guardado no IndexedDB com a chave src:<tid>:
+  //  - Android: endereço do arquivo (content://, com permissão permanente do seletor)
+  //  - PC/navegador: cópia do arquivo (até 1 GB cada, 3 GB no total; os mais
+  //    antigos saem primeiro). Foto/vídeo/áudio pequeno usa a pré-visualização.
+  // --------------------------------------------------------------------------
+  const OUTGOING_SRC_MAX = 1024 * 1024 * 1024;
+  const OUTGOING_SRC_TOTAL = 3 * 1024 * 1024 * 1024;
+  const OUTGOING_SRC_INDEX = 'ps_outgoing_sources_v1';
+  function outgoingSourceIndex() {
+    try { return JSON.parse(localStorage.getItem(OUTGOING_SRC_INDEX) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function saveOutgoingSourceIndex(idx) {
+    try { localStorage.setItem(OUTGOING_SRC_INDEX, JSON.stringify(idx)); } catch (e) {}
+  }
+
+  async function rememberOutgoingSource(transferId, fileItem) {
+    if (!transferId || !fileItem) return;
+    const name = fileItem.name || 'arquivo';
+    const size = fileItem.size || 0;
+    const mimeType = fileItem.mimeType || fileItem.type || 'application/octet-stream';
+    const direct = fileItem instanceof Blob ? fileItem : (fileItem.file instanceof Blob ? fileItem.file : null);
+    const idx = outgoingSourceIndex();
+    try {
+      if (fileItem.uri && !direct) {
+        await chatMediaDbOp('readwrite', (st) => st.put({ uri: fileItem.uri, name, size, mimeType }, 'src:' + transferId));
+        idx[transferId] = { b: 0, at: Date.now() };
+      } else if (direct) {
+        // Pré-visualização já guarda o arquivo inteiro (mesmo tamanho): não duplica
+        if (isPreviewKind(chatMediaKind(mimeType, name)) && size <= CHAT_PREVIEW_KEEP_MAX) {
+          idx[transferId] = { b: 0, at: Date.now(), preview: 1 };
+        } else if (size <= OUTGOING_SRC_MAX) {
+          await chatMediaDbOp('readwrite', (st) => st.put(direct, 'src:' + transferId));
+          idx[transferId] = { b: size, at: Date.now() };
+        } else {
+          return;
+        }
+      } else {
+        return;
+      }
+      // Limite total das cópias: apaga as mais antigas
+      let total = Object.values(idx).reduce((a, v) => a + (v.b || 0), 0);
+      const old = Object.entries(idx).filter(([, v]) => v.b).sort((a, b) => a[1].at - b[1].at);
+      while (total > OUTGOING_SRC_TOTAL && old.length) {
+        const [tid, v] = old.shift();
+        if (tid === transferId) break;
+        chatMediaDbOp('readwrite', (st) => st.delete('src:' + tid));
+        delete idx[tid];
+        total -= v.b;
+      }
+      saveOutgoingSourceIndex(idx);
+    } catch (e) {
+      console.warn('Não foi possível guardar a origem do arquivo enviado:', e);
+    }
+  }
+
+  function forgetOutgoingSource(transferId) {
+    const idx = outgoingSourceIndex();
+    if (!idx[transferId]) return;
+    delete idx[transferId];
+    saveOutgoingSourceIndex(idx);
+    chatMediaDbOp('readwrite', (st) => st.delete('src:' + transferId));
+  }
+
+  // Arquivo enviado antes (inclusive em outra abertura do app), pronto para mandar de novo
+  async function loadOutgoingSource(transferId, meta) {
+    meta = meta || {};
+    const name = meta.fileName || meta.name || 'arquivo';
+    const size = meta.fileSize || meta.size || 0;
+    const mime = guessMimeFor(chatMediaKind(meta.fileType || meta.type, name), name, meta.fileType || meta.type);
+    const fromBlob = (blob) => ({ name, size: blob.size, mimeType: mime, file: new File([blob], name, { type: mime }) });
+    const src = await chatMediaDbOp('readonly', (st) => st.get('src:' + transferId));
+    if (src instanceof Blob && src.size) return fromBlob(src);
+    if (src && src.uri && Native.isAvailable()) {
+      // O arquivo ainda existe e dá para ler?
+      if (Native.readUriChunkBase64(src.uri, 0, 16)) return { name: src.name || name, size: src.size || size, mimeType: src.mimeType || mime, uri: src.uri };
+      return null;
+    }
+    const prev = await chatMediaDbOp('readonly', (st) => st.get(transferId));
+    if (prev instanceof Blob && prev.size && (!size || prev.size === size)) return fromBlob(prev);
+    return null;
+  }
+
+  // Quem recebeu pediu o arquivo (FILE_ACCEPT). Se este aparelho foi reaberto ou o
+  // envio anterior já terminou, recria o envio a partir da origem guardada — só
+  // para quem recebeu a mensagem.
+  const resendLookups = new Set();
+  async function handleFileAccept(from, transferId, payload) {
+    const tid = String(transferId || '');
+    let tr = transfers[tid];
+    const reqId = payload && payload.requestId ? String(payload.requestId).slice(0, 40) : '';
+    // Envio já terminado: pedido novo (requestId diferente) baixa de novo; o mesmo
+    // aceite repetido (ou versão antiga sem requestId logo após terminar) é ignorado
+    const newRequest = reqId ? reqId !== (tr && tr.requestId) : Date.now() - ((tr && tr.finishedAt) || 0) > 8000;
+    const reusable = !tr || (tr.type === 'send' && ['completed', 'error', 'cancelled'].includes(tr.status) && newRequest);
+    if (tr && reqId && !reusable && tr.type === 'send') tr.requestId = reqId;
+    if (tid.startsWith('chatmedia-') && reusable) {
+      const msg = (chatMessages[from] || []).find((m) => isMyTag(m.sender) && !m.deleted &&
+        (m.transferId === tid || (m.media && m.media.transferId === tid)));
+      if (!msg) {
+        if (!tr) sendSignal(from, tid, 'FILE_REJECT', { error: 'O arquivo não está mais no aparelho de quem enviou.', gone: true });
+        if (!tr) return;
+      } else {
+        if (resendLookups.has(tid)) return;
+        resendLookups.add(tid);
+        let fileItem = null;
+        try {
+          fileItem = stagedFilesMap.get(tid) || (tr && tr.fileItem) || await loadOutgoingSource(tid, msg.media);
+        } finally {
+          resendLookups.delete(tid);
+        }
+        if (!fileItem) {
+          sendSignal(from, tid, 'FILE_REJECT', { error: 'O arquivo não está mais no aparelho de quem enviou.', gone: true });
+          return;
+        }
+        const meta = msg.media || {};
+        // Conexão do envio anterior ainda aberta: fecha antes de mandar de novo
+        const oldPc = activePeerConnections.get(tid);
+        if (oldPc) { try { oldPc.close(); } catch (e) {} activePeerConnections.delete(tid); }
+        stagedFilesMap.set(tid, fileItem);
+        transfers[tid] = tr = {
+          id: tid,
+          type: 'send',
+          target: from,
+          fileName: fileItem.name || meta.fileName || meta.name || 'arquivo',
+          totalBytes: fileItem.size || meta.fileSize || meta.size || 0,
+          fileType: fileItem.mimeType || fileItem.type || meta.fileType || meta.type || '*/*',
+          transferredBytes: 0,
+          status: 'awaiting_accept',
+          progress: 0,
+          speed: '0 KB/s',
+          fileItem,
+          isChatMedia: true,
+          chatMsgId: msg.id,
+          requestId: reqId,
+          startTime: Date.now()
+        };
+        renderTransfers();
+      }
+    }
+    startSenderWebRTC(tid, from);
   }
 
   // Remetente: guarda a própria mídia enviada para mostrar a pré-visualização também do seu lado
@@ -3508,23 +4334,34 @@
     if (!payload || !payload.senderTag) return;
     const from = normalizeTag(payload.senderTag);
     if (isMyTag(from) || isBlocked(from) || isOfficialTag(from) || isAdminDeleted(from)) return;
+    // Visitante de um chat de link: a mensagem entra na conversa do link
+    let room = null;
+    if (isLinkVisitor(from) && payload.shareId) {
+      room = linkRooms[payload.shareId];
+      if (!room) return;
+      if (!roomVisitorAllowed(room, from)) return;
+      touchVisitor(room, from, payload.visitorName);
+    }
+    const key = room ? room.key : from;
 
-    if (!chatMessages[from]) chatMessages[from] = [];
+    if (!chatMessages[key]) chatMessages[key] = [];
     const msgId = payload.id || ('msg_' + Date.now());
 
     // Confirma entrega ao remetente (✓✓) — mesmo para duplicatas, pois o ACK anterior pode ter se perdido
-    sendSignal(from, msgId, 'CHAT_ACK', { msgId, senderTag: myTag, status: activeChatPeer === from ? 'READ' : 'DELIVERED' });
+    const readNow = isReadingChat(key);
+    sendSignal(from, msgId, 'CHAT_ACK', { msgId, senderTag: myTag, status: readNow ? 'READ' : 'DELIVERED' });
 
-    if (chatMessages[from].some(m => m.id === msgId)) return;
+    if (chatMessages[key].some(m => m.id === msgId)) return;
 
     const fileMeta = payload.media || payload.fileMeta || null;
     const mediaTid = fileMeta ? (payload.transferId || fileMeta.transferId) : null;
     const incomingVoice = fileMeta && (payload.msgType === 'voice' || payload.type === 'voice' || payload.voiceDuration)
       ? sanitizeVoiceInfo({ duration: payload.voiceDuration, waveform: payload.waveform }) : null;
     const incomingLocation = sanitizeLocation(payload.location);
-    chatMessages[from].push({
+    chatMessages[key].push({
       id: msgId,
       sender: from,
+      ...(room && readNow ? { readByOwner: true } : {}),
       text: payload.text || '',
       timestamp: payload.timestamp || Date.now(),
       status: 'RECEIVED',
@@ -3534,7 +4371,7 @@
       ...(incomingVoice ? { voice: incomingVoice } : {}),
       ...(incomingLocation ? { location: incomingLocation } : {})
     });
-    chatMessages[from].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    chatMessages[key].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     saveChatMessagesToStorage();
 
     // Mídia anexada: registra em Transferências (aguardando aceite ou já conectando)
@@ -3564,11 +4401,12 @@
       renderTransfers();
     }
 
-    notifyIncoming(from, incomingLocation ? '📍 Localização' : incomingVoice ? `🎤 Mensagem de voz (${formatDuration(incomingVoice.duration)})`
-      : payload.text || (fileMeta ? `📎 ${fileMeta.name || fileMeta.fileName || 'arquivo'}` : ''), 'chat');
+    const preview = incomingLocation ? '📍 Localização' : incomingVoice ? `🎤 Mensagem de voz (${formatDuration(incomingVoice.duration)})`
+      : payload.text || (fileMeta ? `📎 ${fileMeta.name || fileMeta.fileName || 'arquivo'}` : '');
+    notifyIncoming(key, room ? `${visitorLabel(from)}: ${preview}` : preview, 'chat');
 
-    if (activeChatPeer === from) {
-      renderChatMessages(from);
+    if (activeChatPeer === key) {
+      renderChatMessages(key);
     } else {
       const badge = document.getElementById('badge-chat-unread');
       if (badge) {
@@ -3585,9 +4423,12 @@
   function sendChatMessage(targetTag, text, extra) {
     targetTag = normalizeTag(targetTag);
     if (!targetTag || !text) return;
+    const room = roomByKey(targetTag);
+    if (room) { roomSendText(room, text, extra); return; }
     if (!chatMessages[targetTag]) chatMessages[targetTag] = [];
 
     const location = extra && extra.location ? sanitizeLocation(extra.location) : null;
+    const forwarded = Boolean(extra && extra.forwarded);
     const msgId = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
     const ts = Date.now();
     chatMessages[targetTag].push({
@@ -3596,7 +4437,8 @@
       text,
       timestamp: ts,
       status: 'SENT',
-      ...(location ? { location } : {})
+      ...(location ? { location } : {}),
+      ...(forwarded ? { forwarded: true } : {})
     });
     saveChatMessagesToStorage();
 
@@ -3609,6 +4451,7 @@
       timestamp: ts
     };
     if (location) payload.location = location;
+    if (forwarded) payload.forwarded = true;
 
     // Roteamento inteligente: as 2 melhores rotas (Bluetooth direto, internet ou
     // malha BLE via outros usuários). O destino deduplica pelo id.
@@ -3625,7 +4468,7 @@
     if (attempt > 3) return;
     setTimeout(() => {
       const m = (chatMessages[targetTag] || []).find((x) => x.id === msgId);
-      if (m && m.status === 'SENT') {
+      if (m && m.status === 'SENT' && !m.deleted) {
         // Sem ACK: penaliza as rotas usadas e tenta por TODAS as disponíveis
         trackRouteFailure(targetTag, msgId);
         const vias = sendSignal(targetTag, msgId, 'CHAT_MESSAGE', payload, { allRoutes: true });
@@ -3649,7 +4492,8 @@
     if (!list || !list.length || !myTag) return;
     const now = Date.now();
     if (now - (pendingFlushAt[tag] || 0) < 30000) return;
-    const pending = list.filter((m) => m.status === 'SENT' && isMyTag(m.sender) && m.text &&
+    flushPendingDeletes(tag);
+    const pending = list.filter((m) => m.status === 'SENT' && isMyTag(m.sender) && m.text && !m.deleted &&
       !m.transferId && !m.media && now - (m.timestamp || 0) < PENDING_RESEND_MAX_AGE && now - (m.timestamp || 0) > 15000);
     if (!pending.length) return;
     pendingFlushAt[tag] = now;
@@ -3657,6 +4501,7 @@
       const payload = { id: m.id, senderTag: myTag, text: m.text, msgType: m.location ? 'location' : 'text', type: m.location ? 'location' : 'text', timestamp: m.timestamp };
       if (m.location) payload.location = m.location;
       if (m.replyTo) payload.replyTo = m.replyTo;
+      if (m.forwarded) payload.forwarded = true;
       const vias = sendSignal(tag, m.id, 'CHAT_MESSAGE', payload);
       trackRttSent(tag, m.id, vias);
     }, i * 150));
@@ -3666,7 +4511,7 @@
   // nunca chegavam a ninguém: quando o catálogo de nomes conhece o dono, move a
   // conversa para a tag completa e reenvia o que ficou pendente.
   function isBareUserTag(tag) {
-    return /^@[a-z0-9_]{2,40}$/.test(tag || '') && !splitTag(tag) && !isLinkVisitor(tag) && !isOfficialTag(tag);
+    return /^@[a-z0-9_]{2,40}$/.test(tag || '') && !splitTag(tag) && !isLinkVisitor(tag) && !isOfficialTag(tag) && !isRoomKey(tag);
   }
   let bareMigrateTimer = null;
   const bareProbed = new Set();
@@ -3718,6 +4563,7 @@
     const msgId = 'cmsg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
     const mime = fileItem.mimeType || fileItem.type || 'application/octet-stream';
     const voice = extra && extra.voice ? sanitizeVoiceInfo(extra.voice) : null;
+    const forwarded = Boolean(extra && extra.forwarded);
     const msgType = voice ? 'voice' : mime.startsWith('image/') ? 'image' : mime.startsWith('video/') ? 'video' : mime.startsWith('audio/') ? 'audio' : 'file';
     const fileMeta = {
       name: fileItem.name,
@@ -3740,7 +4586,8 @@
       status: 'SENT',
       transferId,
       media: fileMeta,
-      ...(voice ? { voice } : {})
+      ...(voice ? { voice } : {}),
+      ...(forwarded ? { forwarded: true } : {})
     });
     saveChatMessagesToStorage();
 
@@ -3757,6 +4604,7 @@
     };
     // Mesmos campos da extensão antiga (voiceDuration em segundos, waveform 0–100)
     if (voice) { payload.voiceDuration = voice.duration; payload.waveform = voice.waveform; }
+    if (forwarded) payload.forwarded = true;
     trackRttSent(targetTag, msgId, sendSignal(targetTag, msgId, 'CHAT_MESSAGE', payload));
     scheduleChatRetry(targetTag, msgId, payload);
 
@@ -3777,6 +4625,8 @@
   // Registra um arquivo a enviar (chat ou envio direto) e dispara a oferta
   // extra.voice = { duration, waveform } → mensagem de voz gravada no app
   function queueOutgoingFile(target, fileItem, text, extra) {
+    const room = roomByKey(normalizeTag(target));
+    if (room) { roomAddFile(room, fileItem, text, extra); return; }
     const tid = 'chatmedia-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     stagedFilesMap.set(tid, fileItem);
     transfers[tid] = {
@@ -3795,7 +4645,7 @@
       startTime: Date.now()
     };
     sendChatMessageWithMedia(target, text || '', tid, fileItem, extra);
-    captureOutgoingChatMedia(tid, fileItem);
+    captureOutgoingChatMedia(tid, fileItem).then(() => rememberOutgoingSource(tid, fileItem));
   }
 
   window.downloadChatMedia = function (transferId, fileName) {
@@ -3804,6 +4654,13 @@
     if ((!tr || !tr.savedPath || !Native.isAvailable()) && chatMediaUrls.has(transferId) && !(tr && tr.type === 'send')) {
       window.psSaveChatMedia(transferId);
       return;
+    }
+    // Android: o arquivo baixado foi apagado do aparelho → baixa de novo de quem enviou
+    if (tr && tr.type === 'receive' && tr.savedPath && Native.isAvailable() && !Native.fileExists(tr.savedPath)) {
+      tr.savedPath = null;
+      tr.status = 'awaiting_accept';
+      tr.progress = 0;
+      tr.transferredBytes = 0;
     }
     if (tr && tr.savedPath) {
       if (tr.type === 'receive' && !Native.isAvailable() && tr.blob) {
@@ -3829,7 +4686,7 @@
         const msg = chatMessages[peer].find(m => m.transferId === transferId);
         if (msg && msg.media) {
           fileMeta = msg.media;
-          sender = peer;
+          sender = isRoomKey(peer) ? normalizeTag(msg.sender) : peer;
           chatMsgId = msg.id;
           break;
         }
@@ -3895,7 +4752,7 @@
       ...Object.keys(contacts)
     ]);
 
-    let peerTags = Array.from(interactedPeers).filter(t => t && !isMyTag(t) && !isBlocked(t) && !isAdminDeleted(t));
+    let peerTags = Array.from(interactedPeers).filter(t => t && !isMyTag(t) && !isBlocked(t) && !isAdminDeleted(t) && !isChatHidden(t));
 
     // Filtra pela categoria selecionada
     if (selectedCategory && selectedCategory !== 'Todas') {
@@ -3945,23 +4802,29 @@
       const contact = contacts[tag];
       const peer = peerRegistry[tag];
       const official = isOfficialTag(tag);
-      const name = escapeHtml(official ? 'PulseShare' : (contact && contact.name) || (peer && peer.name) || displayNameFor(tag));
-      const avatar = official ? officialAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 56) : '');
+      const room = roomByKey(tag);
+      const name = escapeHtml(official ? 'PulseShare' : room ? room.title : (contact && contact.name) || (peer && peer.name) || displayNameFor(tag));
+      const avatar = official ? officialAvatarHtml() : room ? roomAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 56) : '');
       const msgs = chatMessages[tag] || [];
       const lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
       const lastTime = lastMsg ? formatTime(lastMsg.timestamp) : '';
       const transportBadge = official
         ? '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">✔ Oficial</span>'
+        : room
+        ? (roomUnavailable(room)
+          ? `<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-slate-800 text-slate-500 border border-slate-700">🔗 ${roomExpiryText(room)}</span>`
+          : `<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-orange-500/15 text-orange-300 border border-orange-500/30">🔗 Link${roomOnlineVisitors(room).length ? ' • ' + roomOnlineVisitors(room).length + ' online' : ''}</span>`)
         : isContact(tag) || isLinkVisitor(tag)
         ? routeBadgeHtml(tag)
         : '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30">✉️ Pedido</span>';
 
-      let snippet = 'Toque para conversar com criptografia';
+      let snippet = room ? 'Link criado — envie arquivos e toque em Compartilhar' : 'Toque para conversar com criptografia';
       let checkIcon = '';
       if (lastMsg) {
         snippet = messageSummary(lastMsg);
-        if (lastMsg.sender === myTag) {
-          checkIcon = '<span class="text-indigo-400 font-bold mr-1">✓✓</span>';
+        if (room && isLinkVisitor(lastMsg.sender)) snippet = visitorLabel(lastMsg.sender) + ': ' + snippet;
+        if (isMyTag(lastMsg.sender) && !lastMsg.deleted) {
+          checkIcon = `<span class="mr-1">${statusTickHtml(lastMsg.status, true)}</span>`;
         }
       }
 
@@ -3997,18 +4860,23 @@
 
     // Eventos de clique nas conversas
     listEl.querySelectorAll('[data-chat-peer]').forEach(row => {
+      const tag = row.getAttribute('data-chat-peer');
       row.onclick = (e) => {
         if (e.target.closest('[data-open-contact-options]')) return;
-        const tag = row.getAttribute('data-chat-peer');
+        if (row._psLongPressed) { row._psLongPressed = false; return; }
         openActiveChat(tag);
       };
+      // Toque longo / clique direito: menu da conversa (excluir, listas, contato)
+      if (isRoomKey(tag)) attachLongPress(row, () => { row._psLongPressed = true; openLinkShareSheet(tag); });
+      else if (!isOfficialTag(tag)) attachLongPress(row, () => { row._psLongPressed = true; openContactOptionsMenu(tag); });
+      else attachLongPress(row, () => { row._psLongPressed = true; activeMenuTargetTag = tag; handleDeleteChatAction(); });
     });
 
     listEl.querySelectorAll('[data-open-contact-options]').forEach(btn => {
       btn.onclick = (e) => {
         e.stopPropagation();
         const tag = btn.getAttribute('data-open-contact-options');
-        openContactOptionsMenu(tag);
+        if (isRoomKey(tag)) openLinkShareSheet(tag); else openContactOptionsMenu(tag);
       };
     });
   }
@@ -4018,26 +4886,32 @@
     peerTag = normalizeTag(peerTag);
     if (!peerTag) return;
     if (!peerTag.startsWith('@')) peerTag = '@' + peerTag;
+    if (activeChatPeer !== peerTag) { selectedMsgIds.clear(); selectionPeer = null; }
     activeChatPeer = peerTag;
     const official = isOfficialTag(peerTag);
     // Confirmação de leitura (✓✓ azul) para quem nos enviou mensagens
-    if (!official && (chatMessages[peerTag] || []).some(m => m.sender === peerTag)) {
-      sendSignal(peerTag, 'read-' + Date.now(), 'CHAT_READ', { readerTag: myTag });
-    }
+    delete lastReadSentFor[peerTag];
+    setTimeout(sendReadReceiptIfViewing, 0);
     // Canal oficial (mensagens do administrador): somente leitura
+    const room = roomByKey(peerTag);
     ['chat-bottom-input-bar', 'btn-chat-contact-menu', 'chat-contact-transport-badge'].forEach((id) => {
       const el = document.getElementById(id);
       if (el) el.classList.toggle('hidden', official);
     });
+    const shareBtn = document.getElementById('btn-chat-link-share');
+    if (shareBtn) shareBtn.classList.toggle('hidden', !room);
     const ro = document.getElementById('chat-official-readonly');
-    if (ro) ro.classList.toggle('hidden', !official);
+    if (ro) {
+      ro.classList.toggle('hidden', !official);
+      ro.textContent = '✔ Canal oficial do PulseShare — somente leitura';
+    }
     toggleAttachMenu(false);
     updateComposeButtons();
     const contacts = (typeof PulseShareCrypto !== 'undefined') ? PulseShareCrypto.ProfilesManager.getContacts() : {};
     const contact = contacts[peerTag];
     const peer = peerRegistry[peerTag];
-    const name = official ? 'PulseShare' : (contact && contact.name) || (peer && peer.name) || displayNameFor(peerTag);
-    const avatar = official ? officialAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(peerTag, 40) : '');
+    const name = official ? 'PulseShare' : room ? room.title : (contact && contact.name) || (peer && peer.name) || displayNameFor(peerTag);
+    const avatar = official ? officialAvatarHtml() : room ? roomAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(peerTag, 40) : '');
     const avatarSlot = document.getElementById('chat-contact-avatar');
     if (avatarSlot) avatarSlot.innerHTML = avatar;
 
@@ -4049,6 +4923,7 @@
 
     refreshActiveChatRouteBadge();
     refreshContactRequestBanner();
+    if (room) refreshRoomHeader();
 
     renderChatMessages(peerTag);
 
@@ -4063,7 +4938,7 @@
   // Selo da rota atual no cabeçalho da conversa
   function refreshActiveChatRouteBadge() {
     const badge = document.getElementById('chat-contact-transport-badge');
-    if (!badge || !activeChatPeer || isOfficialTag(activeChatPeer)) return;
+    if (!badge || !activeChatPeer || isOfficialTag(activeChatPeer) || isRoomKey(activeChatPeer)) return;
     const tmp = document.createElement('div');
     tmp.innerHTML = routeBadgeHtml(activeChatPeer);
     const el = tmp.firstElementChild;
@@ -4078,7 +4953,7 @@
   function refreshContactRequestBanner() {
     const banner = document.getElementById('chat-contact-request-banner');
     if (!banner) return;
-    const show = Boolean(activeChatPeer && !isContact(activeChatPeer) && !isLinkVisitor(activeChatPeer) && !isOfficialTag(activeChatPeer));
+    const show = Boolean(activeChatPeer && !isContact(activeChatPeer) && !isLinkVisitor(activeChatPeer) && !isOfficialTag(activeChatPeer) && !isRoomKey(activeChatPeer));
     banner.classList.toggle('hidden', !show);
   }
 
@@ -4093,6 +4968,7 @@
       avatar: (peer && peer.avatar) || PulseShareCrypto.generateIdenticonSvg(tag, 64)
     });
     setBlocked(tag, false);
+    setChatHidden(tag, false);
     renderConversationsList();
     renderMeshPeers();
     if (activeChatPeer === tag) refreshContactRequestBanner();
@@ -4105,6 +4981,8 @@
     if (voiceRec) stopVoiceRecording(false);
     toggleAttachMenu(false);
     activeChatPeer = null;
+    clearMessageSelection();
+    closeDeleteMessagesModal();
     const activePane = document.getElementById('chat-active-conversation-pane');
     if (activePane) activePane.classList.remove('active');
 
@@ -4156,6 +5034,7 @@
   // Resumo de uma mensagem (lista de conversas, busca, notificação)
   function messageSummary(m) {
     if (!m) return '';
+    if (m.deleted) return isMyTag(m.sender) ? '🚫 Você apagou esta mensagem' : '🚫 Mensagem apagada';
     if (m.location) return '📍 Localização';
     if (m.voice) return `🎤 Mensagem de voz (${formatDuration(m.voice.duration)})`;
     if (m.media) {
@@ -4643,6 +5522,7 @@
       <div class="space-y-2 pb-4">
         <button type="button" data-profile-action="block" class="w-full py-2.5 px-3 rounded-xl ${blocked ? 'bg-slate-800 hover:bg-slate-700 text-white' : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30'} text-left text-xs font-bold">${blocked ? '✅ Desbloquear' : '🚫 Bloquear'} ${escapeHtml(name)}</button>
         ${msgs.length ? '<button type="button" data-profile-action="delete" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold">🗑️ Excluir conversa</button>' : ''}
+        ${contact ? '<button type="button" data-profile-action="remove-contact" class="w-full py-2.5 px-3 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-left text-xs font-bold">❌ Remover dos contatos</button>' : ''}
       </div>`}`;
   }
 
@@ -4712,6 +5592,11 @@
         handleDeleteChatAction();
         if (!chatMessages[tag]) closePeerProfile(); else renderPeerProfile();
         break;
+      case 'remove-contact':
+        activeMenuTargetTag = tag;
+        handleRemoveContactAction();
+        if (!isContact(tag) && !chatMessages[tag]) closePeerProfile(); else renderPeerProfile();
+        break;
     }
   }
 
@@ -4766,7 +5651,9 @@
       </div>` : '';
 
     let action;
-    if (isMe) {
+    if (isMe && m.roomFileId) {
+      action = '<span class="text-[10px] font-bold text-orange-200" title="Disponível para quem abrir o link">🔗 No link</span>';
+    } else if (isMe) {
       const st = tr ? tr.status : 'completed';
       action = isTransferring ? `<span class="text-[10px] font-mono text-indigo-300 font-bold animate-pulse">${tr.progress || 0}%</span>`
         : `<span class="text-[10px] font-bold ${st === 'completed' ? 'text-emerald-300' : st === 'error' || st === 'cancelled' ? 'text-rose-300' : 'text-slate-300'}">${st === 'completed' ? 'Enviado' : st === 'awaiting_accept' ? 'Aguardando' : st === 'error' ? 'Falhou' : st === 'cancelled' ? 'Cancelado' : st}</span>`;
@@ -4778,6 +5665,10 @@
       action = `<span class="text-[10px] font-mono text-indigo-400 font-bold animate-pulse">${tr.status === 'connecting' ? 'conectando' : (tr.progress || 0) + '%'}</span>`;
     } else {
       action = `<button type="button" data-ps-call="downloadChatMedia" data-ps-args="${safeTid}" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold shadow active:scale-95">${tr && tr.status === 'error' ? 'Tentar de novo' : 'Baixar'}</button>`;
+      if (tr && tr.status === 'error' && tr.error) {
+        const why = /não respondeu/i.test(tr.error) ? 'Quem enviou está offline. Tente quando estiver online.' : tr.error;
+        action = `<div class="flex flex-col items-end gap-1"><span class="text-[9px] text-rose-300 text-right" style="max-width:11rem">${escapeHtml(why)}</span>${tr.gone ? '' : action}</div>`;
+      }
     }
 
     if (m.voice) return renderVoiceHtml(m, isMe, tid, previewUrl, action, progressBar);
@@ -4822,15 +5713,23 @@
 
   function renderChatMessageHtml(m) {
     const isMe = m.sender === myTag;
+    if (m.deleted) {
+      return `
+        <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} my-0.5">
+          <div class="max-w-[80%] rounded-2xl px-3 py-1.5 border ${isMe ? 'border-indigo-500/30 text-indigo-200' : 'border-slate-700/60 text-slate-400'} bg-slate-900/60">
+            <p class="text-[11px] italic select-none">🚫 ${isMe ? 'Você apagou esta mensagem' : 'Mensagem apagada'}</p>
+            <div class="flex items-center justify-end mt-0.5 text-[10px] text-slate-500 font-medium select-none"><span>${formatTime(m.timestamp)}</span></div>
+          </div>
+        </div>`;
+    }
     const timeStr = formatTime(m.timestamp);
     const mediaHtml = m.location ? renderLocationHtml(m) : (m.media || m.transferId) ? renderChatMediaHtml(m, isMe) : '';
-    const tick = !isMe ? '' : m.status === 'READ' ? '<span class="text-sky-300 font-bold ml-0.5">✓✓</span>'
-      : m.status === 'DELIVERED' ? '<span class="text-indigo-200 font-bold ml-0.5">✓✓</span>'
-      : '<span class="text-indigo-200 font-bold ml-0.5">✓</span>';
+    const tick = isMe ? statusTickHtml(m.status) : '';
     const reactions = m.reactions ? Object.values(m.reactions).join(' ') : '';
     return `
         <div class="flex flex-col ${isMe ? 'items-end' : 'items-start'} my-0.5">
           <div class="max-w-[80%] rounded-2xl ${mediaHtml ? 'px-1.5 pt-1.5 pb-1' : 'px-3 py-1.5'} shadow-sm ${isMe ? 'bg-indigo-600 text-white rounded-tr-xs' : 'bg-slate-800 border border-slate-700/60 text-slate-100 rounded-tl-xs'}">
+            ${!isMe && isLinkVisitor(m.sender) && roomOfVisitor(m.sender) ? `<span class="text-[10px] font-bold text-orange-300 block ${mediaHtml ? 'px-1.5' : ''}">${escapeHtml(visitorLabel(m.sender))}</span>` : ''}
             ${m.forwarded ? '<span class="text-[9px] italic opacity-70 block px-1.5">↪ Encaminhada</span>' : ''}
             ${mediaHtml}
             ${m.text && !m.location ? `<p class="text-[13px] leading-snug break-words select-text ${mediaHtml ? 'px-1.5 pt-1' : ''}">${escapeHtml(m.text)}</p>` : ''}
@@ -4843,6 +5742,16 @@
         </div>`;
   }
 
+  // ✓ enviada (ainda não chegou) • ✓✓ cinza entregue (não lida) • ✓✓ azul lida
+  function statusTickHtml(status, inList) {
+    const base = 'font-bold ml-0.5 tracking-tighter';
+    const size = inList ? '' : 'font-size:13px;line-height:1;';
+    if (status === 'READ') return `<span class="${base}" title="Lida" style="${size}color:#38bdf8;text-shadow:0 0 1px #0c4a6e">✓✓</span>`;
+    const grey = inList ? '#94a3b8' : 'rgba(224,231,255,0.7)';
+    if (status === 'DELIVERED') return `<span class="${base}" title="Entregue (ainda não lida)" style="${size}color:${grey}">✓✓</span>`;
+    return `<span class="${base}" title="Enviada (ainda não chegou)" style="${size}color:${grey}">✓</span>`;
+  }
+
   let lastChatRenderPeer = null;
   let chatStickToBottom = true;
 
@@ -4853,6 +5762,17 @@
     const msgs = chatMessages[peerTag] || [];
     if (msgs.length === 0) {
       lastChatRenderPeer = null;
+      if (selectionPeer === peerTag) clearMessageSelection();
+      if (isRoomKey(peerTag)) {
+        container.innerHTML = `
+        <div class="h-full flex flex-col items-center justify-center text-center text-slate-500 py-12 px-4">
+          <div class="w-12 h-12 rounded-2xl overflow-hidden mb-2">${roomAvatarHtml()}</div>
+          <span class="text-xs font-bold text-slate-300">Chat de link</span>
+          <p class="text-[11px] text-slate-500 mt-1 max-w-xs">Tudo o que você enviar aqui (arquivos, fotos, textos, áudios) fica disponível para quem abrir o link, que também pode conversar com você. Toque em <b>Compartilhar</b> no topo para enviar o link.</p>
+          <p class="text-[10px] text-slate-600 mt-2 max-w-xs">Os arquivos saem direto deste aparelho: o link só funciona com o PulseShare aberto (ou rodando em segundo plano).</p>
+        </div>`;
+        return;
+      }
       container.innerHTML = `
         <div class="h-full flex flex-col items-center justify-center text-center text-slate-500 py-12">
           <div class="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center mb-2">
@@ -4899,6 +5819,11 @@
       else container.insertBefore(el, cursor);
     });
     existing.forEach((el) => el.remove());
+    if (selectionPeer === peerTag) {
+      const ids = new Set(msgs.map((m) => m.id));
+      Array.from(selectedMsgIds).forEach((id) => { if (!ids.has(id)) selectedMsgIds.delete(id); });
+    }
+    updateSelectionUi();
 
     if (peerChanged || nearBottom || added) {
       chatStickToBottom = true;
@@ -5015,6 +5940,7 @@
 
   function avatarFor(tag, size) {
     if (isOfficialTag(tag)) return officialAvatarHtml();
+    if (isRoomKey(tag)) return roomAvatarHtml();
     const c = getContacts()[tag];
     const p = peerRegistry[tag];
     return (c && c.avatar) || (p && p.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, size || 40) : '');
@@ -5131,13 +6057,6 @@
       fileCount++;
       if (fileRows.length < LIMIT) fileRows.push({ kind: 'transfer', t, name: t.fileName, size: t.totalBytes, ts: t.startTime, peer: t.target || t.sender });
     });
-    Object.values(publicShares).forEach((sh) => {
-      (sh.files || []).forEach((f) => {
-        if (!foldText(f.name).includes(q)) return;
-        fileCount++;
-        if (fileRows.length < LIMIT) fileRows.push({ kind: 'share', share: sh, name: f.name, size: f.size, ts: sh.createdAt });
-      });
-    });
     msgRows.sort((a, b) => (b.m.timestamp || 0) - (a.m.timestamp || 0));
     fileRows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
 
@@ -5187,7 +6106,7 @@
             <span class="text-[10px] text-slate-400 block truncate">${sub}</span>
           </div>
         </div>
-        ${isOfficialTag(tag) ? '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 shrink-0">✔ Oficial</span>' : contact ? routeBadgeHtml(tag) : `<button type="button" data-search-add="${escapeHtml(tag)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold shrink-0">+ Adicionar</button>`}
+        ${isOfficialTag(tag) ? '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 shrink-0">✔ Oficial</span>' : isRoomKey(tag) ? '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-orange-500/15 text-orange-300 border border-orange-500/30 shrink-0">🔗 Link</span>' : contact ? routeBadgeHtml(tag) : `<button type="button" data-search-add="${escapeHtml(tag)}" class="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold shrink-0">+ Adicionar</button>`}
       </div>`;
   }
 
@@ -5243,58 +6162,681 @@
   }
 
   // ==========================================================================
-  // 10. MENU DE OPÇÕES DO CONTATO (SALVAR, LISTAS, EXCLUIR)
+  // 10. MENU DO CONTATO E EXCLUSÃO (conversas, mensagens, contatos e listas)
+  //     - Menu ⋮ / toque longo na conversa: salvar/renomear, listas (adicionar e
+  //       tirar), limpar mensagens, excluir conversa (some da lista; volta com
+  //       mensagem nova) e remover dos contatos (catálogo particular).
+  //     - Mensagens: toque longo (celular) ou clique direito (PC) seleciona;
+  //       Copiar / Apagar para mim / Apagar para todos (CHAT_DELETE).
   // ==========================================================================
   let activeMenuTargetTag = null;
 
-  function openContactOptionsMenu(targetTag) {
-    activeMenuTargetTag = targetTag;
+  function closeContactMenu() {
     const modal = document.getElementById('modal-contact-menu');
-    if (!modal) return;
-    const title = document.getElementById('contact-menu-title');
-    if (title) title.textContent = `Opções para ${targetTag}`;
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function openContactOptionsMenu(targetTag) {
+    activeMenuTargetTag = normalizeTag(targetTag);
+    const modal = document.getElementById('modal-contact-menu');
+    if (!modal || !activeMenuTargetTag) return;
+    renderContactMenu();
     modal.classList.remove('hidden');
+  }
+
+  function categoryLabel(cat) {
+    return ({ Favoritos: '⭐ Favoritos', 'Família': '🏠 Família', Trabalho: '💼 Trabalho' })[cat] || cat;
+  }
+
+  function renderContactMenu() {
+    const tag = activeMenuTargetTag;
+    const box = document.getElementById('contact-menu-actions');
+    if (!box || !tag) return;
+    const contact = getContacts()[tag];
+    const title = document.getElementById('contact-menu-title');
+    if (title) title.textContent = contact ? `${contact.name || displayNameFor(tag)} (${tag})` : `Opções para ${tag}`;
+    const msgs = chatMessages[tag] || [];
+    const lists = contact && Array.isArray(contact.lists) ? contact.lists.filter((l) => l && l !== 'Todas') : [];
+    const btn = (action, label, danger) => `<button type="button" data-cm-action="${action}" class="w-full py-2.5 px-3 rounded-xl ${danger
+      ? 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 font-bold'
+      : 'bg-slate-800 hover:bg-slate-700 text-white font-semibold'} text-left text-xs flex items-center gap-2"><span>${label}</span></button>`;
+    box.innerHTML = [
+      btn('save', contact ? '✏️ Renomear contato' : '👤 Salvar nos contatos'),
+      lists.length ? `<div class="px-1 pt-1 space-y-1.5">
+        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Listas deste contato (toque para tirar)</span>
+        <div class="flex flex-wrap gap-1.5">${lists.map((l) => `<button type="button" data-cm-remove-list="${escapeHtml(l)}" class="px-2.5 py-1 rounded-full bg-indigo-500/15 text-indigo-200 border border-indigo-500/30 text-[11px] font-semibold active:scale-95">${escapeHtml(categoryLabel(l))} ✕</button>`).join('')}</div>
+      </div>` : '',
+      btn('list', '🏷️ Adicionar a uma lista'),
+      msgs.length ? btn('clear', '🧹 Limpar mensagens (mantém a conversa)') : '',
+      (msgs.length || !isChatHidden(tag)) && (msgs.length || contact) ? btn('delete', '🗑️ Excluir conversa', true) : '',
+      contact ? btn('remove-contact', '❌ Remover dos contatos', true) : ''
+    ].join('');
+    box.querySelectorAll('[data-cm-action]').forEach((el) => {
+      el.onclick = () => handleContactMenuAction(el.getAttribute('data-cm-action'));
+    });
+    box.querySelectorAll('[data-cm-remove-list]').forEach((el) => {
+      el.onclick = () => {
+        removeContactFromList(tag, el.getAttribute('data-cm-remove-list'));
+        renderContactMenu();
+      };
+    });
+  }
+
+  function handleContactMenuAction(action) {
+    switch (action) {
+      case 'save': handleSaveContactAction(); break;
+      case 'list': handleAddToListAction(); break;
+      case 'clear': clearConversation(activeMenuTargetTag); break;
+      case 'delete': handleDeleteChatAction(); break;
+      case 'remove-contact': handleRemoveContactAction(); break;
+    }
+  }
+
+  // Atualiza o que estiver aberto depois de mudar contato/conversa
+  function refreshAfterContactChange(tag) {
+    renderConversationsList();
+    renderMeshPeers();
+    if (activeChatPeer === tag) {
+      const nameEl = document.getElementById('chat-contact-name');
+      if (nameEl) nameEl.textContent = displayNameFor(tag);
+      refreshContactRequestBanner();
+      renderChatMessages(tag);
+    }
+    if (peerProfileTag === tag) {
+      const pm = document.getElementById('modal-peer-profile');
+      if (pm && !pm.classList.contains('hidden')) renderPeerProfile();
+    }
   }
 
   function handleSaveContactAction() {
     if (!activeMenuTargetTag || typeof PulseShareCrypto === 'undefined') return;
-    const peer = peerRegistry[activeMenuTargetTag];
-    const current = getContacts()[activeMenuTargetTag];
-    const name = prompt('Nome para o contato:', (current && current.name) || (peer && peer.name) || activeMenuTargetTag.replace(/^@/, '').split('_')[0]);
-    if (name) {
-      addContact(activeMenuTargetTag, name.trim());
-      Native.toast('Contato salvo com sucesso!');
-      if (activeChatPeer === activeMenuTargetTag) {
-        document.getElementById('chat-contact-name').textContent = name;
+    const tag = activeMenuTargetTag;
+    const peer = peerRegistry[tag];
+    const current = getContacts()[tag];
+    const name = prompt('Nome para o contato:', (current && current.name) || (peer && peer.name) || tag.replace(/^@/, '').split('_')[0]);
+    if (name && name.trim()) {
+      if (current) {
+        PulseShareCrypto.ProfilesManager.saveContact(tag, { ...current, name: name.trim().slice(0, 60) });
+        setChatHidden(tag, false);
+      } else {
+        addContact(tag, name.trim().slice(0, 60));
       }
+      Native.toast(current ? 'Contato renomeado.' : 'Contato salvo com sucesso!');
+      refreshAfterContactChange(tag);
     }
-    document.getElementById('modal-contact-menu').classList.add('hidden');
+    closeContactMenu();
   }
 
   function handleAddToListAction() {
     if (!activeMenuTargetTag || typeof PulseShareCrypto === 'undefined') return;
-    const chosenList = prompt('Adicionar à lista (ex: Favoritos, Família, Trabalho):', 'Favoritos');
-    if (chosenList) {
-      PulseShareCrypto.ProfilesManager.addToList(activeMenuTargetTag, chosenList.trim());
-      Native.toast(`Contato adicionado a ${chosenList}!`);
-      renderConversationsList();
+    const tag = activeMenuTargetTag;
+    const existing = customCategories.filter((c) => c !== 'Todas');
+    const chosen = prompt(`Adicionar à lista (${existing.join(', ')} ou um nome novo):`, existing[0] || 'Favoritos');
+    const list = chosen && chosen.trim().slice(0, 30);
+    if (list && list !== 'Todas') {
+      if (!getContacts()[tag]) addContact(tag);
+      PulseShareCrypto.ProfilesManager.addToList(tag, list);
+      if (!customCategories.includes(list)) {
+        customCategories.push(list);
+        saveCustomCategories();
+      }
+      renderCategoriesBar();
+      Native.toast(`Contato adicionado a ${list}!`);
+      refreshAfterContactChange(tag);
     }
-    document.getElementById('modal-contact-menu').classList.add('hidden');
+    closeContactMenu();
+  }
+
+  function removeContactFromList(tag, list) {
+    const contacts = getContacts();
+    const c = contacts[tag];
+    if (!c || !Array.isArray(c.lists)) return;
+    c.lists = c.lists.filter((l) => l !== list);
+    if (!c.lists.includes('Todas')) c.lists.unshift('Todas');
+    PulseShareCrypto.ProfilesManager.saveContact(tag, c);
+    Native.toast(`Removido da lista ${list}.`);
+    refreshAfterContactChange(tag);
+  }
+
+  // Apaga as mensagens (e a mídia guardada) de uma conversa; cancela transferências dela
+  function wipeConversationMessages(tag) {
+    (chatMessages[tag] || []).forEach((m) => discardMessageMedia(m));
+    if (isOfficialTag(tag)) dismissOfficialMessages((chatMessages[tag] || []).map((m) => m.id));
+    delete chatMessages[tag];
+    saveChatMessagesToStorage();
+  }
+
+  function clearConversation(tag) {
+    if (!tag) return;
+    if (!confirm(`Apagar todas as mensagens com ${displayNameFor(tag)} deste aparelho?\n\nA conversa continua na lista. Não dá para desfazer.`)) return;
+    wipeConversationMessages(tag);
+    setChatHidden(tag, false);
+    closeContactMenu();
+    refreshAfterContactChange(tag);
+    Native.toast('Mensagens apagadas.');
   }
 
   function handleDeleteChatAction() {
-    if (!activeMenuTargetTag) return;
-    if (confirm(`Deseja realmente excluir a conversa com ${activeMenuTargetTag}?`)) {
-      (chatMessages[activeMenuTargetTag] || []).forEach((m) => deleteChatMedia(m.transferId || (m.media && m.media.transferId)));
-      delete chatMessages[activeMenuTargetTag];
-      saveChatMessagesToStorage();
-      if (activeChatPeer === activeMenuTargetTag) {
-        closeActiveChat();
-      }
-      renderConversationsList();
-      Native.toast('Conversa excluída.');
+    const tag = activeMenuTargetTag;
+    if (!tag) return;
+    if (!confirm(`Excluir a conversa com ${displayNameFor(tag)}?\n\nAs mensagens são apagadas deste aparelho e a conversa sai da lista (volta se chegar mensagem nova).${isContact(tag) ? ' O contato continua salvo.' : ''}`)) return;
+    wipeConversationMessages(tag);
+    setChatHidden(tag, true);
+    if (activeChatPeer === tag) closeActiveChat();
+    closeContactMenu();
+    refreshAfterContactChange(tag);
+    Native.toast('Conversa excluída.');
+  }
+
+  function handleRemoveContactAction() {
+    const tag = activeMenuTargetTag;
+    if (!tag || typeof PulseShareCrypto === 'undefined') return;
+    const name = displayNameFor(tag);
+    if (!confirm(`Remover ${name} (${tag}) dos seus contatos?\n\nO nome salvo, a foto e as listas dele são apagados deste aparelho.`)) return;
+    const hasMsgs = (chatMessages[tag] || []).length > 0;
+    const wipe = hasMsgs && confirm('Apagar também a conversa?\n\nOK = apagar a conversa\nCancelar = manter as mensagens');
+    PulseShareCrypto.ProfilesManager.removeContact(tag);
+    if (wipe || !hasMsgs) {
+      wipeConversationMessages(tag);
+      setChatHidden(tag, true);
+      if (activeChatPeer === tag) closeActiveChat();
     }
-    document.getElementById('modal-contact-menu').classList.add('hidden');
+    closeContactMenu();
+    refreshAfterContactChange(tag);
+    Native.toast(`${name} removido dos contatos.`);
+  }
+
+  // --------------------------------------------------------------------------
+  // Listas (categorias) da barra de filtros: criadas pela pessoa, persistem e
+  // podem ser excluídas (toque longo / clique direito → tira de todos os contatos).
+  // --------------------------------------------------------------------------
+  function saveCustomCategories() {
+    try { localStorage.setItem('ps_custom_categories', JSON.stringify(customCategories)); } catch (e) {}
+  }
+
+  function renderCategoriesBar() {
+    const bar = document.getElementById('chat-categories-bar');
+    if (!bar) return;
+    if (!customCategories.includes('Todas')) customCategories.unshift('Todas');
+    if (!customCategories.includes(selectedCategory)) selectedCategory = 'Todas';
+    const btnAdd = document.getElementById('btn-add-category-list');
+    bar.querySelectorAll('.category-pill').forEach((b) => b.remove());
+    customCategories.forEach((cat) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('data-category', cat);
+      const active = cat === selectedCategory;
+      b.className = active
+        ? 'category-pill active px-3 py-1 rounded-full text-xs font-bold bg-indigo-600 text-white shrink-0 transition-all'
+        : 'category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all';
+      b.textContent = categoryLabel(cat);
+      if (cat !== 'Todas') b.title = 'Toque longo (ou clique direito) para excluir a lista';
+      b.onclick = () => {
+        if (b._psLongPressed) { b._psLongPressed = false; return; }
+        selectedCategory = cat;
+        renderCategoriesBar();
+        renderConversationsList();
+      };
+      if (cat !== 'Todas') attachLongPress(b, () => { b._psLongPressed = true; deleteCategory(cat); });
+      if (btnAdd && btnAdd.parentNode === bar) bar.insertBefore(b, btnAdd); else bar.appendChild(b);
+    });
+  }
+
+  function deleteCategory(cat) {
+    if (!cat || cat === 'Todas') return;
+    if (!confirm(`Excluir a lista "${cat}"?\n\nOs contatos continuam salvos; só saem desta lista.`)) return;
+    customCategories = customCategories.filter((c) => c !== cat);
+    saveCustomCategories();
+    if (typeof PulseShareCrypto !== 'undefined') {
+      const contacts = getContacts();
+      Object.keys(contacts).forEach((t) => {
+        const c = contacts[t];
+        if (c && Array.isArray(c.lists) && c.lists.includes(cat)) {
+          c.lists = c.lists.filter((l) => l !== cat);
+          PulseShareCrypto.ProfilesManager.saveContact(t, c);
+        }
+      });
+    }
+    if (selectedCategory === cat) selectedCategory = 'Todas';
+    renderCategoriesBar();
+    renderConversationsList();
+    Native.toast(`Lista ${cat} excluída.`);
+  }
+
+  // Toque longo (celular) e clique direito (PC). Devolve true no clique que vem
+  // logo depois do toque longo para o chamador ignorá-lo.
+  function attachLongPress(el, fn, ms = 520) {
+    let timer = null;
+    let sx = 0;
+    let sy = 0;
+    let firedAt = 0;
+    const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    el.addEventListener('pointerdown', (e) => {
+      if (e.button > 0) return;
+      sx = e.clientX; sy = e.clientY;
+      clear();
+      timer = setTimeout(() => { timer = null; firedAt = Date.now(); try { navigator.vibrate && navigator.vibrate(15); } catch (er) {} fn(e); }, ms);
+    });
+    el.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) clear(); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach((ev) => el.addEventListener(ev, clear));
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (Date.now() - firedAt < 1200) return; // o toque longo já tratou
+      firedAt = Date.now();
+      fn(e);
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Mensagens oficiais apagadas por mim: o registro do administrador continua
+  // guardado (é ele que espalha a mensagem na rede), então guardamos os ids
+  // dispensados para applyAdminState não recolocá-las.
+  // --------------------------------------------------------------------------
+  function dismissedOfficialIds() {
+    try { return new Set(JSON.parse(localStorage.getItem('ps_dismissed_official') || '[]')); } catch (e) { return new Set(); }
+  }
+  function dismissOfficialMessages(ids) {
+    const set = dismissedOfficialIds();
+    ids.forEach((id) => id && set.add(id));
+    try { localStorage.setItem('ps_dismissed_official', JSON.stringify(Array.from(set).slice(-300))); } catch (e) {}
+  }
+
+  function discardMessageMedia(m) {
+    const tid = m && (m.transferId || (m.media && m.media.transferId));
+    if (!tid) return;
+    const tr = transfers[tid];
+    if (tr && !['done', 'completed', 'error', 'cancelled', 'rejected'].includes(tr.status)) {
+      try { window.cancelTransfer(tid); } catch (e) {}
+    }
+    try { deleteChatMedia(tid); } catch (e) {}
+  }
+
+  // --------------------------------------------------------------------------
+  // Seleção de mensagens
+  // --------------------------------------------------------------------------
+  const selectedMsgIds = new Set();
+  let selectionPeer = null;
+  let suppressMsgClickUntil = 0;
+
+  function isSelectingMessages() {
+    return selectedMsgIds.size > 0 && selectionPeer === activeChatPeer;
+  }
+
+  function updateSelectionUi() {
+    const bar = document.getElementById('chat-selection-bar');
+    const container = document.getElementById('chat-messages-container');
+    const on = isSelectingMessages();
+    if (bar) bar.classList.toggle('hidden', !on);
+    if (container) {
+      container.classList.toggle('chat-selecting', on);
+      Array.from(container.children).forEach((el) => {
+        if (el.dataset && el.dataset.mid) el.classList.toggle('msg-selected', on && selectedMsgIds.has(el.dataset.mid));
+      });
+    }
+    if (!on) return;
+    const n = selectedMsgIds.size;
+    const count = document.getElementById('chat-selection-count');
+    if (count) count.textContent = n === 1 ? '1 selecionada' : `${n} selecionadas`;
+    const copyBtn = document.getElementById('btn-selection-copy');
+    if (copyBtn) copyBtn.classList.toggle('hidden', !selectedMessages().some((m) => m.text && !m.deleted));
+    const fwdBtn = document.getElementById('btn-selection-forward');
+    if (fwdBtn) fwdBtn.classList.toggle('hidden', !selectedMessages().some(isForwardable));
+  }
+
+  function selectedMessages() {
+    return (chatMessages[selectionPeer] || []).filter((m) => selectedMsgIds.has(m.id));
+  }
+
+  function toggleMessageSelection(mid) {
+    if (!mid || !activeChatPeer) return;
+    if (selectionPeer !== activeChatPeer) { selectedMsgIds.clear(); selectionPeer = activeChatPeer; }
+    if (selectedMsgIds.has(mid)) selectedMsgIds.delete(mid); else selectedMsgIds.add(mid);
+    updateSelectionUi();
+  }
+
+  function clearMessageSelection() {
+    selectedMsgIds.clear();
+    selectionPeer = null;
+    updateSelectionUi();
+  }
+
+  function initMessageSelection() {
+    const container = document.getElementById('chat-messages-container');
+    if (!container || container._psSelInit) return;
+    container._psSelInit = true;
+    const rowOf = (target) => {
+      let el = target && target.closest ? target.closest('[data-mid]') : null;
+      while (el && el.parentNode !== container) el = el.parentNode && el.parentNode.closest ? el.parentNode.closest('[data-mid]') : null;
+      return el;
+    };
+    let timer = null;
+    let sx = 0;
+    let sy = 0;
+    let firedAt = 0;
+    const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+    container.addEventListener('pointerdown', (e) => {
+      if (e.button > 0) return;
+      const row = rowOf(e.target);
+      if (!row) return;
+      sx = e.clientX; sy = e.clientY;
+      clear();
+      timer = setTimeout(() => {
+        timer = null;
+        firedAt = Date.now();
+        suppressMsgClickUntil = Date.now() + 900;
+        try { navigator.vibrate && navigator.vibrate(15); } catch (er) {}
+        toggleMessageSelection(row.dataset.mid);
+      }, 480);
+    });
+    container.addEventListener('pointermove', (e) => { if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 10) clear(); });
+    ['pointerup', 'pointercancel'].forEach((ev) => container.addEventListener(ev, clear));
+    container.addEventListener('scroll', clear, { passive: true });
+    container.addEventListener('contextmenu', (e) => {
+      const row = rowOf(e.target);
+      if (!row) return;
+      e.preventDefault();
+      if (Date.now() - firedAt < 1200) return;
+      toggleMessageSelection(row.dataset.mid);
+    });
+    // Com seleção ativa, tocar numa mensagem marca/desmarca (não abre foto, link etc.)
+    container.addEventListener('click', (e) => {
+      if (Date.now() < suppressMsgClickUntil) { e.preventDefault(); e.stopPropagation(); suppressMsgClickUntil = 0; return; }
+      if (!isSelectingMessages()) return;
+      const row = rowOf(e.target);
+      e.preventDefault();
+      e.stopPropagation();
+      if (row) toggleMessageSelection(row.dataset.mid);
+    }, true);
+
+    document.getElementById('btn-selection-cancel').onclick = () => clearMessageSelection();
+    document.getElementById('btn-selection-copy').onclick = () => {
+      const text = selectedMessages().filter((m) => m.text && !m.deleted)
+        .map((m) => m.location ? `${m.location.lat}, ${m.location.lon}` : m.text).join('\n');
+      if (text) { Native.copy(text); if (!IS_ANDROID) Native.toast('Copiado!'); }
+      clearMessageSelection();
+    };
+    document.getElementById('btn-selection-delete').onclick = () => openDeleteMessagesModal();
+    document.getElementById('btn-selection-forward').onclick = () => openForwardModal();
+    document.getElementById('btn-close-forward').onclick = () => closeForwardModal();
+    document.getElementById('btn-forward-send').onclick = () => { sendForward(); };
+    document.getElementById('input-forward-search').oninput = () => renderForwardTargets();
+    document.getElementById('btn-delete-cancel').onclick = () => closeDeleteMessagesModal();
+    document.getElementById('btn-delete-for-me').onclick = () => { deleteSelectedMessages(false); };
+    document.getElementById('btn-delete-for-all').onclick = () => { deleteSelectedMessages(true); };
+  }
+
+  // --------------------------------------------------------------------------
+  // Encaminhar: as mensagens selecionadas vão para uma ou mais conversas/contatos
+  // como mensagens novas marcadas "↪ Encaminhada". Mídia sai da cópia que já está
+  // neste aparelho (pré-visualização guardada, arquivo enviado ou já baixado).
+  // --------------------------------------------------------------------------
+  const FORWARD_MAX_TARGETS = 10;
+  let forwardMsgs = [];
+  const forwardTargets = new Set();
+
+  function isForwardable(m) {
+    return Boolean(m && !m.deleted && (m.text || m.location || m.media || m.transferId));
+  }
+
+  function openForwardModal() {
+    forwardMsgs = selectedMessages().filter(isForwardable).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    if (!forwardMsgs.length) { Native.toast('Nada para encaminhar nas mensagens escolhidas.'); return; }
+    forwardTargets.clear();
+    const input = document.getElementById('input-forward-search');
+    if (input) input.value = '';
+    const sum = document.getElementById('forward-summary');
+    if (sum) sum.textContent = forwardMsgs.length === 1 ? messageSummary(forwardMsgs[0]).slice(0, 80) : `${forwardMsgs.length} mensagens`;
+    renderForwardTargets();
+    document.getElementById('modal-forward').classList.remove('hidden');
+  }
+
+  function closeForwardModal() {
+    const modal = document.getElementById('modal-forward');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function forwardCandidateTags() {
+    const contacts = getContacts();
+    const lastTs = (t) => { const l = chatMessages[t] || []; return l.length ? l[l.length - 1].timestamp || 0 : 0; };
+    return Array.from(new Set([...Object.keys(chatMessages), ...Object.keys(contacts)]))
+      .filter((t) => t && t.startsWith('@') && !isMyTag(t) && !isBlocked(t) && !isAdminDeleted(t) && !isOfficialTag(t) && !isBareUserTag(t) &&
+        !(isRoomKey(t) && roomUnavailable(roomByKey(t))))
+      .sort((a, b) => (lastTs(b) - lastTs(a)) || displayNameFor(a).localeCompare(displayNameFor(b)));
+  }
+
+  function renderForwardTargets() {
+    const list = document.getElementById('forward-target-list');
+    if (!list) return;
+    const q = foldText((document.getElementById('input-forward-search') || {}).value || '').trim();
+    const tags = forwardCandidateTags().filter((t) => !q || foldText(displayNameFor(t)).includes(q) || t.includes(q));
+    list.innerHTML = tags.length ? tags.map((t) => {
+      const on = forwardTargets.has(t);
+      const sub = t === activeChatPeer ? `${t} • esta conversa` : isContact(t) ? t : `${t} • fora dos contatos`;
+      return `<button type="button" data-forward-tag="${t}" class="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-slate-900/60 ${on ? 'bg-indigo-500/15' : ''}">
+        <div class="w-10 h-10 rounded-full overflow-hidden shrink-0 border border-slate-800 bg-slate-900 flex items-center justify-center">${avatarFor(t, 40)}</div>
+        <div class="min-w-0 flex-1">
+          <span class="text-sm font-bold text-white block truncate">${escapeHtml(displayNameFor(t))}</span>
+          <span class="text-[11px] font-mono text-slate-400 block truncate">${escapeHtml(sub)}</span>
+        </div>
+        <span class="w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-xs font-bold ${on ? 'bg-indigo-600 text-white' : 'border border-slate-600'}">${on ? '✓' : ''}</span>
+      </button>`;
+    }).join('') : '<div class="p-6 text-center text-xs text-slate-500">Nenhuma conversa ou contato encontrado.</div>';
+    list.querySelectorAll('[data-forward-tag]').forEach((el) => {
+      el.onclick = () => {
+        const t = el.getAttribute('data-forward-tag');
+        if (forwardTargets.has(t)) forwardTargets.delete(t);
+        else if (forwardTargets.size >= FORWARD_MAX_TARGETS) { Native.toast(`Até ${FORWARD_MAX_TARGETS} conversas por vez.`); return; }
+        else forwardTargets.add(t);
+        renderForwardTargets();
+      };
+    });
+    const names = document.getElementById('forward-selected-names');
+    if (names) names.textContent = forwardTargets.size ? Array.from(forwardTargets).map(displayNameFor).join(', ') : 'Escolha uma ou mais conversas';
+    const btn = document.getElementById('btn-forward-send');
+    if (btn) {
+      btn.disabled = !forwardTargets.size;
+      btn.textContent = forwardTargets.size > 1 ? `↪ Enviar (${forwardTargets.size})` : '↪ Enviar';
+    }
+  }
+
+  // Arquivo de uma mensagem com mídia, a partir do que este aparelho tem
+  async function forwardFileItemFor(m) {
+    const tid = m.transferId || (m.media && m.media.transferId);
+    const meta = m.media || {};
+    const name = meta.fileName || meta.name || 'arquivo';
+    const mime = guessMimeFor(chatMediaKind(meta.fileType || meta.type, name), name, meta.fileType || meta.type);
+    const fromBlob = (blob) => ({ name, size: blob.size, mimeType: mime, file: new File([blob], name, { type: mime }) });
+    if (!tid) return null;
+    let blob = null;
+    const url = chatMediaUrls.get(tid);
+    if (url) { try { blob = await (await fetch(url)).blob(); } catch (e) {} }
+    if (!blob) {
+      const stored = await chatMediaDbOp('readonly', (st) => st.get(tid));
+      if (stored instanceof Blob) blob = stored;
+    }
+    if (blob && blob.size) return fromBlob(blob);
+    const tr = transfers[tid];
+    const staged = stagedFilesMap.get(tid) || (tr && tr.fileItem);
+    if (staged && (staged.file || staged.uri || staged.base64)) return { ...staged, name: staged.name || name, mimeType: staged.mimeType || staged.type || mime };
+    if (tr && tr.blob instanceof Blob) return fromBlob(tr.blob);
+    if (isMyTag(m.sender)) { const own = await loadOutgoingSource(tid, meta); if (own) return own; }
+    if (tr && tr.savedPath && IS_ANDROID && tr.savedPath.startsWith('/')) {
+      const uri = 'file://' + tr.savedPath;
+      if (Native.readUriChunkBase64(uri, 0, 16)) return { name, size: tr.totalBytes || meta.size || meta.fileSize || 0, mimeType: mime, uri };
+    }
+    return null;
+  }
+
+  async function sendForward() {
+    const targets = Array.from(forwardTargets);
+    const msgs = forwardMsgs.slice();
+    if (!targets.length || !msgs.length) return;
+    closeForwardModal();
+    clearMessageSelection();
+    let missing = 0;
+    for (const m of msgs) {
+      if (m.location) {
+        targets.forEach((t) => sendChatMessage(t, m.text || '📍 Localização', { location: m.location, forwarded: true }));
+      } else if (m.media || m.transferId) {
+        const fileItem = await forwardFileItemFor(m);
+        if (!fileItem) { missing++; continue; }
+        targets.forEach((t) => queueOutgoingFile(t, fileItem, m.text || '', { forwarded: true, voice: m.voice || null }));
+      } else if (m.text) {
+        targets.forEach((t) => sendChatMessage(t, m.text, { forwarded: true }));
+      }
+      setChatHidden(m.sender, false);
+    }
+    targets.forEach((t) => setChatHidden(t, false));
+    const sent = msgs.length - missing;
+    if (missing) {
+      Native.toast(`${missing} arquivo(s) não estão neste aparelho (baixe antes de encaminhar).${sent ? ` ${sent} encaminhada(s).` : ''}`);
+    } else {
+      Native.toast(targets.length === 1 ? `Encaminhado para ${displayNameFor(targets[0])}.` : `Encaminhado para ${targets.length} conversas.`);
+    }
+    if (targets.length === 1 && sent) openActiveChat(targets[0]);
+    else renderConversationsList();
+  }
+
+  // "Apagar para todos": só minhas mensagens, de conversa normal, nas últimas 48 h
+  const DELETE_FOR_ALL_MAX_AGE = 48 * 3600 * 1000;
+  function canDeleteForAll(msgs) {
+    if (!msgs.length || isOfficialTag(selectionPeer)) return false;
+    return msgs.every((m) => isMyTag(m.sender) && !m.deleted && Date.now() - (m.timestamp || 0) < DELETE_FOR_ALL_MAX_AGE);
+  }
+
+  function openDeleteMessagesModal() {
+    const msgs = selectedMessages();
+    if (!msgs.length) return;
+    const modal = document.getElementById('modal-delete-messages');
+    if (!modal) return;
+    const forAll = canDeleteForAll(msgs);
+    document.getElementById('delete-messages-title').textContent = msgs.length === 1 ? 'Apagar mensagem?' : `Apagar ${msgs.length} mensagens?`;
+    document.getElementById('delete-messages-hint').textContent = forAll
+      ? '"Apagar para todos" também tira a mensagem do aparelho de quem recebeu (se a pessoa estiver offline, é apagada quando ela voltar e você estiver online).'
+      : 'As mensagens são apagadas só deste aparelho.';
+    document.getElementById('btn-delete-for-all').classList.toggle('hidden', !forAll);
+    modal.classList.remove('hidden');
+  }
+
+  function closeDeleteMessagesModal() {
+    const modal = document.getElementById('modal-delete-messages');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function deleteSelectedMessages(forAll) {
+    const tag = selectionPeer;
+    const msgs = selectedMessages();
+    closeDeleteMessagesModal();
+    if (!tag || !msgs.length) { clearMessageSelection(); return; }
+    if (forAll && canDeleteForAll(msgs)) {
+      const ids = msgs.map((m) => m.id);
+      msgs.forEach((m) => tombstoneMessage(m, true));
+      sendChatDelete(tag, ids);
+    } else {
+      const ids = new Set(msgs.map((m) => m.id));
+      msgs.forEach((m) => discardMessageMedia(m));
+      if (isOfficialTag(tag)) dismissOfficialMessages(Array.from(ids));
+      chatMessages[tag] = (chatMessages[tag] || []).filter((m) => !ids.has(m.id));
+      if (!chatMessages[tag].length) delete chatMessages[tag];
+    }
+    saveChatMessagesToStorage();
+    clearMessageSelection();
+    renderChatMessages(tag);
+    renderConversationsList();
+    Native.toast(msgs.length === 1 ? 'Mensagem apagada.' : `${msgs.length} mensagens apagadas.`);
+  }
+
+  // Troca o conteúdo pela marca "mensagem apagada" (mantém o id: a mensagem
+  // original que chegar atrasada é descartada como repetida).
+  function tombstoneMessage(m, mine) {
+    if (m.roomFileId) {
+      // Arquivo de um chat de link: sai da lista de arquivos do link
+      Object.values(linkRooms).forEach((r) => (r.files || []).forEach((f) => {
+        if (f.fileId === m.roomFileId && f.transferId === (m.transferId || (m.media && m.media.transferId))) f.removed = true;
+      }));
+      saveLinkRooms(true);
+      delete m.roomFileId;
+    }
+    discardMessageMedia(m);
+    m.deleted = true;
+    m.text = '';
+    delete m.media;
+    delete m.transferId;
+    delete m.location;
+    delete m.voice;
+    delete m.reactions;
+    delete m.forwarded;
+    if (mine) m.deleteSync = 'pending';
+  }
+
+  function sendChatDelete(tag, ids) {
+    if (!tag || !ids.length) return;
+    const room = roomByKey(tag);
+    if (room) {
+      // Visitantes online recebem agora; os outros veem a marca no histórico ao abrir o link
+      roomBroadcast(room, 'CHAT_DELETE', 'del-' + Date.now(), { msgIds: ids.slice(0, 100), senderTag: myTag, shareId: room.shareId });
+      (chatMessages[tag] || []).forEach((m) => { if (ids.includes(m.id) && m.deleteSync === 'pending') m.deleteSync = 'done'; });
+      saveChatMessagesToStorage();
+      return;
+    }
+    const payload = { msgIds: ids.slice(0, 100), senderTag: myTag };
+    const tid = 'del-' + Date.now();
+    sendSignal(tag, tid, 'CHAT_DELETE', payload);
+    // Reenvia enquanto ninguém confirmar (o destino responde CHAT_ACK status DELETED)
+    [5000, 15000].forEach((ms) => setTimeout(() => {
+      const left = ids.filter((id) => (chatMessages[tag] || []).some((m) => m.id === id && m.deleteSync === 'pending'));
+      if (left.length) sendSignal(tag, tid, 'CHAT_DELETE', { ...payload, msgIds: left }, { allRoutes: true });
+    }, ms));
+  }
+
+  // Destino: apaga as mensagens do remetente com esses ids
+  function handleIncomingChatDelete(from, payload) {
+    const ids = Array.isArray(payload && payload.msgIds) ? payload.msgIds.map(String).slice(0, 100) : [];
+    if (!ids.length) return;
+    const list = chatMessages[from];
+    let changed = false;
+    if (list) {
+      ids.forEach((id) => {
+        const m = list.find((x) => x.id === id);
+        if (m && m.sender === from && !m.deleted) { tombstoneMessage(m, false); changed = true; }
+        else if (!m && (isContact(from) || list.length)) {
+          // Chegou antes da própria mensagem: guarda a marca para descartar a original depois
+          list.push({ id, sender: from, text: '', deleted: true, status: 'RECEIVED', timestamp: Date.now() });
+          changed = true;
+        }
+      });
+    }
+    sendSignal(from, 'del-ack-' + Date.now(), 'CHAT_ACK', { msgIds: ids, msgId: ids[0], senderTag: myTag, status: 'DELETED' });
+    if (!changed) return;
+    list.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+    saveChatMessagesToStorage();
+    if (activeChatPeer === from) {
+      if (selectionPeer === from) ids.forEach((id) => selectedMsgIds.delete(id));
+      renderChatMessages(from);
+      updateSelectionUi();
+    }
+    renderConversationsList();
+  }
+
+  // Remetente: o destino confirmou que apagou
+  function handleChatDeleteAck(from, payload) {
+    const ids = new Set(Array.isArray(payload.msgIds) ? payload.msgIds.map(String) : [String(payload.msgId || '')]);
+    let changed = false;
+    (chatMessages[from] || []).forEach((m) => {
+      if (ids.has(m.id) && m.deleteSync === 'pending') { m.deleteSync = 'done'; changed = true; }
+    });
+    if (changed) saveChatMessagesToStorage();
+  }
+
+  // Apagar para todos com o destino offline: reenvia quando ele aparecer (como as pendentes)
+  const pendingDeleteFlushAt = {};
+  function flushPendingDeletes(tag) {
+    if (Date.now() - (pendingDeleteFlushAt[tag] || 0) < 30000) return;
+    const ids = (chatMessages[tag] || []).filter((m) => m.deleteSync === 'pending' && isMyTag(m.sender) &&
+      Date.now() - (m.timestamp || 0) < PENDING_RESEND_MAX_AGE).map((m) => m.id);
+    if (!ids.length) return;
+    pendingDeleteFlushAt[tag] = Date.now();
+    sendSignal(tag, 'del-' + Date.now(), 'CHAT_DELETE', { msgIds: ids.slice(-100), senderTag: myTag });
   }
 
   // ==========================================================================
@@ -5440,7 +6982,7 @@
 
   function switchTab(tabName) {
     currentTab = tabName;
-    ['chat', 'home', 'transfers', 'shares', 'mesh'].forEach((t) => {
+    ['chat', 'home', 'transfers', 'mesh'].forEach((t) => {
       const view = document.getElementById('view-' + t);
       const btn = document.getElementById('nav-' + t);
       if (view && btn) {
@@ -5516,6 +7058,7 @@
           <div class="flex items-center gap-2">
             ${routeBadgeHtml(tag)}
             <button type="button" data-mesh-chat="${tag}" class="px-2.5 py-1 rounded bg-indigo-600 text-white text-xs font-bold active:scale-95">Conversar</button>
+            <button type="button" data-mesh-options="${tag}" title="Opções do contato" class="px-1.5 py-1 rounded text-slate-400 hover:text-white text-sm font-bold active:scale-95">⋮</button>
           </div>
         </div>
       `;
@@ -5526,13 +7069,14 @@
     list.querySelectorAll('[data-mesh-chat]').forEach((btn) => {
       btn.onclick = () => { switchTab('chat'); openActiveChat(btn.getAttribute('data-mesh-chat')); };
     });
+    list.querySelectorAll('[data-mesh-options]').forEach((btn) => {
+      btn.onclick = () => openContactOptionsMenu(btn.getAttribute('data-mesh-options'));
+    });
   }
 
   function openSendModal(mode) {
     modalMode = mode || 'p2p';
     document.getElementById('modal-send').classList.remove('hidden');
-    document.getElementById('field-target-user').classList.toggle('hidden', modalMode !== 'p2p');
-    document.getElementById('field-link-options').classList.toggle('hidden', modalMode === 'p2p');
   }
 
   // ==========================================================================
@@ -6295,7 +7839,7 @@
   // Chamado ao receber mensagem/arquivo. Não avisa se a conversa já está aberta na tela.
   function notifyIncoming(from, text, kind) {
     if (!notifyEnabled || isBlocked(from)) return;
-    const viewing = !IS_BACKGROUND_PAGE && !document.hidden && activeChatPeer === from;
+    const viewing = isUiShowing() && activeChatPeer === from;
     if (viewing) return;
     const title = kind === 'file' ? `📎 Arquivo de ${displayNameFor(from)}` : displayNameFor(from);
     Native.notify(title, text || '📎 arquivo', from, kind);
@@ -6313,7 +7857,7 @@
     const hint = document.getElementById('setting-background-hint');
     if (hint) {
       hint.textContent = IS_ANDROID
-        ? 'Mantém uma notificação fixa e continua recebendo com o app fechado.'
+        ? 'Como no WhatsApp: continua recebendo e avisando mesmo depois de fechar o app (inclusive tirando dos recentes) e volta sozinho ao reiniciar o celular. O Android exige a notificação fixa "PulseShare ativo".'
         : IS_DESKTOP
           ? 'Fechar a janela deixa o PulseShare na bandeja do sistema, recebendo, e ele abre sozinho ao entrar no computador.'
           : IS_EXTENSION
@@ -6450,12 +7994,10 @@
     document.getElementById('nav-chat').onclick = () => switchTab('chat');
     document.getElementById('nav-home').onclick = () => switchTab('home');
     document.getElementById('nav-transfers').onclick = () => switchTab('transfers');
-    document.getElementById('nav-shares').onclick = () => switchTab('shares');
     document.getElementById('nav-mesh').onclick = () => switchTab('mesh');
 
     // Ações Rápidas na Home
     // (Ação rápida "Enviar para @peer" removida: o envio direto é feito pelo chat)
-    document.getElementById('btn-action-create-link').onclick = () => openSendModal('link');
 
     // Botões de Busca Global
     document.getElementById('btn-header-search').onclick = () => openGlobalSearchModal();
@@ -6502,7 +8044,7 @@
     initNotificationSettingsEvents();
 
     // Botões gerados em HTML dinâmico (sem onclick inline: a CSP da extensão bloqueia)
-    const PS_CALLS = ['psShareAction', 'downloadChatMedia', 'psSaveChatMedia', 'psOpenChatImage', 'acceptTransfer', 'psOpenLocation', 'psCopyLocation'];
+    const PS_CALLS = ['downloadChatMedia', 'psSaveChatMedia', 'psOpenChatImage', 'acceptTransfer', 'psOpenLocation', 'psCopyLocation'];
     document.addEventListener('click', (e) => {
       const el = e.target.closest('[data-ps-call]');
       if (!el) return;
@@ -6574,26 +8116,16 @@
 
     // Menu do contato
     document.getElementById('btn-chat-contact-menu').onclick = () => {
-      if (activeChatPeer) openContactOptionsMenu(activeChatPeer);
+      if (!activeChatPeer) return;
+      if (isRoomKey(activeChatPeer)) openLinkShareSheet(activeChatPeer);
+      else openContactOptionsMenu(activeChatPeer);
     };
-    document.getElementById('btn-close-contact-menu').onclick = () => {
-      document.getElementById('modal-contact-menu').classList.add('hidden');
-    };
-    document.getElementById('btn-contact-save').onclick = () => handleSaveContactAction();
-    document.getElementById('btn-contact-add-list').onclick = () => handleAddToListAction();
-    document.getElementById('btn-contact-delete-chat').onclick = () => handleDeleteChatAction();
+    initLinkRoomEvents();
+    document.getElementById('btn-close-contact-menu').onclick = () => closeContactMenu();
+    initMessageSelection();
 
-    // Categorias de Contatos
-    document.querySelectorAll('.category-pill').forEach(btn => {
-      btn.onclick = () => {
-        document.querySelectorAll('.category-pill').forEach(b => {
-          b.className = 'category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all';
-        });
-        btn.className = 'category-pill active px-3 py-1 rounded-full text-xs font-bold bg-indigo-600 text-white shrink-0 transition-all';
-        selectedCategory = btn.getAttribute('data-category');
-        renderConversationsList();
-      };
-    });
+    // Listas de contatos (filtros): salvas por conta; toque longo exclui
+    renderCategoriesBar();
 
     document.getElementById('btn-add-category-list').onclick = () => {
       document.getElementById('modal-add-category-list').classList.remove('hidden');
@@ -6604,26 +8136,13 @@
     document.getElementById('btn-save-new-category').onclick = () => {
       const input = document.getElementById('input-new-category-name');
       const cat = input.value.trim();
-      if (cat && !customCategories.includes(cat)) {
+      if (cat && cat.length <= 30 && !customCategories.includes(cat)) {
         customCategories.push(cat);
-        localStorage.setItem('ps_custom_categories', JSON.stringify(customCategories));
-
-        const bar = document.getElementById('chat-categories-bar');
-        const btnAdd = document.getElementById('btn-add-category-list');
-        const newBtn = document.createElement('button');
-        newBtn.type = 'button';
-        newBtn.setAttribute('data-category', cat);
-        newBtn.className = 'category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all';
-        newBtn.textContent = cat;
-        newBtn.onclick = () => {
-          document.querySelectorAll('.category-pill').forEach(b => {
-            b.className = 'category-pill px-3 py-1 rounded-full text-xs font-medium bg-slate-800 text-slate-300 hover:text-white shrink-0 transition-all';
-          });
-          newBtn.className = 'category-pill active px-3 py-1 rounded-full text-xs font-bold bg-indigo-600 text-white shrink-0 transition-all';
-          selectedCategory = cat;
-          renderConversationsList();
-        };
-        bar.insertBefore(newBtn, btnAdd);
+        saveCustomCategories();
+        selectedCategory = cat;
+        renderCategoriesBar();
+        renderConversationsList();
+        input.value = '';
         Native.toast(`Lista ${cat} criada!`);
       }
       document.getElementById('modal-add-category-list').classList.add('hidden');
@@ -6686,8 +8205,6 @@
     document.getElementById('btn-close-send-modal').onclick = () => {
       document.getElementById('modal-send').classList.add('hidden');
     };
-    document.getElementById('btn-mode-p2p').onclick = () => openSendModal('p2p');
-    document.getElementById('btn-mode-link').onclick = () => openSendModal('link');
     document.getElementById('btn-pick-files-native').onclick = () => {
       pendingChatAttachment = false;
       Native.pickFiles();
@@ -6699,36 +8216,17 @@
         return;
       }
       const files = stagedFiles.filter(f => !f.type || f.type === 'file' || f.size !== undefined);
-      if (modalMode === 'p2p') {
-        const target = normalizeTag(document.getElementById('input-target-user').value.trim().replace(/^([^@])/, '@$1'));
-        if (!target || target === '@') {
-          Native.toast('Informe o @destinatário!');
-          return;
-        }
-        document.getElementById('modal-send').classList.add('hidden');
-        openActiveChat(target);
-        files.forEach(f => queueOutgoingFile(target, f, ''));
-        stagedFiles = [];
-        renderStagedFiles();
-        switchTab('transfers');
-      } else {
-        const expMs = parseInt((document.getElementById('select-link-expiration') || {}).value || '1800000', 10);
-        const password = ((document.getElementById('input-link-password') || {}).value || '').trim();
-        const allowZipEl = document.getElementById('input-link-allow-zip');
-        const share = createPublicShare(files, { expiresMin: Math.round(expMs / 60000), allowZip: allowZipEl ? allowZipEl.checked : true });
-        if (password) {
-          share.passwordSalt = Math.random().toString(36).slice(2, 10);
-          const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(password + share.passwordSalt));
-          share.passwordHash = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
-          share.password = password;
-        }
-        stagedFiles = [];
-        renderStagedFiles();
-        document.getElementById('modal-send').classList.add('hidden');
-        Native.copy(formatShareMessage(share));
-        Native.toast('Link gerado e copiado! Mantenha o app aberto enquanto baixam.');
-        switchTab('shares');
+      const target = normalizeTag(document.getElementById('input-target-user').value.trim().replace(/^([^@])/, '@$1'));
+      if (!target || target === '@') {
+        Native.toast('Informe o @destinatário!');
+        return;
       }
+      document.getElementById('modal-send').classList.add('hidden');
+      openActiveChat(target);
+      files.forEach(f => queueOutgoingFile(target, f, ''));
+      stagedFiles = [];
+      renderStagedFiles();
+      switchTab('transfers');
     };
 
     // Filtro Ativas / Histórico e limpeza (antes os botões não tinham ação)
@@ -6763,8 +8261,6 @@
       }, 3000);
     });
 
-    const btnNewShare = document.getElementById('btn-new-share-link');
-    if (btnNewShare) btnNewShare.onclick = () => openSendModal('link');
 
     // Baixar por link público: abre o portal de download (área de download + chat temporário)
     document.getElementById('btn-open-link-go').onclick = () => {
@@ -6779,7 +8275,7 @@
   }
 
   // Inspeção para depuração/testes E2E (somente leitura)
-  window.__psDebug = () => ({ myTag, transfers, peerRegistry, publicShares, chatMessages });
+  window.__psDebug = () => ({ myTag, transfers, peerRegistry, linkRooms, lanLinks, chatMessages });
 
   // Inicialização do Aplicativo
   window.addEventListener('DOMContentLoaded', async () => {
