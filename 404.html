@@ -423,12 +423,115 @@
     .chat-sys { align-self: center; font-size: 11px; color: #94a3b8; background: #0f172a; border: 1px solid #1e293b; border-radius: 999px; padding: 3px 10px; }
     .chat-deleted { font-style: italic; opacity: .7; font-size: 12px; }
     .chat-loc { color: #fdba74; text-decoration: underline; word-break: break-all; }
+    /* Chat de link: a página é só a conversa (como no WhatsApp) */
+    html.room-mode, html.room-mode body { padding: 0; height: 100dvh; min-height: 0; overflow: hidden; justify-content: flex-start; }
+    body.room-mode .container { max-width: 760px; height: 100dvh; border-radius: 0; border-top: 0; border-bottom: 0; padding: 10px 12px; gap: 8px; }
+    body.room-mode .footer, body.room-mode #portal-tabs, body.room-mode #pack-content { display: none !important; }
+    body.room-mode #room-header { padding: 10px 14px; gap: 4px; flex-shrink: 0; }
+    body.room-mode #room-header .card-title { font-size: 16px; }
+    body.room-mode #panel-chat { flex: 1; min-height: 0; }
+    body.room-mode .chat-list { flex: 1; height: auto; min-height: 0; }
+    .room-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+    .room-dl-all { background: #1e293b; border: 1px solid #334155; color: #fdba74; border-radius: 10px; padding: 6px 12px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    .room-dl-all:disabled { opacity: .5; cursor: default; }
+    .chat-bubble { font-size: 15px; line-height: 1.4; padding: 8px 12px; }
+    .chat-meta { font-size: 11px; }
+    .chat-composer input[type=text], .chat-composer textarea { font-size: 16px; }
+    .chat-composer textarea { flex: 1; min-width: 0; background: #020617; border: 1px solid #334155; border-radius: 18px; padding: 10px 14px; color: #fff; outline: none; resize: none; max-height: 140px; line-height: 1.35; font-family: inherit; }
+    .chat-composer textarea:focus { border-color: #f97316; }
+    .chat-composer { align-items: flex-end; }
+    .chat-icon-btn, .chat-send-btn { min-height: 44px; }
+    .chat-send-btn { border-radius: 22px; min-width: 44px; font-size: 18px; padding: 0 14px; }
+    .chat-icon-btn { border-radius: 22px; min-width: 44px; }
+    .visitor-name-input { font-size: 14px; }
     .hidden { display: none !important; }
+    /* ===== Chat igual ao do app (2026-11-14): bolhas, voz, localização, anexos ===== */
+    .chat-list { gap: 2px; padding: 10px 8px; }
+    .chat-row { display: flex; flex-direction: column; align-items: flex-start; margin: 2px 0; }
+    .chat-row.mine { align-items: flex-end; justify-content: flex-start; }
+    .chat-bubble { max-width: 80%; border-radius: 16px; border-top-left-radius: 4px; padding: 6px 12px; background: #1e293b; border: 1px solid rgba(51,65,85,.6); color: #f1f5f9; box-shadow: 0 1px 2px rgba(0,0,0,.25); font-size: 15px; line-height: 1.38; }
+    .chat-row.mine .chat-bubble { background: #4f46e5; border-color: transparent; color: #fff; border-top-left-radius: 16px; border-top-right-radius: 4px; }
+    .chat-bubble.has-media { padding: 6px 6px 4px; }
+    .chat-bubble.has-media .chat-text, .chat-bubble.has-media .chat-meta { padding: 0 6px; }
+    .chat-bubble.has-media .chat-text { padding-top: 4px; }
+    .chat-meta { display: flex; align-items: center; justify-content: flex-end; gap: 4px; font-size: 11px; color: #94a3b8; opacity: 1; margin-top: 2px; user-select: none; }
+    .chat-row.mine .chat-meta { color: #c7d2fe; }
+    .chat-deleted-b { background: rgba(15,23,42,.6) !important; border: 1px solid rgba(51,65,85,.6) !important; color: #94a3b8 !important; }
+    .pm-btn { border: 0; border-radius: 8px; padding: 5px 10px; font-weight: 700; font-size: 11px; color: #fff; background: #4f46e5; cursor: pointer; text-decoration: none; display: inline-block; white-space: nowrap; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+    .pm-btn.green { background: #059669; }
+    .pm-btn:active { transform: scale(.95); }
+    .pm-status { font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .pm-card { margin-top: 6px; padding: 10px; border-radius: 12px; background: rgba(2,6,23,.7); border: 1px solid #1e293b; display: flex; flex-direction: column; gap: 8px; min-width: 13rem; }
+    .pm-card-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .pm-card-info { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .pm-card-ico { font-size: 22px; flex-shrink: 0; }
+    .pm-card-name { font-size: 13px; font-weight: 700; color: #fff; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 12rem; }
+    .pm-card-size { font-size: 11px; color: #94a3b8; font-family: ui-monospace, monospace; }
+    .pm-preview { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; max-width: min(20rem, 72vw); }
+    .pm-preview img { display: block; border-radius: 12px; max-width: 100%; max-height: 18rem; min-width: 7rem; object-fit: cover; background: #020617; cursor: zoom-in; }
+    .pm-preview video { display: block; width: 100%; border-radius: 12px; max-height: 18rem; background: #000; }
+    .pm-preview audio { display: block; width: 100%; min-width: 14rem; height: 40px; }
+    .pm-preview-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px; font-size: 11px; color: #94a3b8; }
+    .chat-row.mine .pm-preview-row { color: #c7d2fe; }
+    .pm-preview-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pm-prog { width: 100%; height: 6px; background: #1e293b; border-radius: 999px; overflow: hidden; }
+    .pm-prog > div { height: 100%; background: #6366f1; border-radius: 999px; transition: width .3s; }
+    .ps-voice { display: flex; align-items: center; gap: .55rem; min-width: 13.5rem; padding: .2rem .3rem; color: #cbd5e1; }
+    .chat-row.mine .ps-voice { color: #e0e7ff; }
+    .ps-voice-btn { width: 2.35rem; height: 2.35rem; border-radius: 9999px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.16); color: #fff; border: 0; cursor: pointer; }
+    .ps-voice-btn:active { transform: scale(.9); }
+    .ps-voice-btn svg { width: 1rem; height: 1rem; pointer-events: none; }
+    .ps-voice-wave { flex: 1; min-width: 0; height: 1.75rem; display: flex; align-items: center; gap: 2px; cursor: pointer; }
+    .ps-voice-wave i { flex: 1; min-width: 2px; max-width: 4px; border-radius: 2px; background: currentColor; opacity: .35; pointer-events: none; }
+    .ps-voice-wave i.on { opacity: 1; }
+    .ps-voice-meta { display: flex; flex-direction: column; align-items: flex-end; gap: .1rem; flex-shrink: 0; font-size: 10px; font-family: ui-monospace, monospace; }
+    .ps-voice-speed { font-size: 9px; font-weight: 700; padding: 0 .3rem; border-radius: 9999px; background: rgba(255,255,255,.16); color: inherit; border: 0; cursor: pointer; }
+    .ps-loc { margin-top: 2px; display: flex; flex-direction: column; gap: 6px; width: min(16rem, 66vw); }
+    .ps-loc-map { position: relative; display: block; width: 100%; height: 7.5rem; border: 0; border-radius: .8rem; overflow: hidden; cursor: pointer; background-color: #0f2a2a;
+      background-image: linear-gradient(rgba(148,163,184,.12) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,.12) 1px, transparent 1px),
+        radial-gradient(circle at 30% 35%, rgba(16,185,129,.35), transparent 45%), radial-gradient(circle at 75% 70%, rgba(59,130,246,.35), transparent 50%);
+      background-size: 18px 18px, 18px 18px, 100% 100%, 100% 100%; }
+    .ps-loc-map::before { content: ''; position: absolute; left: -10%; right: -10%; top: 58%; height: 7px; background: rgba(250,204,21,.45); transform: rotate(-12deg); }
+    .ps-loc-map::after { content: ''; position: absolute; top: -10%; bottom: -10%; left: 38%; width: 5px; background: rgba(226,232,240,.35); transform: rotate(18deg); }
+    .ps-loc-pin { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -85%); font-size: 2rem; z-index: 2; filter: drop-shadow(0 4px 6px rgba(0,0,0,.5)); }
+    .ps-loc-pulse { position: absolute; left: 50%; top: 50%; width: 2.4rem; height: 2.4rem; margin: -1.2rem 0 0 -1.2rem; border-radius: 9999px; background: rgba(244,63,94,.35); z-index: 1; animation: psLocPulse 1.8s ease-out infinite; }
+    @keyframes psLocPulse { from { transform: scale(.4); opacity: 1; } to { transform: scale(1.6); opacity: 0; } }
+    .ps-loc-title { font-size: 13px; font-weight: 700; display: block; padding: 0 6px; }
+    .ps-loc-coords { font-size: 10px; font-family: ui-monospace, monospace; opacity: .7; display: block; padding: 0 6px; }
+    .ps-loc-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 2px; }
+    .ps-loc-btns button { padding: 6px 0; border-radius: 8px; border: 0; background: rgba(2,6,23,.4); color: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+    .chat-composer { position: relative; gap: 8px; }
+    .chat-icon-btn, .chat-send-btn, .chat-mic-btn { border: 0; width: 44px; min-width: 44px; height: 44px; border-radius: 999px; padding: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; flex-shrink: 0; }
+    .chat-icon-btn { background: #1e293b; color: #cbd5e1; font-size: 18px; }
+    .chat-send-btn, .chat-mic-btn { background: #4f46e5; color: #fff; font-size: 18px; box-shadow: 0 4px 12px rgba(79,70,229,.35); }
+    .chat-mic-btn svg, .chat-icon-btn svg { width: 20px; height: 20px; }
+    .chat-composer textarea { border-radius: 22px; background: #0f172a; }
+    .attach-menu { position: absolute; left: 0; right: 0; bottom: 52px; z-index: 5; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 12px 8px; background: #0f172a; border: 1px solid #1e293b; border-radius: 18px; box-shadow: 0 12px 30px rgba(0,0,0,.5); }
+    .attach-opt { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 6px 2px; border: 0; border-radius: 14px; background: transparent; color: #cbd5e1; font-size: 11px; font-weight: 600; cursor: pointer; }
+    .attach-opt:hover { background: rgba(30,41,59,.7); }
+    .attach-ico { width: 2.7rem; height: 2.7rem; border-radius: 999px; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; box-shadow: 0 4px 12px rgba(0,0,0,.35); }
+    .rec-bar { display: flex; align-items: center; gap: 8px; }
+    .rec-bar .rec-mid { flex: 1; min-width: 0; height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-radius: 22px; background: #0f172a; border: 1px solid #334155; }
+    .rec-dot { width: .6rem; height: .6rem; border-radius: 999px; background: #f43f5e; flex-shrink: 0; animation: psRecBlink 1s ease-in-out infinite; }
+    @keyframes psRecBlink { 50% { opacity: .25; } }
+    .rec-time { font-family: ui-monospace, monospace; font-size: 13px; color: #fda4af; flex-shrink: 0; }
+    .rec-wave { flex: 1; min-width: 0; height: 26px; display: flex; align-items: center; gap: 2px; overflow: hidden; justify-content: flex-end; }
+    .rec-wave span { display: block; width: 3px; flex-shrink: 0; border-radius: 2px; background: #fb7185; }
+    .rec-cancel { background: #1e293b; color: #fda4af; }
+    .pm-modal { position: fixed; inset: 0; z-index: 50; background: rgba(2,6,23,.8); display: flex; align-items: flex-end; justify-content: center; padding: 16px; }
+    .pm-modal-box { width: 100%; max-width: 420px; background: #0f172a; border: 1px solid #1e293b; border-radius: 20px; padding: 16px; display: flex; flex-direction: column; gap: 10px; color: #e2e8f0; }
+    .pm-modal-box h3 { font-size: 15px; font-weight: 700; }
+    .pm-modal-box input { background: #020617; border: 1px solid #334155; border-radius: 10px; padding: 10px 12px; color: #fff; font-size: 16px; outline: none; }
+    .pm-modal-btns { display: flex; gap: 8px; justify-content: flex-end; }
+    .pm-modal-btns button { padding: 10px 16px; border-radius: 12px; border: 0; font-weight: 700; font-size: 14px; cursor: pointer; }
+    .pm-modal-btns button:disabled { opacity: .45; cursor: default; }
+    .pm-toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 60; background: #1e293b; color: #f1f5f9; border: 1px solid #334155; padding: 8px 14px; border-radius: 12px; font-size: 13px; max-width: 90vw; text-align: center; box-shadow: 0 8px 20px rgba(0,0,0,.4); }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0' stop-color='%234F46E5'/%3E%3Cstop offset='1' stop-color='%23F97316'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='128' height='128' rx='28' fill='url(%23g)'/%3E%3Cpath d='M72.38,15.00L78.04,15.00L66.14,52.00L95.10,52.00L53.73,110.30L61.09,68.50L34.50,68.50Z' fill='%23fff' stroke='%23fff' stroke-width='3' stroke-linejoin='round'/%3E%3C/svg%3E" />
   <script src="fflate.min.js"></script>
   <script src="pulseshare-mesh-engine.js"></script>
+  <script src="pulseshare-media-viewer.js"></script>
 </head>
 <body>
   <div class="container">
@@ -448,6 +551,10 @@
         <span id="room-owner">de @---</span>
         <span id="room-exp" class="exp-badge">⏳ --</span>
       </div>
+      <div class="room-actions">
+        <span id="chat-owner-status-room" class="chat-owner-status"></span>
+        <button id="room-dl-all" type="button" class="room-dl-all hidden">⬇ Baixar tudo</button>
+      </div>
     </div>
 
     <!-- Abas: Chat com quem compartilhou / Arquivos do link -->
@@ -463,12 +570,36 @@
       </div>
       <div id="chat-list" class="chat-list"></div>
       <span id="chat-typing" class="chat-typing hidden">digitando...</span>
-      <div class="chat-composer">
-        <button id="chat-attach" type="button" class="chat-icon-btn" title="Enviar arquivo">📎</button>
-        <input id="chat-input" type="text" placeholder="Digite uma mensagem..." autocomplete="off" maxlength="4000" />
-        <button id="chat-send" type="button" class="chat-send-btn">Enviar</button>
+      <div id="chat-recording-bar" class="rec-bar hidden">
+        <button id="chat-rec-cancel" type="button" class="chat-icon-btn rec-cancel" title="Descartar">🗑️</button>
+        <div class="rec-mid"><span class="rec-dot"></span><span id="chat-rec-time" class="rec-time">0:00</span><div id="chat-rec-wave" class="rec-wave"></div></div>
+        <button id="chat-rec-send" type="button" class="chat-send-btn" title="Enviar áudio">➤</button>
+      </div>
+      <div id="chat-compose-row" class="chat-composer">
+        <div id="chat-attach-menu" class="attach-menu hidden">
+          <button type="button" class="attach-opt" data-attach="media"><span class="attach-ico" style="background:#7c3aed">🖼️</span>Foto e vídeo</button>
+          <button type="button" class="attach-opt" data-attach="audio"><span class="attach-ico" style="background:#ea580c">🎵</span>Áudio</button>
+          <button type="button" class="attach-opt" data-attach="doc"><span class="attach-ico" style="background:#2563eb">📄</span>Documento</button>
+          <button type="button" class="attach-opt" data-attach="location"><span class="attach-ico" style="background:#059669">📍</span>Localização</button>
+        </div>
+        <button id="chat-attach" type="button" class="chat-icon-btn" title="Anexar"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.372L8.552 18.32m.009-.01l-.01.01m5.699-9.941l-7.81 7.81a1.5 1.5 0 002.112 2.13"/></svg></button>
+        <textarea id="chat-input" rows="1" placeholder="Mensagem" autocomplete="off" maxlength="4000" enterkeyhint="send"></textarea>
+        <button id="chat-send" type="button" class="chat-send-btn hidden" title="Enviar">➤</button>
+        <button id="chat-mic" type="button" class="chat-mic-btn" title="Gravar mensagem de voz"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"/></svg></button>
       </div>
       <input id="chat-file-input" type="file" multiple class="hidden" />
+      <div id="loc-modal" class="pm-modal hidden">
+        <div class="pm-modal-box">
+          <h3>📍 Enviar localização</h3>
+          <div class="ps-loc-map" style="cursor:default"><span class="ps-loc-pulse"></span><span class="ps-loc-pin">📍</span></div>
+          <span id="loc-status" style="font-size:13px;color:#cbd5e1">Obtendo sua localização...</span>
+          <input id="loc-manual" class="hidden" type="text" placeholder="-23.55, -46.63 ou link do Google Maps" autocomplete="off" />
+          <div class="pm-modal-btns">
+            <button id="loc-cancel" type="button" style="background:#1e293b;color:#cbd5e1">Cancelar</button>
+            <button id="loc-send" type="button" style="background:#059669;color:#fff" disabled>Enviar</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div id="panel-download" style="display: flex; flex-direction: column; gap: 16px;">
@@ -639,8 +770,14 @@
     const VISITOR_STORE = `ps_link_visitor_${shareId}`;
     let visitorStore = {};
     try { visitorStore = JSON.parse(localStorage.getItem(VISITOR_STORE) || '{}') || {}; } catch {}
+    // Link sem "manter a conversa" (keepChat): cada abertura é um visitante novo
+    // (sem a tag, o histórico e a senha da visita anterior; o nome continua)
+    if (visitorStore.keep !== true) visitorStore = { name: visitorStore.name || '', revoked: visitorStore.revoked || 0 };
     if (!/^[0-9a-f]{6}$/.test(visitorStore.id || '')) visitorStore.id = visitorNodeId.replace(/-/g, '').slice(0, 6);
-    function saveVisitorStore() { try { if (shareId) localStorage.setItem(VISITOR_STORE, JSON.stringify(visitorStore)); } catch {} }
+    function saveVisitorStore() {
+      const out = visitorStore.keep === true ? visitorStore : { name: visitorStore.name || '', revoked: visitorStore.revoked || 0 };
+      try { if (shareId) localStorage.setItem(VISITOR_STORE, JSON.stringify(out)); } catch {}
+    }
     saveVisitorStore();
     const visitorTag = `@link_${visitorStore.id}`;
 
@@ -1237,8 +1374,41 @@
       return null;
     }
 
+    // Link excluído/encerrado por quem compartilhou: some a conversa e fica só o aviso
+    // (guardado: ao abrir de novo o aviso aparece na hora, mesmo com o dono offline)
+    function showLinkRevoked(message) {
+      clearInterval(packInfoRetryTimer);
+      visitorStore.revoked = Date.now();
+      saveVisitorStore();
+      packData = null;
+      unlocked = false;
+      roomMode = false;
+      chat.open = false;
+      document.documentElement.classList.remove('room-mode');
+      document.body.classList.remove('room-mode');
+      ['room-header', 'panel-chat', 'portal-tabs', 'pack-content', 'password-section', 'dl-choice'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+      });
+      const pd = document.getElementById('panel-download');
+      if (pd) pd.classList.remove('hidden');
+      showAlert(message || '🚫 Este link foi revogado por quem compartilhou. A conversa e os arquivos não estão mais disponíveis.');
+      statusDot.className = 'dot red';
+      statusHeader.textContent = 'Link revogado';
+      document.title = 'Link revogado — PulseShare';
+    }
+
     function onPackInfoResponse(payload) {
       clearInterval(packInfoRetryTimer);
+      if (!payload.ok && (payload.error === 'REVOKED' || payload.error === 'CANCELLED')) {
+        showLinkRevoked();
+        return;
+      }
+      if (payload.keepChat !== undefined) {
+        // Quem compartilhou decide se a conversa continua ao reabrir o link
+        visitorStore.keep = payload.keepChat === true;
+        saveVisitorStore();
+      }
       if (!payload.ok && payload.error === 'PASSWORD_REQUIRED') {
         if (payload.ownerTag) ownerTag = payload.ownerTag;
         pwChallenge = { salt: payload.passwordSalt || '', nonce: payload.nonce || '' };
@@ -1267,8 +1437,6 @@
       if (!payload.ok) {
         if (payload.error === 'EXPIRED') {
           showAlert('⏳ Este link temporário expirou. O tempo limite definido pelo remetente foi atingido.');
-        } else if (payload.error === 'CANCELLED') {
-          showAlert('✕ O remetente encerrou este compartilhamento.');
         } else if (payload.error === 'DOWNLOAD_LIMIT_REACHED') {
           showAlert('🎯 O limite de downloads deste link foi atingido.');
         } else if (payload.error === 'PAUSED') {
@@ -2060,6 +2228,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+      if (visitorStore.revoked && shareId) { showLinkRevoked(); return; }
       connectBrokers();
     });
 
@@ -2115,8 +2284,11 @@
     function renderOwnerStatus() {
       const online = Date.now() - chat.ownerLastSeen < 45000;
       chat.ownerOnline = online;
-      chatOwnerStatus.textContent = online ? `🟢 ${ownerTag} online` : `⚪ ${ownerTag} — aguardando ficar online`;
+      const ownerShortTag = String(ownerTag).replace(/_[0-9a-f]{6}$/, '');
+      chatOwnerStatus.textContent = online ? `🟢 ${ownerShortTag} online` : `⚪ ${ownerShortTag} — aguardando ficar online`;
       chatOwnerStatus.style.color = online ? '#34d399' : '#94a3b8';
+      const roomSt = document.getElementById('chat-owner-status-room');
+      if (roomSt) { roomSt.textContent = chatOwnerStatus.textContent; roomSt.style.color = chatOwnerStatus.style.color; }
     }
     setInterval(renderOwnerStatus, 5000);
 
@@ -2137,88 +2309,271 @@
       renderChatTimer = setTimeout(() => { renderChatTimer = null; renderChat(); }, 250);
     }
 
+    // ===== Bolhas iguais às do app (texto, foto/vídeo, voz, localização, arquivo) =====
+    const VOICE_PLAY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v13.72a1 1 0 001.52.85l11.2-6.86a1 1 0 000-1.7L9.52 4.29A1 1 0 008 5.14z"/></svg>';
+    const VOICE_PAUSE_SVG = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4.5" width="4.2" height="15" rx="1.2"/><rect x="13.8" y="4.5" width="4.2" height="15" rx="1.2"/></svg>';
+    const PREVIEW_MAX = 64 * 1024 * 1024;
+
+    function formatDuration(sec) {
+      sec = Math.max(0, Math.round(Number(sec) || 0));
+      return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+    }
+    function mediaKind(type, name) {
+      if (/^image\//.test(type || '')) return 'image';
+      if (/^video\//.test(type || '')) return 'video';
+      if (/^audio\//.test(type || '')) return 'audio';
+      const ext = String(name || '').toLowerCase().split('.').pop();
+      if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)) return 'image';
+      if (['mp4', 'webm', 'mov', 'mkv'].includes(ext)) return 'video';
+      if (['mp3', 'ogg', 'oga', 'm4a', 'wav', 'opus', 'aac'].includes(ext)) return 'audio';
+      return 'file';
+    }
+    function mapUrlFor(lat, lon) { return `https://www.google.com/maps?q=${lat},${lon}`; }
+    let toastTimer = null;
+    function portalToast(msg) {
+      let el = document.getElementById('pm-toast');
+      if (!el) { el = document.createElement('div'); el.id = 'pm-toast'; el.className = 'pm-toast'; document.body.appendChild(el); }
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.add('hidden'), 3000);
+    }
+
+    function voiceBars(m) {
+      let wf = (m.voice && m.voice.waveform) || [];
+      if (wf.length < 8) {
+        let h = 0;
+        const seed = String(m.id || '');
+        for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+        wf = Array.from({ length: 36 }, (_, i) => 25 + Math.abs(Math.sin(h + i * 1.7)) * 60);
+      }
+      const N = 36;
+      const out = [];
+      for (let i = 0; i < N; i++) out.push(`<i style="height:${Math.max(14, Math.min(100, Number(wf[Math.floor(i * wf.length / N)]) || 0))}%"></i>`);
+      return out.join('');
+    }
+    function voiceHtml(m, url, action, progress) {
+      const dur = (m.voice && m.voice.duration) || 0;
+      return `
+        <div class="ps-voice" data-voice-dur="${dur}">
+          ${url ? `<button type="button" class="ps-voice-btn" data-voice-play title="Ouvir">${VOICE_PLAY_SVG}</button>` : `<div style="flex-shrink:0">${action}</div>`}
+          <div class="ps-voice-wave" data-voice-seek>${voiceBars(m)}</div>
+          <div class="ps-voice-meta">
+            <span data-voice-time>${formatDuration(dur)}</span>
+            ${url ? '<button type="button" class="ps-voice-speed" data-voice-speed>1x</button>' : '<span>🎤</span>'}
+          </div>
+          ${url ? `<audio class="hidden" preload="metadata" src="${url}" data-voice-audio></audio>` : ''}
+        </div>
+        ${url && m.mine && action ? `<div style="display:flex;justify-content:flex-end;padding:0 6px">${action}</div>` : ''}
+        ${progress}`;
+    }
+    function locationHtml(loc) {
+      const lat = Number(loc.lat), lon = Number(loc.lon);
+      return `
+        <div class="ps-loc">
+          <button type="button" class="ps-loc-map" data-loc-open="${lat},${lon}" title="Abrir no mapa"><span class="ps-loc-pulse"></span><span class="ps-loc-pin">📍</span></button>
+          <div><span class="ps-loc-title">Localização</span><span class="ps-loc-coords">${lat.toFixed(5)}, ${lon.toFixed(5)}</span></div>
+          <div class="ps-loc-btns">
+            <button type="button" data-loc-open="${lat},${lon}">🗺️ Abrir mapa</button>
+            <button type="button" data-loc-copy="${lat},${lon}">📋 Copiar</button>
+          </div>
+        </div>`;
+    }
+    // Foto/vídeo/áudio com pré-visualização ou cartão de arquivo (igual ao app)
+    function mediaBlockHtml(m, f, url, action, progress) {
+      const kind = mediaKind(f.type, f.name);
+      const name = escapeHtmlPortal(m.voice ? 'Mensagem de voz' : f.name);
+      if (m.voice || (kind === 'audio' && url && /^voz-/.test(f.name || ''))) return voiceHtml(m.voice ? m : { ...m, voice: { duration: 0 } }, url, action, progress);
+      if (url && kind !== 'file') {
+        const preview = kind === 'image' ? `<img src="${url}" alt="${name}" data-img-open="${escapeHtmlPortal(m.id)}">`
+          : kind === 'video' ? `<video src="${url}" controls playsinline preload="metadata"></video>`
+          : `<audio src="${url}" controls preload="metadata"></audio>`;
+        const icon = kind === 'image' ? '📷' : kind === 'video' ? '🎥' : '🎵';
+        return `
+          <div class="pm-preview">
+            ${preview}
+            <div class="pm-preview-row"><span>${icon} ${name} • ${formatBytes(f.size || 0)}</span><div style="flex-shrink:0">${action}</div></div>
+            ${progress}
+          </div>`;
+      }
+      const icon = kind === 'image' ? '📷' : kind === 'video' ? '🎥' : kind === 'audio' ? '🎵' : '📁';
+      return `
+        <div class="pm-card">
+          <div class="pm-card-row">
+            <div class="pm-card-info"><span class="pm-card-ico">${icon}</span><div style="min-width:0"><span class="pm-card-name">${name}</span><span class="pm-card-size">${formatBytes(f.size || 0)}</span></div></div>
+            <div style="flex-shrink:0">${action}</div>
+          </div>
+          ${progress}
+        </div>`;
+    }
+    const progHtml = (pct) => `<div class="pm-prog"><div style="width:${pct || 0}%"></div></div>`;
+
     // Arquivo publicado no chat do link (baixado pelo fileId, como na aba Arquivos)
     function roomFileMediaHtml(m) {
       const f = m.media;
       const st = roomFiles.get(f.fileId) || {};
-      const isImg = /^image\//.test(f.type || '') && st.url;
-      const isVid = /^video\//.test(f.type || '') && st.url;
-      const isAud = /^audio\//.test(f.type || '') && st.url;
       let action;
-      if (st.url) action = `<a class="chat-media-btn" href="${st.url}" download="${escapeHtmlPortal(f.name)}">💾 Salvar</a>`;
-      else if (st.state === 'done') action = `<span style="color:#34d399">✓ Baixado</span> <button type="button" class="chat-media-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}" title="Baixar de novo">⬇</button>`;
-      else if (st.state === 'downloading') action = `${st.pct || 0}%`;
-      else if (st.state === 'error') action = `<span style="color:#fb7185">${escapeHtmlPortal(st.error || 'Falhou')}</span> <button type="button" class="chat-media-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}">Tentar de novo</button>`;
-      else action = `<button type="button" class="chat-media-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}">⬇ Baixar</button>`;
-      const icon = /^image\//.test(f.type || '') ? '📷' : /^video\//.test(f.type || '') ? '🎥' : /^audio\//.test(f.type || '') ? (m.voice ? '🎤' : '🎵') : '📁';
+      if (st.url) action = `<a class="pm-btn green" href="${st.url}" download="${escapeHtmlPortal(f.name)}">Salvar</a>`;
+      else if (st.state === 'done') action = `<span class="pm-status" style="color:#34d399">✓ Baixado</span> <button type="button" class="pm-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}" title="Baixar de novo">⬇</button>`;
+      else if (st.state === 'downloading') action = `<span class="pm-status" style="color:#a5b4fc">${st.pct || 0}%</span>`;
+      else if (st.state === 'error') action = `<span class="pm-status" style="color:#fb7185;white-space:normal;max-width:9rem;display:inline-block;text-align:right">${escapeHtmlPortal(st.error || 'Falhou')}</span> <button type="button" class="pm-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}">Tentar de novo</button>`;
+      else action = `<button type="button" class="pm-btn" data-dl-file="${escapeHtmlPortal(f.fileId)}">Baixar</button>`;
+      return mediaBlockHtml(m, f, st.url || '', action, st.state === 'downloading' ? progHtml(st.pct) : '');
+    }
+
+    // Arquivo que eu (visitante) mandei, ou mídia do chat temporário antigo
+    function chatTransferMediaHtml(m) {
+      const tr = chat.transfers.get(m.media.transferId) || {};
+      let url = tr.url || '';
+      if (!url && m.mine && tr.file && tr.file.size <= PREVIEW_MAX && mediaKind(m.media.type, m.media.name) !== 'file') {
+        tr.previewUrl = tr.previewUrl || URL.createObjectURL(tr.file);
+        url = tr.previewUrl;
+      }
+      let action;
+      if (m.mine) {
+        action = (tr.status === 'done' || m.fromHistory) ? '' : tr.status === 'sending' ? `<span class="pm-status">${tr.pct || 0}%</span>`
+          : tr.status === 'error' ? '<span class="pm-status" style="color:#fda4af">Falhou</span>' : '<span class="pm-status" style="opacity:.8">Aguardando</span>';
+      } else if (tr.url) {
+        action = `<a class="pm-btn green" href="${tr.url}" download="${escapeHtmlPortal(m.media.name)}">Salvar</a>`;
+      } else if (tr.status === 'receiving' || tr.status === 'connecting') {
+        action = `<span class="pm-status" style="color:#a5b4fc">${tr.status === 'connecting' ? 'conectando' : (tr.pct || 0) + '%'}</span>`;
+      } else {
+        action = `<button type="button" class="pm-btn" data-dl-chat="${escapeHtmlPortal(m.media.transferId)}">Baixar</button>`;
+      }
+      const busy = tr.status === 'sending' || tr.status === 'receiving';
+      return mediaBlockHtml(m, m.media, url, action, busy ? progHtml(tr.pct) : '');
+    }
+
+    function tickHtml(status) {
+      if (status === 'READ') return '<span title="Lida" style="font-weight:700;font-size:13px;line-height:1;color:#38bdf8;letter-spacing:-.05em">✓✓</span>';
+      if (status === 'DELIVERED') return '<span title="Entregue (ainda não lida)" style="font-weight:700;font-size:13px;line-height:1;color:rgba(224,231,255,.7);letter-spacing:-.05em">✓✓</span>';
+      return '<span title="Enviada (ainda não chegou)" style="font-weight:700;font-size:13px;line-height:1;color:rgba(224,231,255,.7)">✓</span>';
+    }
+
+    function messageHtml(m) {
+      if (m.deleted) {
+        return `<div class="chat-row ${m.mine ? 'mine' : ''}"><div class="chat-bubble chat-deleted-b"><div class="chat-deleted">🚫 ${m.mine ? 'Você apagou esta mensagem' : 'Mensagem apagada'}</div><div class="chat-meta"><span>${chatTime(m.ts)}</span></div></div></div>`;
+      }
+      let mediaHtml = '';
+      if (m.location) mediaHtml = locationHtml(m.location);
+      else if (m.media && m.media.fileId && !m.mine) mediaHtml = roomFileMediaHtml(m);
+      else if (m.media) mediaHtml = chatTransferMediaHtml(m);
       return `
-        <div class="chat-media">
-          ${isImg ? `<img src="${st.url}" alt="" class="chat-img">` : ''}
-          ${isVid ? `<video src="${st.url}" controls playsinline class="chat-img"></video>` : ''}
-          ${isAud ? `<audio src="${st.url}" controls style="width:100%"></audio>` : ''}
-          <div class="chat-media-row">
-            <span class="chat-media-name">${icon} ${escapeHtmlPortal(m.voice ? 'Mensagem de voz' : f.name)}<br><small>${formatBytes(f.size || 0)}</small></span>
-            <span class="chat-media-action">${action}</span>
+        <div class="chat-row ${m.mine ? 'mine' : ''}">
+          <div class="chat-bubble ${mediaHtml ? 'has-media' : ''}">
+            ${mediaHtml}
+            ${m.text && !m.location ? `<div class="chat-text">${escapeHtmlPortal(m.text)}</div>` : ''}
+            <div class="chat-meta"><span>${chatTime(m.ts)}</span>${m.mine ? tickHtml(m.status) : ''}</div>
           </div>
-          ${st.state === 'downloading' ? `<div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${st.pct || 0}%"></div></div>` : ''}
         </div>`;
     }
 
+    // Atualiza só as bolhas que mudaram (áudio/vídeo tocando não reinicia)
     function renderChat() {
       if (!chat.messages.length) {
         chatList.innerHTML = roomMode
-          ? `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal(ownerTag)}</b>.<br>Os arquivos que forem enviados aqui também aparecem na aba 📥 Arquivos.<br>Você pode mandar arquivos pelo 📎.<br><span style="opacity:.7">A conversa fica guardada enquanto o link existir.</span></div>`
-          : `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal(ownerTag)}</b> enquanto esta página estiver aberta.<br>Você também pode enviar arquivos pelo 📎.<br><span style="opacity:.7">O histórico é apagado ao fechar a página.</span></div>`;
+          ? `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal((packData && packData.ownerName) || String(ownerTag).replace(/_[0-9a-f]{6}$/, ''))}</b>.<br>Os arquivos compartilhados aparecem aqui na conversa.<br>Mande mensagens, fotos, áudios e localização pelo 📎 e pelo 🎤.<br><span style="opacity:.7">${visitorStore.keep === true ? 'A conversa continua se você fechar e abrir o link de novo neste navegador.' : 'Ao fechar e abrir o link de novo, começa uma conversa nova.'}</span></div>`
+          : `<div class="chat-empty">💬 Converse com <b>${escapeHtmlPortal(String(ownerTag).replace(/_[0-9a-f]{6}$/, ''))}</b> enquanto esta página estiver aberta.<br>Você também pode enviar arquivos pelo 📎.<br><span style="opacity:.7">O histórico é apagado ao fechar a página.</span></div>`;
         return;
       }
       const nearBottom = chatList.scrollHeight - chatList.scrollTop - chatList.clientHeight < 120;
-      chatList.innerHTML = chat.messages.map((m) => {
-        let mediaHtml = '';
-        if (m.deleted) {
-          return `<div class="chat-row ${m.mine ? 'mine' : ''}"><div class="chat-bubble"><div class="chat-deleted">🚫 Mensagem apagada</div><div class="chat-meta">${chatTime(m.ts)}</div></div></div>`;
+      const existing = new Map();
+      Array.from(chatList.children).forEach((el) => { if (el.dataset && el.dataset.mid) existing.set(el.dataset.mid, el); else el.remove(); });
+      let added = false;
+      let cursor = chatList.firstChild;
+      chat.messages.forEach((m) => {
+        const html = messageHtml(m);
+        let el = existing.get(m.id);
+        existing.delete(m.id);
+        if (!el || el._psHtml !== html) {
+          if (el) { if (el === cursor) cursor = cursor.nextSibling; el.remove(); } else added = true;
+          el = document.createElement('div');
+          el.dataset.mid = m.id;
+          el.innerHTML = html;
+          el._psHtml = html;
         }
-        if (m.media && m.media.fileId && !m.mine) {
-          mediaHtml = roomFileMediaHtml(m);
-        } else if (m.media) {
-          const tr = chat.transfers.get(m.media.transferId) || {};
-          const isImg = /^image\//.test(m.media.type || '') && tr.url;
-          let action = '';
-          if (m.mine) {
-            action = (tr.status === 'done' || m.fromHistory) ? '✔ Enviado' : tr.status === 'sending' ? `${tr.pct || 0}%` : tr.status === 'error' ? 'Falhou' : 'Aguardando o remetente aceitar...';
-          } else if (tr.url) {
-            action = `<a class="chat-media-btn" href="${tr.url}" download="${escapeHtmlPortal(m.media.name)}">💾 Salvar</a>`;
-          } else if (tr.status === 'receiving' || tr.status === 'connecting') {
-            action = tr.status === 'connecting' ? 'Conectando...' : `${tr.pct || 0}%`;
-          } else {
-            action = `<button type="button" class="chat-media-btn" data-dl-chat="${escapeHtmlPortal(m.media.transferId)}">⬇ Baixar</button>`;
-          }
-          mediaHtml = `
-            <div class="chat-media">
-              ${isImg ? `<img src="${tr.url}" alt="" class="chat-img">` : ''}
-              <div class="chat-media-row">
-                <span class="chat-media-name">📁 ${escapeHtmlPortal(m.media.name)}<br><small>${formatBytes(m.media.size || 0)}</small></span>
-                <span class="chat-media-action">${action}</span>
-              </div>
-              ${(tr.status === 'sending' || tr.status === 'receiving') ? `<div class="prog-bar-bg"><div class="prog-bar-fill" style="width:${tr.pct || 0}%"></div></div>` : ''}
-            </div>`;
-        }
-        const tick = !m.mine ? '' : m.status === 'READ' ? '<span style="color:#38bdf8;font-weight:700" title="Lida">✓✓</span>' : m.status === 'DELIVERED' ? '<span style="opacity:.75" title="Entregue (ainda não lida)">✓✓</span>' : '<span style="opacity:.75" title="Enviada (ainda não chegou)">✓</span>';
-        const locHtml = m.location ? `<div class="chat-text">📍 Localização<br><a class="chat-loc" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${Number(m.location.lat)},${Number(m.location.lon)}">${Number(m.location.lat).toFixed(5)}, ${Number(m.location.lon).toFixed(5)}</a></div>` : '';
-        return `
-          <div class="chat-row ${m.mine ? 'mine' : ''}">
-            <div class="chat-bubble">
-              ${locHtml}
-              ${m.text && !m.location ? `<div class="chat-text">${escapeHtmlPortal(m.text)}</div>` : ''}
-              ${mediaHtml}
-              <div class="chat-meta">${chatTime(m.ts)} ${tick}</div>
-            </div>
-          </div>`;
-      }).join('');
-      if (nearBottom || chat.forceBottom) chatList.scrollTop = chatList.scrollHeight;
+        if (el === cursor) cursor = cursor.nextSibling;
+        else chatList.insertBefore(el, cursor);
+      });
+      existing.forEach((el) => el.remove());
+      if (nearBottom || chat.forceBottom || added) chatList.scrollTop = chatList.scrollHeight;
       chat.forceBottom = false;
     }
+    // Fotos/vídeos que terminam de carregar mudam a altura: mantém a conversa no fim
+    chatList.addEventListener('load', () => { if (chatList.scrollHeight - chatList.scrollTop - chatList.clientHeight < 400) chatList.scrollTop = chatList.scrollHeight; }, true);
+
+    // ---------- player das mensagens de voz ----------
+    function updateVoiceUi(ui, audio) {
+      if (!ui || !audio) return;
+      const d0 = Number(ui.dataset.voiceDur) || 0;
+      const dur = d0 > 0 ? d0 : (isFinite(audio.duration) ? audio.duration : 0);
+      const frac = dur > 0 ? Math.min(1, audio.currentTime / dur) : 0;
+      const bars = ui.querySelectorAll('.ps-voice-wave i');
+      const lit = Math.round(frac * bars.length);
+      bars.forEach((b, i) => b.classList.toggle('on', i < lit));
+      const t = ui.querySelector('[data-voice-time]');
+      if (t) t.textContent = formatDuration(audio.paused && audio.currentTime === 0 ? dur : audio.currentTime);
+      const btn = ui.querySelector('[data-voice-play]');
+      const playing = !audio.paused && !audio.ended;
+      if (btn && btn._psPlaying !== playing) { btn._psPlaying = playing; btn.innerHTML = playing ? VOICE_PAUSE_SVG : VOICE_PLAY_SVG; }
+    }
+    ['timeupdate', 'play', 'pause', 'ended', 'loadedmetadata'].forEach((ev) => {
+      chatList.addEventListener(ev, (e) => {
+        const a = e.target;
+        if (!a || !a.hasAttribute || !a.hasAttribute('data-voice-audio')) return;
+        if (ev === 'ended') a.currentTime = 0;
+        if (ev === 'play') chatList.querySelectorAll('audio[data-voice-audio]').forEach((o) => { if (o !== a && !o.paused) o.pause(); });
+        updateVoiceUi(a.closest('.ps-voice'), a);
+      }, true);
+    });
 
     chatList.addEventListener('click', (e) => {
+      const ui = e.target.closest('.ps-voice');
+      const audio = ui && ui.querySelector('audio[data-voice-audio]');
+      if (audio) {
+        if (e.target.closest('[data-voice-play]')) {
+          if (audio.paused) audio.play().catch(() => portalToast('Não foi possível tocar o áudio')); else audio.pause();
+          return;
+        }
+        if (e.target.closest('[data-voice-speed]')) {
+          const speeds = [1, 1.5, 2];
+          const next = speeds[(speeds.indexOf(audio.playbackRate) + 1) % speeds.length] || 1;
+          audio.playbackRate = next;
+          e.target.closest('[data-voice-speed]').textContent = `${next}x`;
+          return;
+        }
+        const wave = e.target.closest('[data-voice-seek]');
+        if (wave) {
+          const r = wave.getBoundingClientRect();
+          const d0 = Number(ui.dataset.voiceDur) || 0;
+          const dur = d0 > 0 ? d0 : (isFinite(audio.duration) ? audio.duration : 0);
+          if (dur > 0 && r.width > 0) {
+            audio.currentTime = Math.max(0, Math.min(dur - 0.05, ((e.clientX - r.left) / r.width) * dur));
+            if (audio.paused) audio.play().catch(() => {});
+            updateVoiceUi(ui, audio);
+          }
+          return;
+        }
+      }
+      const lo = e.target.closest('[data-loc-open]');
+      if (lo) { const [la, ln] = lo.getAttribute('data-loc-open').split(','); window.open(mapUrlFor(la, ln), '_blank', 'noopener'); return; }
+      const lc = e.target.closest('[data-loc-copy]');
+      if (lc) {
+        const [la, ln] = lc.getAttribute('data-loc-copy').split(',');
+        const txt = `${la}, ${ln} — ${mapUrlFor(la, ln)}`;
+        (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject()).then(() => portalToast('Localização copiada')).catch(() => portalToast(txt));
+        return;
+      }
+      const img = e.target.closest('[data-img-open]');
+      if (img && window.PulseShareImageViewer) {
+        const m = chat.messages.find((x) => x.id === img.getAttribute('data-img-open'));
+        const f = (m && m.media) || {};
+        const actions = [];
+        const saveUrl = img.getAttribute('src');
+        actions.push({ label: '💾 Salvar', onClick: () => { const a = document.createElement('a'); a.href = saveUrl; a.download = f.name || 'foto'; document.body.appendChild(a); a.click(); a.remove(); } });
+        window.PulseShareImageViewer.open({ src: saveUrl, title: f.name || 'Foto', meta: f.size ? formatBytes(f.size) : '', actions });
+        return;
+      }
       const btn = e.target.closest('[data-dl-chat]');
       if (btn) acceptChatMedia(btn.getAttribute('data-dl-chat'));
       const fb = e.target.closest('[data-dl-file]');
@@ -2244,6 +2599,8 @@
       const text = chatInput.value.trim();
       if (!text) return;
       chatInput.value = '';
+      autoGrowChatInput();
+      updateComposeButtons();
       const id = newChatId('cmsg');
       const ts = Date.now();
       chat.messages.push({ id, mine: true, text, ts, status: 'SENT' });
@@ -2252,12 +2609,24 @@
       sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text, msgType: 'text', type: 'text', timestamp: ts, shareId, visitorName: visitorStore.name || '' });
     }
     chatSendBtn.addEventListener('click', sendChatText);
+    function autoGrowChatInput() {
+      chatInput.style.height = 'auto';
+      chatInput.style.height = Math.min(chatInput.scrollHeight, 140) + 'px';
+    }
     chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         sendChatText();
       }
     });
+    // Teclado do celular (Gboard/Samsung) às vezes não manda keydown com Enter: trata a quebra de linha digitada
+    chatInput.addEventListener('beforeinput', (e) => {
+      if ((e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') && !e.isComposing) {
+        e.preventDefault();
+        sendChatText();
+      }
+    });
+    chatInput.addEventListener('input', autoGrowChatInput);
     let typingSentAt = 0;
     chatInput.addEventListener('input', () => {
       if (Date.now() - typingSentAt < 2500) return;
@@ -2265,14 +2634,187 @@
       broadcastSignal('CHAT_TYPING', { status: 'typing' }, ownerTag, `typing-${typingSentAt}`);
     });
 
-    chatAttachBtn.addEventListener('click', () => chatFileInput.click());
+    // ---------- enviar / microfone / anexos (como no app) ----------
+    const chatMicBtn = document.getElementById('chat-mic');
+    const attachMenu = document.getElementById('chat-attach-menu');
+    function updateComposeButtons() {
+      const has = Boolean(chatInput.value.trim());
+      chatSendBtn.classList.toggle('hidden', !has);
+      chatMicBtn.classList.toggle('hidden', has);
+    }
+    chatInput.addEventListener('input', updateComposeButtons);
+    // Não fecha o teclado ao tocar em enviar/microfone
+    [chatSendBtn, chatMicBtn].forEach((b) => b.addEventListener('mousedown', (e) => e.preventDefault()));
+    chatAttachBtn.addEventListener('click', (e) => { e.stopPropagation(); attachMenu.classList.toggle('hidden'); });
+    document.addEventListener('click', (e) => { if (!e.target.closest('#chat-attach-menu') && !e.target.closest('#chat-attach')) attachMenu.classList.add('hidden'); });
+    attachMenu.addEventListener('click', (e) => {
+      const opt = e.target.closest('[data-attach]');
+      if (!opt) return;
+      attachMenu.classList.add('hidden');
+      const kind = opt.getAttribute('data-attach');
+      if (kind === 'location') { openLocationModal(); return; }
+      chatFileInput.accept = kind === 'media' ? 'image/*,video/*' : kind === 'audio' ? 'audio/*' : '';
+      chatFileInput.click();
+    });
     chatFileInput.addEventListener('change', () => {
-      Array.from(chatFileInput.files || []).forEach(sendChatFile);
+      Array.from(chatFileInput.files || []).forEach((f) => sendChatFile(f));
       chatFileInput.value = '';
     });
 
+    // ---------- gravação de voz ----------
+    let voiceRec = null;
+    const VOICE_MAX_SEC = 15 * 60;
+    function micErrorText(e) {
+      const n = e && e.name;
+      if (n === 'NotAllowedError' || n === 'SecurityError') return '🎤 Permissão do microfone negada. Libere o microfone para esta página no navegador.';
+      if (n === 'NotFoundError' || n === 'OverconstrainedError') return '🎤 Nenhum microfone encontrado.';
+      if (n === 'NotReadableError') return '🎤 O microfone está sendo usado por outro app.';
+      return '🎤 Não foi possível usar o microfone.';
+    }
+    function setRecordingUi(on) {
+      document.getElementById('chat-recording-bar').classList.toggle('hidden', !on);
+      document.getElementById('chat-compose-row').classList.toggle('hidden', on);
+      attachMenu.classList.add('hidden');
+      if (!on) document.getElementById('chat-rec-wave').innerHTML = '';
+    }
+    async function startVoiceRecording() {
+      if (voiceRec) return;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') { portalToast('Gravação de voz não é suportada neste navegador.'); return; }
+      const st = { starting: true };
+      voiceRec = st;
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      } catch (e) { voiceRec = null; portalToast(micErrorText(e)); return; }
+      if (voiceRec !== st) { stream.getTracks().forEach((t) => t.stop()); return; }
+      const mime = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/webm', 'audio/mp4'].find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+      let rec;
+      try { rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined); }
+      catch (e) { stream.getTracks().forEach((t) => t.stop()); voiceRec = null; portalToast('Gravação de voz não é suportada neste navegador.'); return; }
+      Object.assign(st, { starting: false, stream, rec, mime: (rec.mimeType || mime || 'audio/webm').split(';')[0], chunks: [], levels: [], start: Date.now() });
+      rec.ondataavailable = (e) => { if (e.data && e.data.size) st.chunks.push(e.data); };
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        st.ctx = new Ctx();
+        const src = st.ctx.createMediaStreamSource(stream);
+        st.analyser = st.ctx.createAnalyser();
+        st.analyser.fftSize = 512;
+        src.connect(st.analyser);
+        st.buf = new Uint8Array(st.analyser.fftSize);
+      } catch (e) { st.analyser = null; }
+      const waveEl = document.getElementById('chat-rec-wave');
+      const timeEl = document.getElementById('chat-rec-time');
+      st.timer = setInterval(() => {
+        const sec = (Date.now() - st.start) / 1000;
+        timeEl.textContent = formatDuration(Math.floor(sec));
+        let level = 8;
+        if (st.analyser) {
+          st.analyser.getByteTimeDomainData(st.buf);
+          let sum = 0;
+          for (let i = 0; i < st.buf.length; i++) { const v = (st.buf[i] - 128) / 128; sum += v * v; }
+          level = Math.min(100, Math.round(Math.sqrt(Math.sqrt(sum / st.buf.length)) * 150));
+        }
+        st.levels.push(level);
+        const bar = document.createElement('span');
+        bar.style.height = Math.max(12, level) + '%';
+        waveEl.appendChild(bar);
+        while (waveEl.childElementCount > 90) waveEl.firstElementChild.remove();
+        if (sec >= VOICE_MAX_SEC) stopVoiceRecording(true);
+      }, 100);
+      rec.start(250);
+      setRecordingUi(true);
+    }
+    function stopVoiceRecording(send) {
+      const st = voiceRec;
+      voiceRec = null;
+      setRecordingUi(false);
+      if (!st || st.starting || !st.rec) return;
+      clearInterval(st.timer);
+      const duration = (Date.now() - st.start) / 1000;
+      st.rec.onstop = () => {
+        st.stream.getTracks().forEach((t) => t.stop());
+        try { if (st.ctx) st.ctx.close(); } catch (e) {}
+        if (!send) return;
+        if (duration < 0.8) { portalToast('Gravação muito curta. Toque no microfone, fale e toque em enviar.'); return; }
+        const blob = new Blob(st.chunks, { type: st.mime });
+        if (!blob.size) { portalToast('A gravação ficou vazia.'); return; }
+        const lv = st.levels.length ? st.levels : [10];
+        const waveform = Array.from({ length: 48 }, (_, i) => {
+          const a = Math.floor(i * lv.length / 48), b = Math.max(a + 1, Math.floor((i + 1) * lv.length / 48));
+          return Math.max(...lv.slice(a, b));
+        });
+        const ext = /ogg/.test(st.mime) ? 'ogg' : /mp4/.test(st.mime) ? 'm4a' : 'webm';
+        const d = new Date();
+        const p2 = (n) => String(n).padStart(2, '0');
+        const name = `voz-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}.${ext}`;
+        sendChatFile(new File([blob], name, { type: st.mime }), { voice: { duration: Math.round(duration * 10) / 10, waveform } });
+      };
+      try { st.rec.stop(); } catch (e) { st.rec.onstop(); }
+    }
+    chatMicBtn.addEventListener('click', startVoiceRecording);
+    document.getElementById('chat-rec-cancel').addEventListener('click', () => stopVoiceRecording(false));
+    document.getElementById('chat-rec-send').addEventListener('click', () => stopVoiceRecording(true));
+
+    // ---------- localização ----------
+    const locModal = document.getElementById('loc-modal');
+    const locStatus = document.getElementById('loc-status');
+    const locManual = document.getElementById('loc-manual');
+    const locSendBtn = document.getElementById('loc-send');
+    let locCurrent = null;
+    let locSeq = 0;
+    function parseLocationInput(raw) {
+      let str = String(raw || '').trim();
+      try { str = decodeURIComponent(str); } catch (e) {}
+      let m = /mlat=(-?\d+(?:\.\d+)?).*?mlon=(-?\d+(?:\.\d+)?)/.exec(str);
+      if (!m) m = /(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)/.exec(str.replace(/^.*?(@|q=|query=|ll=)/, ''));
+      return m ? sanitizeLocation({ lat: m[1], lon: m[2] }) : null;
+    }
+    function setLocStatus(text, ok) {
+      locStatus.textContent = text;
+      locStatus.style.color = ok ? '#6ee7b7' : '#cbd5e1';
+      locSendBtn.disabled = !locCurrent;
+    }
+    function openLocationModal() {
+      const seq = ++locSeq;
+      locCurrent = null;
+      locManual.value = '';
+      locManual.classList.add('hidden');
+      locModal.classList.remove('hidden');
+      setLocStatus('Obtendo sua localização...');
+      if (!navigator.geolocation) { locManual.classList.remove('hidden'); setLocStatus('Este navegador não informa a localização. Digite as coordenadas abaixo.'); return; }
+      navigator.geolocation.getCurrentPosition((pos) => {
+        if (seq !== locSeq) return;
+        locCurrent = sanitizeLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude });
+        if (locCurrent) setLocStatus(`Sua localização: ${locCurrent.lat.toFixed(5)}, ${locCurrent.lon.toFixed(5)}`, true);
+      }, (err) => {
+        if (seq !== locSeq) return;
+        locManual.classList.remove('hidden');
+        setLocStatus(`${err && err.code === 1 ? 'Permissão de localização negada.' : 'Não foi possível obter a localização.'} Digite as coordenadas abaixo.`);
+      }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 });
+    }
+    locManual.addEventListener('input', () => {
+      const l = parseLocationInput(locManual.value);
+      locCurrent = l;
+      setLocStatus(l ? `Localização digitada: ${l.lat.toFixed(5)}, ${l.lon.toFixed(5)}` : 'Digite "latitude, longitude" ou cole um link do Google Maps.', Boolean(l));
+    });
+    document.getElementById('loc-cancel').addEventListener('click', () => { locSeq++; locModal.classList.add('hidden'); });
+    locSendBtn.addEventListener('click', () => {
+      const loc = locCurrent;
+      if (!loc) return;
+      locSeq++;
+      locModal.classList.add('hidden');
+      const id = newChatId('cmsg');
+      const ts = Date.now();
+      const text = `📍 Localização: ${mapUrlFor(loc.lat, loc.lon)}`;
+      chat.messages.push({ id, mine: true, text, ts, status: 'SENT', location: loc });
+      chat.forceBottom = true;
+      renderChat();
+      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text, msgType: 'location', type: 'location', location: loc, timestamp: ts, shareId, visitorName: visitorStore.name || '' });
+    });
+
     // Upload: visitante -> remetente
-    function sendChatFile(file) {
+    function sendChatFile(file, extra) {
+      const voice = extra && extra.voice ? extra.voice : null;
       const transferId = newChatId('chatmedia');
       const id = newChatId('cmsg');
       const ts = Date.now();
@@ -2280,16 +2822,29 @@
       const kind = type.startsWith('image/') ? 'image' : type.startsWith('video/') ? 'video' : type.startsWith('audio/') ? 'audio' : 'file';
       const media = { transferId, name: file.name, fileName: file.name, size: file.size, fileSize: file.size, type, fileType: type };
       chat.transfers.set(transferId, { dir: 'up', file, name: file.name, size: file.size, type, status: 'waiting', pct: 0, msgId: id });
-      chat.messages.push({ id, mine: true, text: '', ts, status: 'SENT', media });
+      chat.messages.push({ id, mine: true, text: '', ts, status: 'SENT', media, ...(voice ? { voice } : {}) });
       chat.forceBottom = true;
       renderChat();
-      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: '', msgType: kind, type: kind, timestamp: ts, transferId, fileMeta: { name: file.name, size: file.size, type }, media, shareId, visitorName: visitorStore.name || '' });
+      const msgType = voice ? 'voice' : kind;
+      sendChatPayload({ id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: '', msgType, type: msgType, timestamp: ts, transferId, fileMeta: { name: file.name, size: file.size, type }, media, shareId, visitorName: visitorStore.name || '', ...(voice ? { voiceDuration: voice.duration, waveform: voice.waveform } : {}) });
       broadcastSignal('FILE_OFFER', { isChatMedia: true, chatMsgId: id, fileName: file.name, fileSize: file.size, fileType: type }, ownerTag, transferId);
     }
 
-    async function startChatUpload(transferId) {
+    async function startChatUpload(transferId, requestId) {
       const tr = chat.transfers.get(transferId);
-      if (!tr || tr.dir !== 'up' || tr.pc) return; // aceite duplicado
+      if (!tr || tr.dir !== 'up' || !tr.file) return;
+      if (tr.pc) {
+        // Mesmo pedido repetido (ou versão sem requestId logo em seguida): aceite duplicado.
+        // Pedido novo (o app tocou em Baixar de novo) ou conexão que caiu: recomeça.
+        const stateBad = ['failed', 'closed', 'disconnected'].includes(tr.pc.connectionState);
+        const same = requestId ? requestId === tr.requestId : Date.now() - (tr.startedAt || 0) < 8000;
+        if (same && !stateBad) return;
+        try { tr.pc.close(); } catch {}
+        tr.pc = null;
+      }
+      tr.requestId = requestId || '';
+      tr.startedAt = Date.now();
+      tr.pct = 0;
       tr.status = 'sending';
       const iceServers = getActiveIceServers();
       const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
@@ -2354,6 +2909,14 @@
       offerSent = true;
       broadcastSignal('WEBRTC_OFFER', { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp }, iceServers }, ownerTag, transferId);
       queued.splice(0).forEach((c) => broadcastSignal('ICE_CANDIDATE', { candidate: c }, ownerTag, transferId));
+      // Conexão que não abriu em 25 s: marca falha (o app pode pedir de novo e o envio recomeça)
+      setTimeout(() => {
+        if (tr.pc === pc && tr.status === 'sending' && channel.readyState !== 'open') {
+          try { pc.close(); } catch {}
+          tr.status = 'error';
+          renderChat();
+        }
+      }, 25000);
     }
 
     // Download de mídia enviada pelo remetente no chat
@@ -2484,10 +3047,11 @@
           addRoomFile(payload.media);
           broadcastSignal('CHAT_ACK', { msgId: id, senderTag: visitorTag, status: portalReadingChat() ? 'READ' : 'DELIVERED' }, ownerTag, id);
           if (chat.messages.some((m) => m.id === id)) return true;
-          chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media: sanitizeRoomMedia(payload.media), voice: payload.voiceDuration ? { duration: payload.voiceDuration } : null });
+          chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media: sanitizeRoomMedia(payload.media), voice: sanitizeVoice(payload) });
           chat.messages.sort((a, b) => a.ts - b.ts);
           if (!chat.open) { chat.unread++; renderChatBadge(); }
           renderChat();
+          setTimeout(autoPreviewRoomMedia, 300);
           return true;
         }
         broadcastSignal('CHAT_ACK', { msgId: id, senderTag: visitorTag, status: portalReadingChat() ? 'READ' : 'DELIVERED' }, ownerTag, id);
@@ -2498,7 +3062,7 @@
         if (media && !chat.transfers.has(tid)) {
           chat.transfers.set(tid, { dir: 'down', name: media.name, size: media.size, type: media.type, status: 'idle', pct: 0, msgId: id });
         }
-        chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media, location: sanitizeLocation(payload.location) });
+        chat.messages.push({ id, mine: false, text: payload.text || '', ts: payload.timestamp || Date.now(), media, location: sanitizeLocation(payload.location), voice: media ? sanitizeVoice(payload) : null });
         chat.messages.sort((a, b) => a.ts - b.ts);
         chatTyping.classList.add('hidden');
         if (!chat.open) {
@@ -2548,7 +3112,7 @@
         return true;
       }
       if (!tr) return false; // não é do chat: segue para a área de download
-      if (signalType === 'FILE_ACCEPT') { startChatUpload(transferId); return true; }
+      if (signalType === 'FILE_ACCEPT') { startChatUpload(transferId, payload.requestId); return true; }
       if (signalType === 'FILE_REJECT' || signalType === 'TRANSFER_REJECT') { tr.status = 'error'; renderChat(); return true; }
       if (signalType === 'WEBRTC_OFFER') { startChatDownload(transferId, payload.sdp, payload.iceServers); return true; }
       if (signalType === 'WEBRTC_ANSWER') {
@@ -2581,6 +3145,22 @@
     }
     function revealChatTab() {
       if (!isChatUnlocked()) return;
+      if (roomMode) {
+        // Chat de link: só a conversa (sem abas nem lista de arquivos)
+        document.documentElement.classList.add('room-mode');
+        document.body.classList.add('room-mode');
+        tabBar.classList.add('hidden');
+        packContent.classList.add('hidden');
+        panelChat.classList.remove('hidden');
+        chat.open = true;
+        chatOwnerStatus.parentElement.style.justifyContent = 'flex-end';
+        chatOwnerStatus.classList.add('hidden');
+        renderOwnerStatus();
+        renderChat();
+        updateFilesCount();
+        if (!chat.tabChosen) { chat.tabChosen = true; sendPortalReadReceipt(); }
+        return;
+      }
       tabBar.classList.remove('hidden');
       renderOwnerStatus();
       renderChat();
@@ -2610,6 +3190,11 @@
       if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
       return { lat, lon };
     }
+    function sanitizeVoice(p) {
+      if (!p || !(p.voiceDuration || p.msgType === 'voice' || p.type === 'voice')) return null;
+      const wf = Array.isArray(p.waveform) ? p.waveform.slice(0, 64).map((x) => Math.max(0, Math.min(100, Math.round(Number(x) || 0)))) : [];
+      return { duration: Math.min(3600, Math.max(0, Number(p.voiceDuration) || 0)), waveform: wf };
+    }
     function sanitizeRoomMedia(f) {
       return { fileId: String(f.fileId || ''), name: String(f.name || 'arquivo'), size: Number(f.size) || 0, type: String(f.type || '') };
     }
@@ -2626,13 +3211,64 @@
       const el = document.getElementById('files-count-badge');
       const n = packData && packData.files ? packData.files.length : 0;
       if (el) el.textContent = n ? `(${n})` : '';
+      const all = document.getElementById('room-dl-all');
+      if (all) {
+        all.classList.toggle('hidden', !roomMode || n < 2);
+        all.textContent = `⬇ Baixar tudo (${n})`;
+      }
     }
+
+    // Foto/vídeo/áudio de até 16 MB do dono aparecem sozinhos no chat (como no app),
+    // um download por vez; o 💾 Salvar grava no aparelho
+    const AUTO_PREVIEW_MAX = 16 * 1024 * 1024;
+    let autoPreviewRunning = false;
+    async function autoPreviewRoomMedia() {
+      if (autoPreviewRunning || !roomMode) return;
+      autoPreviewRunning = true;
+      try {
+        for (;;) {
+          const m = chat.messages.slice().reverse().find((x) => !x.mine && !x.deleted && x.media && x.media.fileId &&
+            mediaKind(x.media.type, x.media.name) !== 'file' && (x.media.size || 0) <= AUTO_PREVIEW_MAX &&
+            !(roomFiles.get(x.media.fileId) || {}).state && ((packData && packData.files) || []).some((f) => f.fileId === x.media.fileId));
+          if (!m) break;
+          downloadRoomFile(m.media.fileId);
+          if (!(roomFiles.get(m.media.fileId) || {}).state) break; // arquivo fora do link
+          await new Promise((resolve) => {
+            const t = setInterval(() => {
+              const st = roomFiles.get(m.media.fileId) || {};
+              if (st.state !== 'downloading') { clearInterval(t); resolve(); }
+            }, 400);
+          });
+        }
+      } finally { autoPreviewRunning = false; }
+    }
+
+    // Baixa um arquivo por vez todos os que ainda não foram baixados
+    async function downloadAllRoomFiles() {
+      const btn = document.getElementById('room-dl-all');
+      const files = (packData && packData.files) || [];
+      const pending = files.filter((f) => { const st = roomFiles.get(f.fileId) || {}; return st.state !== 'done' && st.state !== 'downloading'; });
+      if (!pending.length) { if (btn) btn.textContent = '✓ Tudo baixado'; return; }
+      if (btn) btn.disabled = true;
+      for (const f of pending) {
+        downloadRoomFile(f.fileId);
+        await new Promise((resolve) => {
+          const t = setInterval(() => {
+            const st = roomFiles.get(f.fileId) || {};
+            if (st.state === 'done' || st.state === 'error') { clearInterval(t); resolve(); }
+          }, 400);
+        });
+      }
+      if (btn) btn.disabled = false;
+      updateFilesCount();
+    }
+    document.getElementById('room-dl-all').addEventListener('click', downloadAllRoomFiles);
 
     function historyToMessage(h) {
       const m = { id: String(h.id), mine: h.from === 'me', text: h.text || '', ts: Number(h.ts) || Date.now(), fromHistory: true };
       if (h.deleted) m.deleted = true;
       if (h.location) m.location = sanitizeLocation(h.location);
-      if (h.voice) m.voice = { duration: Number(h.voice.duration) || 0 };
+      if (h.voice) m.voice = sanitizeVoice({ voiceDuration: h.voice.duration, waveform: h.voice.waveform, msgType: 'voice' });
       if (h.media) {
         if (h.media.fileId && !m.mine) m.media = sanitizeRoomMedia(h.media);
         else if (m.mine) m.media = { transferId: String(h.media.transferId || ''), name: String(h.media.name || 'arquivo'), size: Number(h.media.size) || 0, type: String(h.media.type || '') };
@@ -2652,6 +3288,7 @@
         if (cur.mine && cur.status === 'SENT') { cur.status = m.status; changed = true; }
       });
       if (changed) { chat.messages.sort((a, b) => a.ts - b.ts); renderChat(); }
+      setTimeout(autoPreviewRoomMedia, 300);
     }
 
     function setupRoomChat(payload) {
@@ -2659,7 +3296,9 @@
       const title = payload.title || payload.packName || 'Compartilhamento';
       document.title = `${title} — PulseShare`;
       document.getElementById('room-title').textContent = '🔗 ' + title;
-      document.getElementById('room-owner').textContent = `de ${payload.ownerName || ''} ${payload.ownerTag || ownerTag}`.trim();
+      const ownerShort = String(payload.ownerTag || ownerTag).replace(/_[0-9a-f]{6}$/, '');
+      const ownerNm = String(payload.ownerName || '').trim();
+      document.getElementById('room-owner').textContent = (ownerNm && ownerNm.replace(/^@/, '') !== ownerShort.replace(/^@/, '')) ? `de ${ownerNm} (${ownerShort})` : `de ${ownerShort}`;
       document.getElementById('room-header').classList.remove('hidden');
       if (payload.visitorName && !visitorStore.name) {
         visitorStore.name = payload.visitorName;
@@ -2684,7 +3323,8 @@
     function onOwnerBackOnline() {
       requestPackInfo(true);
       chat.messages.filter((m) => m.mine && m.status === 'SENT' && !m.media && !m.fromHistory).forEach((m, i) => setTimeout(() => {
-        broadcastSignal('CHAT_MESSAGE', { id: m.id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: m.text, msgType: 'text', type: 'text', timestamp: m.ts, shareId, visitorName: visitorStore.name || '' }, ownerTag, m.id);
+        const t = m.location ? 'location' : 'text';
+        broadcastSignal('CHAT_MESSAGE', { id: m.id, senderTag: visitorTag, from: visitorTag, to: ownerTag, text: m.text, msgType: t, type: t, timestamp: m.ts, shareId, visitorName: visitorStore.name || '', ...(m.location ? { location: m.location } : {}) }, ownerTag, m.id);
       }, 300 + i * 200));
     }
 

@@ -118,6 +118,15 @@ object WebViewHost {
         }
 
         wv.webViewClient = object : WebViewClient() {
+            // O sistema matou o processo do renderizador (falta de memória, "Fechar tudo"...).
+            // Sem tratar, o Android derruba o app inteiro; aqui a WebView é recriada e o app
+            // volta a conectar (com tela, se ela estiver aberta, ou sem tela, no serviço).
+            override fun onRenderProcessGone(view: WebView?, detail: android.webkit.RenderProcessGoneDetail?): Boolean {
+                Log.w(TAG, "Renderizador da WebView caiu (crash=${detail?.didCrash()}); recriando")
+                main.post { recreate(app) }
+                return true
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                 pageLoaded = false
                 super.onPageStarted(view, url, favicon)
@@ -155,6 +164,27 @@ object WebViewHost {
             evaluateJs("window.PulseShareNativeCallback && window.PulseShareNativeCallback.onUiAttached && window.PulseShareNativeCallback.onUiAttached()")
         }
         return wv
+    }
+
+    /** Recria a WebView depois de o renderizador cair. */
+    private fun recreate(app: Context) {
+        val a = activity
+        val parent = webView?.parent as? ViewGroup
+        destroy()
+        if (a != null && parent != null) {
+            attach(a, parent)
+        } else if (PulseShareService.isBackgroundMode(app)) {
+            try { obtain(app) } catch (e: Exception) { Log.w(TAG, "Falha ao recriar a WebView: ${e.message}") }
+        }
+    }
+
+    /** Tarefa removida dos recentes: solta a WebView de qualquer tela (mesmo sem onDestroy). */
+    fun detachAll(app: Context) {
+        val wv = webView ?: return
+        activityRef = null
+        (wv.parent as? ViewGroup)?.removeView(wv)
+        wrapper?.baseContext = app.applicationContext
+        evaluateJs("window.PulseShareNativeCallback && window.PulseShareNativeCallback.onUiVisibility && window.PulseShareNativeCallback.onUiVisibility(false)")
     }
 
     /** A tela fechou mas o app continua em segundo plano: tira a WebView do layout sem destruí-la. */

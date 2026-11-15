@@ -1091,3 +1091,23 @@ body.expanded-view #btn-chat-back-list {
 .break-all { word-break: break-all; }
 .text-orange-200 { color: rgb(254 215 170); }
 .text-emerald-300 { color: rgb(110 231 183); }
+/* adicionadas manualmente (nova conversa, rotas via outro usuário, 2026-11-14) */
+.rounded-3xl { border-radius: 1.5rem; }
+.bg-violet-500\/20 { background-color: rgb(139 92 246 / 0.2); }
+.border-violet-500\/30 { border-color: rgb(139 92 246 / 0.3); }
+.text-violet-300 { color: #c4b5fd; }
+.mt-5 { margin-top: 1.25rem; }
+.py-6 { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+.top-4 { top: 1rem; }
+.gap-px { gap: 1px; }
+.px-0\.5 { padding-left: 0.125rem; padding-right: 0.125rem; }
+.break-words { overflow-wrap: break-word; }
+.max-h-\[65vh\] { max-height: 65vh; }
+.border-indigo-500\/50 { border-color: rgb(99 102 241 / 0.5); }
+.focus\:border-amber-500:focus { border-color: #f59e0b; }
+.hover\:bg-amber-500\/20:hover { background-color: rgb(245 158 11 / 0.2); }
+
+/* adicionadas manualmente (tela larga do computador, 2026-11-14) */
+.px-8 { padding-left: 2rem; padding-right: 2rem; }
+.w-16 { width: 4rem; }
+.h-16 { height: 4rem; }

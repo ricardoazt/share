@@ -15,6 +15,15 @@
   document.documentElement.classList.toggle('is-android', IS_ANDROID);
   document.documentElement.classList.toggle('is-extension', IS_EXTENSION);
   document.documentElement.classList.toggle('is-desktop', IS_DESKTOP);
+  // Tamanho do texto (padrão: Grande)
+  function applyFontSize(v) {
+    const n = ['0', '1', '2'].includes(String(v)) ? String(v) : '1';
+    document.documentElement.classList.remove('fs-1', 'fs-2');
+    if (n !== '0') document.documentElement.classList.add('fs-' + n);
+    return n;
+  }
+  let fontSizeSetting = '1';
+  try { fontSizeSetting = applyFontSize(localStorage.getItem('ps_font_size') || '1'); } catch (e) { applyFontSize('1'); }
   'use strict';
 
   // ==========================================================================
@@ -44,7 +53,7 @@
   // Só a conta ativa fica conectada e recebe mensagens.
   // ==========================================================================
   const ACCOUNT_SCOPED_KEYS = ['ps_chat_messages', 'ps_contacts_catalog_v2', 'ps_custom_categories', 'ps_blocked_tags',
-    'ps_previous_tags', 'ps_my_tag', 'ps_my_reghash', 'ps_node_id', 'ps_hidden_chats', 'ps_dismissed_official', 'ps_link_rooms_v1'];
+    'ps_previous_tags', 'ps_my_tag', 'ps_my_reghash', 'ps_node_id', 'ps_hidden_chats', 'ps_dismissed_official', 'ps_link_rooms_v1', 'ps_revoked_links_v1'];
   const LIVE_ACCOUNT_KEY = 'ps_live_account_id';
   function accountStoreId(profile) {
     return profile && profile.pubKeyHex ? 'k' + profile.pubKeyHex.slice(0, 16) : '';
@@ -120,7 +129,6 @@
   let autoAccept = localStorage.getItem('ps_auto_accept') !== 'false';
   let chatAutoDownload = localStorage.getItem('ps_chat_auto_download') === 'true'; // Padrão: false (não baixa automaticamente pelo chat)
   let customDownloadFolder = localStorage.getItem('ps_download_folder') || 'PulseShare';
-  let transfersFilter = 'active'; // 'active' ou 'history'
   let meshRelay = localStorage.getItem('ps_mesh_relay') !== 'false';
   let relayBandwidth = parseInt(localStorage.getItem('ps_relay_bw') || '2048', 10);
   let turnConfig = JSON.parse(localStorage.getItem('ps_turn_config') || 'null');
@@ -546,6 +554,13 @@
       if (modalPhoto && !modalPhoto.classList.contains('hidden')) { closePhotoEditor(); return 'HANDLED'; }
       const modalScan = document.getElementById('modal-qr-pair-scanner');
       if (modalScan && !modalScan.classList.contains('hidden')) { closeQrScanner(); return 'HANDLED'; }
+      const modalMyQr = document.getElementById('modal-my-qr');
+      if (modalMyQr && !modalMyQr.classList.contains('hidden')) { closeMyQr(); return 'HANDLED'; }
+      const modalNewChat = document.getElementById('modal-new-chat');
+      if (modalNewChat && !modalNewChat.classList.contains('hidden')) {
+        const cm = document.getElementById('modal-contact-menu');
+        if (!cm || cm.classList.contains('hidden')) { closeNewChatSheet(); return 'HANDLED'; }
+      }
       // 0. Visualizador de imagem em tela cheia
       if (window.PulseShareImageViewer && window.PulseShareImageViewer.isOpen()) {
         window.PulseShareImageViewer.close();
@@ -570,7 +585,7 @@
       const modalLinkShare = document.getElementById('modal-link-share');
       if (modalLinkShare && !modalLinkShare.classList.contains('hidden')) { closeLinkShareSheet(); return 'HANDLED'; }
       const modalNewLink = document.getElementById('modal-new-link');
-      if (modalNewLink && !modalNewLink.classList.contains('hidden')) { modalNewLink.classList.add('hidden'); return 'HANDLED'; }
+      if (modalNewLink && !modalNewLink.classList.contains('hidden')) { pendingLinkShareFiles = null; modalNewLink.classList.add('hidden'); return 'HANDLED'; }
       const modalFwd = document.getElementById('modal-forward');
       if (modalFwd && !modalFwd.classList.contains('hidden')) { closeForwardModal(); return 'HANDLED'; }
       const modalDel = document.getElementById('modal-delete-messages');
@@ -644,6 +659,7 @@
     // Inicia rádio Bluetooth BLE Mesh se disponível
     if (Native.isBleAvailable()) {
       Native.startBleMesh(myTag);
+      bleWasAvailable = true;
     }
 
     updateIdentityUI();
@@ -673,9 +689,11 @@
     const setAvatar = document.getElementById('settings-avatar-slot');
     if (setAvatar) setAvatar.innerHTML = avatarHtml;
     const setName = document.getElementById('settings-profile-name');
-    if (setName) setName.textContent = activeProfile.name || 'PulseShare';
+    if (setName) setName.textContent = myProfileName() || activeProfile.name || 'PulseShare';
     const setTag = document.getElementById('settings-profile-tag');
-    if (setTag) setTag.textContent = myTag;
+    if (setTag) setTag.textContent = shortTag(myTag);
+    const pnInput = document.getElementById('setting-profile-name-input');
+    if (pnInput && document.activeElement !== pnInput) pnInput.value = myProfileName();
 
     renderUsernameSettings();
     renderAccountsList();
@@ -718,6 +736,39 @@
     const m = /^@([a-z0-9_]{1,40})_([0-9a-f]{6})$/.exec(normalizeTag(tag));
     if (!m || m[1] === 'link') return null; // visitantes de link (@link_xxxxxx) não têm nome
     return { name: m[1], suffix: m[2] };
+  }
+
+  // O nome de usuário é único na rede: na tela ele aparece sem o sufixo _hash6
+  function shortTag(tag) {
+    const t = normalizeTag(tag);
+    const parts = splitTag(t);
+    return parts ? '@' + parts.name : t;
+  }
+  function usernameOf(tag) {
+    const parts = splitTag(tag);
+    return parts ? parts.name : String(tag || '').replace(/^@/, '').split('_')[0];
+  }
+
+  // Nome do perfil: livre (pode repetir), independente do @usuário. O meu fica no
+  // perfil (profile.displayName) e vai na presença; o dos outros fica neste aparelho.
+  const PROFILE_NAMES_KEY = 'ps_profile_names_v1';
+  let peerProfileNames = {};
+  try { peerProfileNames = JSON.parse(localStorage.getItem(PROFILE_NAMES_KEY) || '{}') || {}; } catch (e) {}
+  function cleanProfileName(n) {
+    return String(n || '').replace(/[\u0000-\u001f\u007f-\u009f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  }
+  function setPeerProfileName(tag, name) {
+    tag = normalizeTag(tag);
+    const n = cleanProfileName(name);
+    if (!tag || (peerProfileNames[tag] || '') === n) return false;
+    if (n) peerProfileNames[tag] = n; else delete peerProfileNames[tag];
+    const keys = Object.keys(peerProfileNames);
+    if (keys.length > 3000) delete peerProfileNames[keys[0]];
+    try { localStorage.setItem(PROFILE_NAMES_KEY, JSON.stringify(peerProfileNames)); } catch (e) {}
+    return true;
+  }
+  function myProfileName() {
+    return (activeProfile && cleanProfileName(activeProfile.displayName)) || '';
   }
 
   function mySuffix() {
@@ -1334,7 +1385,7 @@
 
   function renderUsernameSettings() {
     const cur = document.getElementById('setting-current-tag');
-    if (cur) cur.textContent = myTag || '@...';
+    if (cur) cur.textContent = myTag ? shortTag(myTag) : '@...';
     const suffix = document.getElementById('setting-username-suffix');
     const sfx = activeProfile && activeProfile.pubKeyHex ? activeProfile.pubKeyHex.slice(0, 6) : hashSuffix(myTag);
     if (suffix) suffix.textContent = '_' + (sfx || '000000');
@@ -1431,8 +1482,8 @@
       pendingRename = null;
       const box = document.getElementById('setting-username-verify');
       if (box) box.classList.add('hidden');
-      setUsernameStatus(`✓ Nome alterado para ${myTag}. Seus contatos foram avisados.`, 'ok');
-      Native.toast(`Nome alterado para ${myTag}`);
+      setUsernameStatus(`✓ Nome alterado para ${shortTag(myTag)}. Seus contatos foram avisados.`, 'ok');
+      Native.toast(`Nome alterado para ${shortTag(myTag)}`);
     } catch (e) {
       setUsernameStatus('Falha ao alterar o nome: ' + (e && e.message ? e.message : e), 'error');
     } finally {
@@ -1499,8 +1550,8 @@
           <div class="flex items-center gap-2 min-w-0">
             <div class="w-7 h-7 rounded-lg overflow-hidden shrink-0">${profileAvatarHtml(p)}</div>
             <div class="min-w-0">
-              <span class="text-xs font-bold text-white block truncate">${escapeHtml(p.name || '')}</span>
-              <span class="text-[10px] font-mono text-slate-400 block truncate">${escapeHtml(p.tag || '')}</span>
+              <span class="text-xs font-bold text-white block truncate">${escapeHtml(cleanProfileName(p.displayName) || p.name || '')}</span>
+              <span class="text-[10px] font-mono text-slate-400 block truncate">${escapeHtml(shortTag(p.tag || ''))}</span>
             </div>
           </div>
           ${cur
@@ -1542,8 +1593,8 @@
   function logoutAccount() {
     if (!activeProfile || typeof PulseShareCrypto === 'undefined') return;
     const tag = myTag;
-    if (!confirm(`Sair de ${tag} neste aparelho?\n\nPara entrar de novo você vai precisar da chave de acesso ou das 7 palavras (em "🔑 Chaves e QR"). Guarde-as antes de sair.`)) return;
-    const wipe = confirm(`Apagar também as conversas e os contatos de ${tag} deste aparelho?\n\nOK = apagar\nCancelar = manter guardados (voltam quando você entrar de novo nesta conta)`);
+    if (!confirm(`Sair de ${shortTag(tag)} neste aparelho?\n\nPara entrar de novo você vai precisar da chave de acesso ou das 7 palavras (em "🔑 Chaves e QR"). Guarde-as antes de sair.`)) return;
+    const wipe = confirm(`Apagar também as conversas e os contatos de ${shortTag(tag)} deste aparelho?\n\nOK = apagar\nCancelar = manter guardados (voltam quando você entrar de novo nesta conta)`);
     const acct = accountStoreId(activeProfile);
     try {
       saveChatMessagesToStorage();
@@ -1582,10 +1633,10 @@
     if (qrAreaReset) { qrAreaReset.classList.add('hidden'); qrAreaReset.classList.remove('flex'); qrAreaReset.innerHTML = ''; }
 
     const nameEl = document.getElementById('identity-name-display');
-    if (nameEl) nameEl.textContent = activeProfile.name;
+    if (nameEl) nameEl.textContent = myProfileName() || activeProfile.name;
 
     const tagEl = document.getElementById('identity-tag-display');
-    if (tagEl) tagEl.textContent = myTag;
+    if (tagEl) tagEl.textContent = shortTag(myTag);
 
     // Renderiza chips das 7 palavras de recuperação
     const grid = document.getElementById('seed-words-chips-grid');
@@ -1677,9 +1728,30 @@
     const packet = buildMeshPacket(obj);
     seenPacketIds.add(packet.pktId);
     const sent = publishRawToBrokers(packet);
-    // Sem internet: anúncios importantes seguem pelos vizinhos Bluetooth (que fazem a ponte)
-    if (!sent && packet.meshType !== 'PRESENCE_ANNOUNCE') floodBle(packet, null, 3);
+    // Sem internet: anúncios seguem pelos vizinhos Bluetooth (que fazem a ponte para a
+    // internet). A presença vai no máximo 1x a cada 45 s (cada envio BLE abre uma conexão).
+    if (!sent) {
+      if (packet.meshType !== 'PRESENCE_ANNOUNCE') floodBle(packet, null, 3);
+      else if (Date.now() - lastBlePresenceAt > 45000 && floodBle(packet, null, 2) > 0) lastBlePresenceAt = Date.now();
+    }
     return sent;
+  }
+  let lastBlePresenceAt = 0;
+
+  // Servidores relay (pulseshare-relay) vistos na rede nos últimos 2 min
+  function relayServersSeen() {
+    const now = Date.now();
+    return Object.values(peerRegistry).filter((p) => p && p.clientType === 'server' && now - (p.lastSeen || 0) < 120000);
+  }
+
+  // Bluetooth automático: se a pessoa ligar o Bluetooth (ou der a permissão) depois
+  // de abrir o app, a malha BLE começa sozinha. O nativo também religa ao ligar o rádio.
+  let bleWasAvailable = false;
+  function ensureBleMesh() {
+    if (!myTag || !IS_ANDROID) return;
+    const avail = Native.isBleAvailable();
+    if (avail && !bleWasAvailable) Native.startBleMesh(myTag);
+    bleWasAvailable = avail;
   }
 
   // ==========================================================================
@@ -1815,9 +1887,10 @@
       noLan: LAN_SIGNALS.has(signalType),
       redundant: isChat,
       allRoutes: Boolean(opts.allRoutes),
-      latencySensitive: !isChat && signalType !== 'CHAT_TYPING'
+      latencySensitive: !isChat && signalType !== 'CHAT_TYPING' && !BLE_BULK_SIGNALS.has(signalType)
     });
   }
+  const BLE_BULK_SIGNALS = new Set(['MESH_RELAY_CHUNK', 'MESH_RELAY_ACK']);
 
   // Latência medida pelo CHAT_ACK: alimenta o custo das rotas
   function trackRttSent(tag, msgId, vias) {
@@ -1867,7 +1940,7 @@
 
     const target = packet.to ? normalizeTag(packet.to) : '';
     if (!target || isMyTag(target)) {
-      handleIncomingPacket(packet, hops === 0 ? 'ble' : 'mesh');
+      handleIncomingPacket(packet, hops === 0 ? 'ble' : 'mesh', hops === 0 ? '' : fromTag);
       if (target) return; // era para nós: nada a encaminhar
     } else {
       seenPacketIds.add(pktId);
@@ -1881,7 +1954,8 @@
       return;
     }
     if (brokersOnline() > 0) {
-      publishRawToBrokers(packet);
+      // Marca quem fez a ponte: o destino mostra "🔀 via <eu>"
+      publishRawToBrokers(packet.relayedBy ? packet : { ...packet, relayedBy: myTag });
       relayCounters.bridgedToInternet++;
     } else {
       floodBle(packet, normalizeTag(fromTag), ttl - 1, hops + 1);
@@ -1898,11 +1972,39 @@
     relayCounters.bridgedToBle++;
   }
 
+  // Caminho pelo qual o contato está chegando: direto ou através de outro usuário
+  // (vizinho Bluetooth que faz ponte com a internet, ou servidor relay).
+  const RELAY_PATH_FRESH_MS = 90000;
+  function noteRelayPath(tag, via, relayTag) {
+    const st = statsFor(tag);
+    const relay = normalizeTag(relayTag || '');
+    if (relay && relay !== tag && !isMyTag(relay)) {
+      const changed = !st.relay || st.relay.tag !== relay || Date.now() - st.relay.at > RELAY_PATH_FRESH_MS;
+      // remote: a ponte foi feita do outro lado (chegou pela internet com relayedBy).
+      // Só quem está sem internet sabe por qual vizinho sai ("via Maria"); o destino vê "Malha".
+      st.relay = { tag: relay, at: Date.now(), medium: via === 'mesh' ? 'ble' : 'internet', remote: via !== 'mesh' };
+      if (changed && isContact(tag)) {
+        renderConversationsList();
+        if (activeChatPeer === tag) refreshActiveChatRouteBadge();
+      }
+    } else if (via !== 'mesh') {
+      st.directAt = Date.now();
+    }
+  }
+
+  function activeRelayFor(tag) {
+    const st = statsFor(tag);
+    const r = st.relay;
+    if (!r || Date.now() - r.at > RELAY_PATH_FRESH_MS || (st.directAt || 0) > r.at) return null;
+    return r;
+  }
+
   // Rótulo/selo da rota atual de um contato
   function currentRouteFor(tag) {
     tag = normalizeTag(tag);
     const lan = lanLinks.get(tag);
     if (lan && lan.state === 'open' && lanOpenChannel(tag)) return lan.isLan === false ? 'DIRECT' : 'LAN';
+    if (activeRelayFor(tag)) return 'RELAY';
     const st = statsFor(tag);
     if (st.lanAt && Date.now() - st.lanAt < LAN_FRESH_MS) return 'LAN';
     const best = rankRoutes(tag, 400)[0];
@@ -1917,6 +2019,18 @@
     if (r === 'LAN') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0" title="Mesma rede local (WebRTC direto)">🟢 LAN</span>';
     if (r === 'DIRECT') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0" title="Conexão direta entre os aparelhos (sem servidor no meio)">⚡ Direto</span>';
     if (r === 'BLE') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-sky-500/20 text-sky-400 border border-sky-500/30 shrink-0" title="Bluetooth direto">📶 BLE</span>';
+    if (r === 'RELAY') {
+      const rel = activeRelayFor(tag);
+      const p = peerRegistry[rel.tag] || {};
+      const server = p.clientType === 'server';
+      if (rel.remote && !server) return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0" title="Chegando pela malha: o contato está sem internet e outro usuário leva as mensagens pelo Bluetooth">🔀 Malha</span>';
+      let who = displayNameFor(rel.tag);
+      if (who.length > 12) who = who.slice(0, 11) + '…';
+      const how = server ? `pelo servidor relay ${shortTag(rel.tag)}`
+        : rel.medium === 'ble' ? `pelo Bluetooth até ${shortTag(rel.tag)}, que leva pela internet`
+        : `através de ${shortTag(rel.tag)} (ponte Bluetooth ↔ internet)`;
+      return `<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 shrink-0" title="Rota através de outro usuário: ${escapeHtml(how)}">${server ? '🖥️' : rel.medium === 'ble' ? '📶🔀' : '🔀'} via ${escapeHtml(who)}</span>`;
+    }
     if (r === 'MESH') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 shrink-0" title="Via outros usuários (malha Bluetooth)">🔀 Malha</span>';
     if (r === 'OFF') return '<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-slate-800 text-slate-500 border border-slate-700 shrink-0" title="Sem rota no momento: a mensagem é reenviada quando houver">⚪ Sem rota</span>';
     return `<span class="text-[9px] px-1.5 py-0.2 rounded font-bold bg-slate-800 ${r === 'P2P' ? 'text-slate-300' : 'text-slate-500'} border border-slate-700 shrink-0" title="${r === 'P2P' ? 'Online pela internet' : 'Internet (contato não visto recentemente)'}">🌐 Internet</span>`;
@@ -2281,6 +2395,7 @@
     PUBLIC_WSS_BROKERS.forEach((url) => connectSingleBroker(url));
     if (!presenceTimer) {
       presenceTimer = setInterval(() => {
+        ensureBleMesh();
         announcePresence();
       }, 15000);
     }
@@ -2345,6 +2460,7 @@
       reghash: myRegHash,
       nodeId: nodeId,
       photoHash: (activeProfile && activeProfile.photoHash) || '',
+      profileName: myProfileName(),
       clientType: IS_ANDROID ? 'android' : IS_DESKTOP ? 'desktop' : IS_EXTENSION ? 'extension-app' : 'web',
       relayMode: meshRelay,
       lan: 1 // aceita a rota LAN direta (LAN_OFFER)
@@ -2353,7 +2469,7 @@
 
   const NAME_ONLY_PACKETS = new Set(['PROBE_USER_EXISTS_REPLY', 'PRESENCE_ANNOUNCE', 'USER_REGISTERED', 'NAME_REGISTRY_SYNC', 'ADMIN_RECORDS']);
 
-  function handleIncomingPacket(packet, via = 'mqtt') {
+  function handleIncomingPacket(packet, via = 'mqtt', relayTag = '') {
     if (!packet || !packet.meshType) return;
     const pktId = packet.pktId || packet.packetId;
     if (pktId) {
@@ -2371,7 +2487,15 @@
     // Ninguém fala como "PulseShare" fora dos registros assinados; contas excluídas são ignoradas
     if (senderTag && (senderTag === OFFICIAL_TAG || isAdminDeleted(senderTag))) return;
     if (packet.meshType === 'PRESENCE_ANNOUNCE' && isAdminDeleted(packet.tag)) return;
-    if (via === 'mqtt' && senderTag && peerRegistry[senderTag]) peerRegistry[senderTag].lastSeenMqtt = Date.now();
+    if (via === 'mqtt' && senderTag && peerRegistry[senderTag]) {
+      const pr = peerRegistry[senderTag];
+      pr.lastSeenMqtt = Date.now();
+      // Chegou pela internet porque um vizinho Bluetooth fez a ponte: o contato não tem internet
+      const bridge = packet.relayedBy && peerRegistry[normalizeTag(packet.relayedBy)];
+      if (packet.relayedBy && !(bridge && bridge.clientType === 'server')) pr.bridgedAt = Date.now();
+      else if (!packet.relayedBy) pr.directMqttAt = Date.now();
+    }
+    if (senderTag && myTag && !isMyTag(senderTag)) noteRelayPath(senderTag, via, relayTag || (via === 'mqtt' ? packet.relayedBy : ''));
 
     switch (packet.meshType) {
       case 'PRESENCE_ANNOUNCE': {
@@ -2383,7 +2507,7 @@
           peerRegistry[tag] = {
             ...prev,
             tag: tag,
-            name: displayNameFor(tag),
+            name: usernameOf(tag),
             nodeId: packet.nodeId || packet.senderNodeId || prev.nodeId,
             reghash: packet.reghash || '0x0000',
             // Nunca usa HTML vindo da rede: identicon local (ou a foto já validada)
@@ -2392,10 +2516,16 @@
             createdAt: Number(packet.createdAt) || prev.createdAt || 0,
             nameSince: Number(packet.nameSince) || prev.nameSince || 0,
             relayMode: packet.relayMode !== false,
+            turn: packet.clientType === 'server' ? cleanServerTurn(packet.turn) : null,
             transport: peerTransports[tag] || 'P2P',
             lastSeen: Date.now(),
             lastSeenMqtt: via === 'mqtt' ? Date.now() : prev.lastSeenMqtt
           };
+          const nameChanged = typeof packet.profileName === 'string' && setPeerProfileName(tag, packet.profileName);
+          if (nameChanged && (isContact(tag) || chatMessages[tag])) {
+            renderConversationsList();
+            if (activeChatPeer === tag) { const ne = document.getElementById('chat-contact-name'); if (ne) ne.textContent = displayNameFor(tag); }
+          }
           // Mesma rede? Abre o canal direto (o chat deixa de passar pela internet)
           maybeStartLanLink(tag, packet);
           // Destino apareceu: reenvia o que ficou pendente para ele
@@ -2884,6 +3014,11 @@
         handleRelayChunk(from, transferId, payload);
         break;
       }
+
+      case 'MESH_RELAY_ACK': {
+        handleBleFileAck(from, transferId, payload);
+        break;
+      }
     }
   }
 
@@ -2928,18 +3063,28 @@
     return me.concat(Object.values(peerRegistry).slice(0, 50).map((p) => ({ tag: p.tag, lastSeen: p.lastSeen, status: 'online', regHash: p.reghash })));
   }
 
+  // TURN anunciado por servidores relay (pulseshare-relay com coturn): credenciais
+  // temporárias na presença. Só é usado se a conexão direta não abrir (o ICE prefere
+  // candidatos diretos) e os dados continuam cifrados (DTLS) de ponta a ponta.
+  function cleanServerTurn(t) {
+    if (!t || !Array.isArray(t.urls) || typeof t.username !== 'string' || typeof t.credential !== 'string') return null;
+    const urls = t.urls.filter((u) => typeof u === 'string' && /^turns?:[a-z0-9.\-\[\]:]+(\?transport=(udp|tcp))?$/i.test(u) && u.length < 200).slice(0, 4);
+    const exp = Number(t.exp) || 0;
+    if (!urls.length || t.username.length > 120 || t.credential.length > 120 || exp * 1000 < Date.now() + 60000) return null;
+    return { urls, username: t.username, credential: t.credential, exp };
+  }
+
   function getIceServers() {
+    const list = [...DEFAULT_ICE_SERVERS];
     if (turnConfig && turnConfig.url) {
-      return [
-        ...DEFAULT_ICE_SERVERS,
-        {
-          urls: turnConfig.url,
-          username: turnConfig.username,
-          credential: turnConfig.credential
-        }
-      ];
+      list.push({ urls: turnConfig.url, username: turnConfig.username, credential: turnConfig.credential });
     }
-    return DEFAULT_ICE_SERVERS;
+    relayServersSeen()
+      .filter((p) => p.turn && p.turn.exp * 1000 > Date.now() + 60000)
+      .sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
+      .slice(0, 2)
+      .forEach((p) => list.push({ urls: p.turn.urls, username: p.turn.username, credential: p.turn.credential }));
+    return list;
   }
 
   function uint8ArrayToBase64(bytes) {
@@ -3420,6 +3565,31 @@
     if (now) write(); else roomsSaveTimer = setTimeout(write, 400);
   }
 
+  // Links excluídos: quem abrir de novo recebe "link revogado" (guarda 1 ano, até 500)
+  const REVOKED_LINKS_KEY = 'ps_revoked_links_v1';
+  function loadRevokedLinks() {
+    try { return JSON.parse(localStorage.getItem(REVOKED_LINKS_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function markLinkRevoked(shareId) {
+    if (liveAccountChanged()) return;
+    const map = loadRevokedLinks();
+    map[shareId] = Date.now();
+    const cut = Date.now() - 365 * 86400000;
+    const ids = Object.keys(map).filter((k) => map[k] > cut).sort((a, b) => map[b] - map[a]).slice(0, 500);
+    const out = {};
+    ids.forEach((k) => { out[k] = map[k]; });
+    try { localStorage.setItem(REVOKED_LINKS_KEY, JSON.stringify(out)); } catch (e) {}
+  }
+  function isLinkRevoked(shareId) { return Boolean(shareId && loadRevokedLinks()[shareId]); }
+  const REVOKED_REPLY = { error: 'REVOKED', message: 'Este link foi revogado por quem compartilhou.' };
+  // Avisa na hora quem está com o link aberto (visto nos últimos 10 min)
+  function notifyRoomRevoked(room, bad) {
+    const now = Date.now();
+    Object.entries(room.visitors || {}).forEach(([tag, v]) => {
+      if (now - (v.lastSeen || 0) < ROOM_VISITOR_FRESH_MS) sendSignal(tag, room.shareId, 'PACK_INFO_RESPONSE', { ok: false, ...bad });
+    });
+  }
+
   function roomKeyFor(shareId) { return '@linkchat_' + String(shareId || '').replace(/^ps-/, ''); }
   function isRoomKey(tag) { return /^@linkchat_[0-9a-f]{8}$/.test(String(tag || '')); }
   function roomByKey(key) {
@@ -3450,7 +3620,7 @@
 
   function roomUnavailable(room) {
     if (!room) return { error: 'NOT_FOUND', message: 'Link não encontrado ou encerrado.' };
-    if (room.status === 'cancelled') return { error: 'CANCELLED', message: 'O link foi encerrado por quem compartilhou.' };
+    if (room.status === 'cancelled') return { error: 'CANCELLED', message: 'Este link foi revogado por quem compartilhou.' };
     if (room.expiresAt && Date.now() >= room.expiresAt) return { error: 'EXPIRED', message: 'Este link expirou.' };
     return null;
   }
@@ -3490,6 +3660,7 @@
       createdAt: Date.now(),
       expiresAt: opts.expiresMin > 0 ? Date.now() + opts.expiresMin * 60000 : null,
       allowZip: opts.allowZip !== false,
+      keepChat: opts.keepChat === true, // false: cada vez que a pessoa abre o link é uma conversa nova
       files: [],
       nextFileId: 0,
       visitors: {},
@@ -3544,7 +3715,7 @@
         if (m.deleted) { h.deleted = true; return h; }
         if (m.text) h.text = String(m.text).slice(0, 2000);
         if (m.location) h.location = m.location;
-        if (m.voice) h.voice = { duration: m.voice.duration };
+        if (m.voice) h.voice = { duration: m.voice.duration, waveform: m.voice.waveform || [] };
         const meta = m.media || {};
         if (mine && m.roomFileId) h.media = { fileId: m.roomFileId, name: meta.fileName || meta.name || 'arquivo', size: meta.fileSize || meta.size || 0, type: meta.fileType || meta.type || '' };
         else if (!mine && (m.media || m.transferId)) h.media = { transferId: m.transferId || meta.transferId, name: meta.fileName || meta.name || 'arquivo', size: meta.fileSize || meta.size || 0, type: meta.fileType || meta.type || '' };
@@ -3559,7 +3730,12 @@
 
   async function handlePackInfoRequest(from, transferId, payload) {
     const room = linkRooms[payload.shareId];
-    if (!room || !isLinkVisitor(from)) return; // link de outro aparelho: fica quieto
+    if (!room) {
+      // Link que eu excluí: avisa que foi revogado (de outro aparelho: fica quieto)
+      if (isLinkVisitor(from) && isLinkRevoked(payload.shareId)) sendSignal(from, transferId || payload.shareId, 'PACK_INFO_RESPONSE', { ok: false, ...REVOKED_REPLY });
+      return;
+    }
+    if (!isLinkVisitor(from)) return;
     const tid = transferId || room.shareId;
     const bad = roomUnavailable(room);
     if (bad) { sendSignal(from, tid, 'PACK_INFO_RESPONSE', { ok: false, ...bad }); return; }
@@ -3577,7 +3753,7 @@
         saveLinkRooms();
         setTimeout(() => sendSignal(from, tid, 'PACK_INFO_RESPONSE', {
           ok: false, error: 'PASSWORD_REQUIRED', hasPassword: true, passwordSalt: room.passwordSalt,
-          nonce: v.nonce, wrong: Boolean(payload.proof), ownerTag: myTag
+          nonce: v.nonce, wrong: Boolean(payload.proof), ownerTag: myTag, keepChat: room.keepChat !== false
         }), wait);
         return;
       }
@@ -3597,6 +3773,7 @@
       files,
       hasPassword: false, // já conferida aqui (o portal não recebe o hash)
       allowZip: room.allowZip !== false,
+      keepChat: room.keepChat !== false, // salas antigas (sem o campo) mantinham a conversa
       expiresAt: room.expiresAt,
       ownerTag: myTag,
       ownerName: displayNameFor(myTag),
@@ -3608,7 +3785,10 @@
 
   async function handlePackFilePull(from, transferId, payload, viaRelay) {
     const room = linkRooms[payload.shareId];
-    if (!room) return;
+    if (!room) {
+      if (isLinkVisitor(from) && isLinkRevoked(payload.shareId)) sendSignal(from, transferId, 'FILE_REJECT', { fileId: payload.fileId, error: REVOKED_REPLY.message, gone: true });
+      return;
+    }
     const fileId = payload.fileId || 'f-1';
     const bad = roomUnavailable(room);
     if (bad) { sendSignal(from, transferId, 'FILE_REJECT', { fileId, error: bad.message }); return; }
@@ -3705,7 +3885,7 @@
     captureOutgoingChatMedia(tid, fileItem).then(() => rememberOutgoingSource(tid, fileItem)).then(() => scheduleChatMediaRerender());
     // O visitante baixa pelo fileId (PACK_FILE_PULL): cada download tem a sua conexão
     const payload = { id, senderTag: myTag, text: text || '', msgType, type: msgType, timestamp: ts, shareId: room.shareId, media: { fileId, name, size, type: mime } };
-    if (voice) payload.voiceDuration = voice.duration;
+    if (voice) { payload.voiceDuration = voice.duration; payload.waveform = voice.waveform; }
     roomBroadcast(room, 'CHAT_MESSAGE', id, payload);
     renderChatMessages(room.key);
     renderConversationsList();
@@ -3784,7 +3964,7 @@
     const files = (room.files || []).filter((f) => !f.removed);
     const visitors = Object.values(room.visitors || {}).filter((v) => v.ok).length;
     document.getElementById('link-share-meta').textContent =
-      `${room.expiresAt ? 'Expira em ' + roomExpiryText(room, true) : 'Sem expiração'}${roomUnavailable(room) ? ' (' + roomExpiryText(room) + ')' : ''} • ${room.passwordHash ? '🔑 com senha' : 'sem senha'} • ${files.length} arquivo(s) • ${visitors} visitante(s) • ${room.downloads || 0} download(s)`;
+      `${room.expiresAt ? 'Expira em ' + roomExpiryText(room, true) : 'Sem expiração'}${roomUnavailable(room) ? ' (' + roomExpiryText(room) + ')' : ''} • ${room.passwordHash ? '🔑 com senha' : 'sem senha'} • ${room.keepChat !== false ? '💬 conversa mantida' : '💬 conversa nova a cada acesso'} • ${files.length} arquivo(s) • ${visitors} visitante(s) • ${room.downloads || 0} download(s)`;
     document.getElementById('btn-link-share-stop').classList.toggle('hidden', Boolean(roomUnavailable(room)));
     modal.classList.remove('hidden');
   }
@@ -3795,6 +3975,8 @@
   }
 
   function deleteLinkRoom(room) {
+    markLinkRevoked(room.shareId);
+    notifyRoomRevoked(room, REVOKED_REPLY);
     (chatMessages[room.key] || []).forEach((m) => discardMessageMedia(m));
     (room.files || []).forEach((f) => forgetOutgoingSource(f.transferId));
     Object.values(transfers).forEach((t) => {
@@ -3808,26 +3990,40 @@
     renderConversationsList();
   }
 
+  function openNewLinkModal(title) {
+    document.getElementById('input-new-link-title').value = title || '';
+    document.getElementById('input-new-link-password').value = '';
+    document.getElementById('input-new-link-keep-chat').checked = false;
+    document.getElementById('modal-new-link').classList.remove('hidden');
+    setTimeout(() => document.getElementById('input-new-link-title').focus(), 150);
+  }
+
   function initLinkRoomEvents() {
     const fab = document.getElementById('btn-fab-new-link');
-    if (fab) fab.onclick = () => {
-      document.getElementById('input-new-link-title').value = '';
-      document.getElementById('input-new-link-password').value = '';
-      document.getElementById('modal-new-link').classList.remove('hidden');
-      setTimeout(() => document.getElementById('input-new-link-title').focus(), 150);
-    };
-    document.getElementById('btn-close-new-link').onclick = () => document.getElementById('modal-new-link').classList.add('hidden');
+    if (fab) fab.onclick = () => { pendingLinkShareFiles = null; openNewLinkModal(''); };
+    document.getElementById('btn-close-new-link').onclick = () => { pendingLinkShareFiles = null; document.getElementById('modal-new-link').classList.add('hidden'); };
     document.getElementById('btn-create-new-link').onclick = async () => {
       const title = document.getElementById('input-new-link-title').value.trim();
       if (!title) { Native.toast('Escreva uma descrição para o link.'); document.getElementById('input-new-link-title').focus(); return; }
       const password = document.getElementById('input-new-link-password').value.trim();
       const expMin = parseInt(document.getElementById('select-new-link-expiration').value || '0', 10);
       const allowZip = document.getElementById('input-new-link-allow-zip').checked;
-      const room = await createLinkRoom({ title, password, expiresMin: expMin, allowZip });
+      const keepChat = document.getElementById('input-new-link-keep-chat').checked;
+      const room = await createLinkRoom({ title, password, expiresMin: expMin, allowZip, keepChat });
       document.getElementById('modal-new-link').classList.add('hidden');
+      const pend = pendingLinkShareFiles;
+      pendingLinkShareFiles = null;
       renderConversationsList();
+      switchTab('chat');
       openActiveChat(room.key);
-      Native.toast('Chat de link criado! Envie arquivos e toque em Compartilhar.');
+      if (pend) {
+        pend.texts.forEach((t) => sendChatMessage(room.key, t));
+        pend.files.forEach((f) => queueOutgoingFile(room.key, f, ''));
+        // Arquivos já no link: abre direto as opções de compartilhar
+        setTimeout(() => openLinkShareSheet(room.key), 400);
+      } else {
+        Native.toast('Chat de link criado! Envie arquivos e toque em Compartilhar.');
+      }
     };
     document.getElementById('btn-chat-link-share').onclick = () => { if (activeChatPeer) openLinkShareSheet(activeChatPeer); };
     document.getElementById('btn-close-link-share').onclick = () => closeLinkShareSheet();
@@ -3853,6 +4049,7 @@
       const room = linkSheetRoom;
       if (!room || !confirm('Encerrar este link? Quem tiver o link não consegue mais abrir o chat nem baixar. As mensagens continuam aqui.')) return;
       room.status = 'cancelled';
+      notifyRoomRevoked(room, roomUnavailable(room));
       Object.values(transfers).forEach((t) => {
         if (t.shareId === room.shareId && ['connecting', 'transferring'].includes(t.status)) t.cancelled = true;
       });
@@ -3914,9 +4111,134 @@
     }
   }
 
+  // --------------------------------------------------------------------------
+  // Arquivo pelo Bluetooth (2026-11-14): sem internet dos dois lados (ou com o
+  // destino atrás de uma ponte Bluetooth), o WebRTC não tem por onde conectar.
+  // O arquivo vai em blocos de 1,8 KB pelos quadros BLE (MESH_RELAY_CHUNK com ble:1),
+  // em janela de 8 blocos; o destino confirma (MESH_RELAY_ACK {have}) e o que se
+  // perder é reenviado. Lento (Bluetooth): limite de 5 MB.
+  // --------------------------------------------------------------------------
+  const BLE_FILE_CHUNK = 1800; // quadro BLE ≤ 3500 bytes com tags longas e relayedBy
+  const BLE_FILE_WINDOW = 8;
+  const BLE_FILE_MAX = 5 * 1024 * 1024;
+  const bleFileSends = new Map(); // transferId -> { have, wake, target }
+
+  function isBehindBridge(tag) {
+    const p = peerRegistry[normalizeTag(tag)];
+    const now = Date.now();
+    return Boolean(p && p.bridgedAt && now - p.bridgedAt < 3 * 60 * 1000 &&
+      !(p.directMqttAt && now - p.directMqttAt < MQTT_PEER_FRESH_MS));
+  }
+
+  // O arquivo precisa ir pelo Bluetooth (sem caminho de internet entre os dois)?
+  function useBleFileRoute(tag) {
+    tag = normalizeTag(tag);
+    if (!tag || lanOpenChannel(tag)) return false;
+    if (brokersOnline() === 0) return Native.isBleAvailable() && (isBleNeighbor(tag) || freshBleNeighbors().length > 0);
+    if (isBehindBridge(tag)) return true;
+    return isBleNeighbor(tag) && !isOnInternet(tag);
+  }
+
+  async function startBleFileSend(transferId, targetTag) {
+    const tr = transfers[transferId];
+    const fileItem = stagedFilesMap.get(transferId) || (tr && tr.fileItem);
+    if (!tr || !fileItem) {
+      sendSignal(targetTag, transferId, 'FILE_REJECT', { error: 'Arquivo não está mais disponível no remetente.' });
+      if (tr) setTransferStatus(tr, 'error', { error: 'Arquivo não encontrado. Selecione-o novamente.' });
+      return;
+    }
+    if (bleFileSends.has(transferId) || tr.status === 'completed') return; // aceite repetido
+    const total = tr.totalBytes || fileItem.size || 0;
+    if (total > BLE_FILE_MAX) {
+      const msg = `Arquivo grande demais para ir pelo Bluetooth (máx. ${formatBytes(BLE_FILE_MAX)}). Tente quando os dois tiverem internet ou a mesma rede Wi-Fi.`;
+      sendSignal(targetTag, transferId, 'FILE_REJECT', { error: msg });
+      setTransferStatus(tr, 'error', { error: msg });
+      return;
+    }
+    const oldPc = activePeerConnections.get(transferId);
+    if (oldPc) { try { oldPc.close(); } catch (e) {} activePeerConnections.delete(transferId); }
+    const st = { have: 0, wake: null, target: normalizeTag(targetTag) };
+    bleFileSends.set(transferId, st);
+    tr.route = 'BLE';
+    tr.cancelled = false;
+    tr.startTime = Date.now();
+    setTransferStatus(tr, 'transferring');
+    Native.startKeepAlive('Enviando ' + tr.fileName + ' pelo Bluetooth');
+    const N = Math.max(1, Math.ceil(total / BLE_FILE_CHUNK));
+    const fileMeta = { name: String(tr.fileName || "arquivo").slice(0, 80), size: total, type: tr.fileType };
+    // Lê o arquivo em blocos de 64 KB (menos idas à ponte nativa) e fatia em 2 KB
+    let cache = { off: -1, bytes: null };
+    const readChunk = async (seq) => {
+      const off = (seq - 1) * BLE_FILE_CHUNK;
+      const len = Math.min(BLE_FILE_CHUNK, total - off);
+      if (!total) return new Uint8Array(0);
+      if (!(cache.bytes && off >= cache.off && off + len <= cache.off + cache.bytes.length)) {
+        const blockOff = off - (off % (32 * BLE_FILE_CHUNK));
+        const bytes = await readFileSlice(fileItem, blockOff, Math.min(32 * BLE_FILE_CHUNK, total - blockOff));
+        if (!bytes || !bytes.length) throw new Error('Falha ao ler o arquivo');
+        cache = { off: blockOff, bytes };
+      }
+      return cache.bytes.subarray(off - cache.off, off - cache.off + len);
+    };
+    const sendChunk = async (seq) => {
+      const bytes = await readChunk(seq);
+      sendSignal(targetTag, transferId, 'MESH_RELAY_CHUNK', {
+        transferId, chunkSeq: seq, totalChunks: N, totalBytes: total, isEof: seq === N, ble: 1,
+        chunkBase64: bytes.length ? uint8ArrayToBase64(bytes) : '',
+        ...(seq === 1 ? { fileMeta } : {})
+      });
+    };
+    let next = 1;
+    let lastHave = 0;
+    let lastProgress = Date.now();
+    let stalls = 0;
+    try {
+      while (st.have < N) {
+        if (tr.cancelled) throw new Error('Transferência cancelada');
+        while (next <= N && next - st.have <= BLE_FILE_WINDOW) { await sendChunk(next); next++; }
+        await new Promise((r) => { st.wake = r; setTimeout(r, 1500); });
+        st.wake = null;
+        if (st.have > lastHave) {
+          lastHave = st.have;
+          lastProgress = Date.now();
+          stalls = 0;
+          updateTransferProgress(tr, Math.min(total, st.have * BLE_FILE_CHUNK));
+        } else if (st.dupAcks >= 2 && next > st.have + 1) {
+          // O destino avisou de um buraco (confirmações repetidas): reenvia já
+          st.dupAcks = 0;
+          next = st.have + 1;
+        } else if (Date.now() - lastProgress > 5000) {
+          // Nada confirmado em 5 s: reenvia a partir do último bloco confirmado
+          if (++stalls > 8) throw new Error('O Bluetooth parou de responder. Aproxime os aparelhos e tente de novo.');
+          next = st.have + 1;
+          lastProgress = Date.now();
+        }
+      }
+      finishSend(tr, null, transferId, targetTag);
+    } catch (err) {
+      setTransferStatus(tr, tr.cancelled ? 'cancelled' : 'error', { error: err.message });
+      Native.stopKeepAlive();
+    } finally {
+      bleFileSends.delete(transferId);
+    }
+  }
+
+  function handleBleFileAck(from, transferId, payload) {
+    const st = bleFileSends.get(transferId);
+    if (!st || normalizeTag(from) !== st.target) return;
+    const have = Number(payload && payload.have) || 0;
+    if (have > st.have) { st.have = have; st.dupAcks = 0; } else st.dupAcks = (st.dupAcks || 0) + 1;
+    if (st.wake) st.wake();
+  }
+
   // Recebe um arquivo enviado em blocos pela malha (remetente atrás de CGNAT)
   function handleRelayChunk(from, transferId, payload) {
     const tr = transfers[transferId];
+    if (payload && payload.ble && tr && tr.type === 'receive' && tr.status === 'completed') {
+      // Já terminou: o remetente não viu a confirmação final
+      sendSignal(from, transferId, 'MESH_RELAY_ACK', { have: Number(payload.totalChunks) || 0 });
+      return;
+    }
     // Só aceita dados de uma transferência que ESTE dispositivo aceitou (sem push não solicitado)
     if (!tr || tr.type !== 'receive' || !['connecting', 'transferring'].includes(tr.status)) return;
     if (payload.fileMeta && payload.fileMeta.name && tr.fileName === 'arquivo_recebido') tr.fileName = payload.fileMeta.name;
@@ -3928,11 +4250,24 @@
       tr.status = 'transferring';
     }
     if (payload.totalChunks) st.total = Math.max(st.total, payload.totalChunks);
-    if (typeof payload.chunkSeq === 'number' && !st.chunks.has(payload.chunkSeq)) {
+    const dup = typeof payload.chunkSeq === 'number' && st.chunks.has(payload.chunkSeq);
+    if (typeof payload.chunkSeq === 'number' && !dup) {
       const bytes = payload.chunkBase64 ? base64ToUint8Array(payload.chunkBase64) : new Uint8Array(0);
       st.chunks.set(payload.chunkSeq, bytes);
       st.received += bytes.length;
       updateTransferProgress(tr, st.received, payload.totalBytes);
+    }
+    if (payload.ble) {
+      // Envio pelo Bluetooth: confirma quantos blocos seguidos já chegaram (o remetente
+      // manda em janela e reenvia a partir daí se algo se perder)
+      st.have = st.have || 0;
+      while (st.chunks.has(st.have + 1)) st.have++;
+      // Buraco (bloco perdido): avisa logo, no máximo a cada 0,6 s, para o reenvio ser rápido
+      const gap = payload.chunkSeq > st.have + 1 && Date.now() - (st.gapAckAt || 0) > 600;
+      if (gap) st.gapAckAt = Date.now();
+      if (dup || gap || payload.isEof || payload.chunkSeq % 4 === 0 || (st.total && st.have >= st.total)) {
+        sendSignal(from, transferId, 'MESH_RELAY_ACK', { have: st.have });
+      }
     }
     if (st.total && st.chunks.size >= st.total) {
       relayIncoming.delete(transferId);
@@ -3952,12 +4287,17 @@
     return String(tag || '').startsWith('@link_');
   }
 
+  // Nome exibido: apelido dado pela pessoa (contato renomeado) → nome do perfil
+  // anunciado pelo contato → nome de usuário (sem o sufixo _hash6).
   function displayNameFor(tag) {
+    tag = normalizeTag(tag);
     if (isOfficialTag(tag)) return 'PulseShare';
     if (isRoomKey(tag)) { const r = roomByKey(tag); return r ? '🔗 ' + r.title : 'Link'; }
     if (isLinkVisitor(tag)) return 'Visitante do link ' + tag.slice(6, 10);
-    const parts = splitTag(tag);
-    return parts ? parts.name : tag.replace(/^@/, '').split('_')[0];
+    const c = getContacts()[tag];
+    const user = usernameOf(tag);
+    if (c && c.name && normalizeTag(c.name) !== tag && String(c.name).toLowerCase() !== user && c.name !== shortTag(tag)) return c.name;
+    return peerProfileNames[tag] || user;
   }
 
   function updateChatHeaderTyping() {
@@ -3966,7 +4306,7 @@
     if (isRoomKey(activeChatPeer)) { refreshRoomHeader(); return; }
     const st = peerTypingState[activeChatPeer];
     const typing = st && st.status && st.status !== 'idle' && Date.now() - st.at < 6000;
-    el.textContent = typing ? (st.status === 'recording' ? '🎤 gravando áudio...' : 'digitando...') : activeChatPeer;
+    el.textContent = typing ? (st.status === 'recording' ? '🎤 gravando áudio...' : 'digitando...') : shortTag(activeChatPeer);
     if (typing) setTimeout(updateChatHeaderTyping, 6000);
   }
 
@@ -4226,7 +4566,9 @@
         renderTransfers();
       }
     }
-    startSenderWebRTC(tid, from);
+    // Sem caminho de internet entre os dois (Bluetooth / ponte): o arquivo vai pelo Bluetooth
+    if (useBleFileRoute(from)) startBleFileSend(tid, from);
+    else startSenderWebRTC(tid, from);
   }
 
   // Remetente: guarda a própria mídia enviada para mostrar a pré-visualização também do seu lado
@@ -4399,6 +4741,16 @@
         existing.chatMsgId = msgId;
       }
       renderTransfers();
+      // O FILE_OFFER pode se perder (Bluetooth/malha): foto/vídeo/áudio pequeno de um
+      // contato é aceito pela própria mensagem se a oferta não chegar em 4 s
+      const offerKind = chatMediaKind(fileMeta.type || fileMeta.fileType, fileMeta.name || fileMeta.fileName);
+      const offerSize = Number(fileMeta.size || fileMeta.fileSize || 0);
+      if ((isContact(from) || isLinkVisitor(from)) && isPreviewKind(offerKind) && offerSize > 0 && offerSize <= CHAT_PREVIEW_AUTO_MAX) {
+        setTimeout(() => {
+          const t = transfers[mediaTid];
+          if (t && t.status === 'awaiting_accept' && !t.autoTried) { t.autoTried = true; acceptIncomingTransfer(mediaTid); }
+        }, 4000);
+      }
     }
 
     const preview = incomingLocation ? '📍 Localização' : incomingVoice ? `🎤 Mensagem de voz (${formatDuration(incomingVoice.duration)})`
@@ -4624,9 +4976,57 @@
 
   // Registra um arquivo a enviar (chat ou envio direto) e dispara a oferta
   // extra.voice = { duration, waveform } → mensagem de voz gravada no app
+  // Foto que vai pelo Bluetooth (sem internet entre os dois): reduz antes, como o bitchat.
+  // Foto de câmera de 3 MB vira uns 200–400 KB (lado maior 1600 px, JPEG 80%).
+  const BLE_IMAGE_SHRINK_MIN = 350 * 1024;
+  const BLE_IMAGE_MAX_SIDE = 1600;
+  async function shrinkImageForBle(fileItem) {
+    let src = fileItem instanceof Blob ? fileItem : (fileItem.file instanceof Blob ? fileItem.file : null);
+    const size = fileItem.size || (src && src.size) || 0;
+    if (!src) {
+      if (size > CHAT_PREVIEW_AUTO_MAX) return null;
+      const parts = [];
+      for (let off = 0; off < size; off += 1024 * 1024) {
+        const bytes = await readFileSlice(fileItem, off, Math.min(1024 * 1024, size - off));
+        if (!bytes || !bytes.length) return null;
+        parts.push(bytes.slice ? bytes.slice() : bytes);
+      }
+      src = new Blob(parts, { type: fileItem.mimeType || fileItem.type || 'image/jpeg' });
+    }
+    const bmp = await createImageBitmap(src, { imageOrientation: 'from-image' });
+    const scale = Math.min(1, BLE_IMAGE_MAX_SIDE / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; // PNG com transparência vira fundo branco no JPEG
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(bmp, 0, 0, w, h);
+    try { bmp.close(); } catch (e) {}
+    const out = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.8));
+    if (!out || out.size >= size) return null;
+    const name = String(fileItem.name || 'foto').replace(/\.[^.]+$/, '') + '.jpg';
+    return { name, size: out.size, mimeType: 'image/jpeg', file: new File([out], name, { type: 'image/jpeg' }) };
+  }
+
   function queueOutgoingFile(target, fileItem, text, extra) {
     const room = roomByKey(normalizeTag(target));
     if (room) { roomAddFile(room, fileItem, text, extra); return; }
+    const mime = String(fileItem.mimeType || fileItem.type || '').toLowerCase();
+    if (!(extra && extra.noShrink) && /^image\/(jpeg|jpg|png|webp)$/.test(mime) &&
+        (fileItem.size || 0) > BLE_IMAGE_SHRINK_MIN && useBleFileRoute(target)) {
+      shrinkImageForBle(fileItem).then((small) => {
+        if (small) Native.toast(`Foto reduzida para ir pelo Bluetooth (${formatBytes(fileItem.size || 0)} → ${formatBytes(small.size)})`);
+        queueOutgoingFileNow(target, small || fileItem, text, extra);
+      }).catch(() => queueOutgoingFileNow(target, fileItem, text, extra));
+      return;
+    }
+    queueOutgoingFileNow(target, fileItem, text, extra);
+  }
+
+  function queueOutgoingFileNow(target, fileItem, text, extra) {
     const tid = 'chatmedia-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
     stagedFilesMap.set(tid, fileItem);
     transfers[tid] = {
@@ -4803,7 +5203,7 @@
       const peer = peerRegistry[tag];
       const official = isOfficialTag(tag);
       const room = roomByKey(tag);
-      const name = escapeHtml(official ? 'PulseShare' : room ? room.title : (contact && contact.name) || (peer && peer.name) || displayNameFor(tag));
+      const name = escapeHtml(displayNameFor(tag));
       const avatar = official ? officialAvatarHtml() : room ? roomAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(tag, 56) : '');
       const msgs = chatMessages[tag] || [];
       const lastMsg = msgs.length ? msgs[msgs.length - 1] : null;
@@ -4861,6 +5261,7 @@
     // Eventos de clique nas conversas
     listEl.querySelectorAll('[data-chat-peer]').forEach(row => {
       const tag = row.getAttribute('data-chat-peer');
+      row.classList.toggle('chat-row-active', tag === activeChatPeer);
       row.onclick = (e) => {
         if (e.target.closest('[data-open-contact-options]')) return;
         if (row._psLongPressed) { row._psLongPressed = false; return; }
@@ -4910,7 +5311,7 @@
     const contacts = (typeof PulseShareCrypto !== 'undefined') ? PulseShareCrypto.ProfilesManager.getContacts() : {};
     const contact = contacts[peerTag];
     const peer = peerRegistry[peerTag];
-    const name = official ? 'PulseShare' : room ? room.title : (contact && contact.name) || (peer && peer.name) || displayNameFor(peerTag);
+    const name = displayNameFor(peerTag);
     const avatar = official ? officialAvatarHtml() : room ? roomAvatarHtml() : (contact && contact.avatar) || (peer && peer.avatar) || (typeof PulseShareCrypto !== 'undefined' ? PulseShareCrypto.generateIdenticonSvg(peerTag, 40) : '');
     const avatarSlot = document.getElementById('chat-contact-avatar');
     if (avatarSlot) avatarSlot.innerHTML = avatar;
@@ -4919,7 +5320,7 @@
     if (nameEl) nameEl.textContent = name;
 
     const tagEl = document.getElementById('chat-contact-tag');
-    if (tagEl) tagEl.textContent = official ? 'Mensagens oficiais' : peerTag;
+    if (tagEl) tagEl.textContent = official ? 'Mensagens oficiais' : shortTag(peerTag);
 
     refreshActiveChatRouteBadge();
     refreshContactRequestBanner();
@@ -4933,6 +5334,11 @@
 
     const activePane = document.getElementById('chat-active-conversation-pane');
     if (activePane) activePane.classList.add('active');
+    // Tela larga: a conversa aberta fica destacada na lista e o perfil acompanha a troca
+    document.querySelectorAll('#chat-conversations-list [data-chat-peer]').forEach((row) => {
+      row.classList.toggle('chat-row-active', row.getAttribute('data-chat-peer') === peerTag);
+    });
+    if (isWideLayout() && isPeerProfileOpen() && peerProfileTag !== peerTag) openPeerProfile(peerTag);
   }
 
   // Selo da rota atual no cabeçalho da conversa
@@ -4964,7 +5370,7 @@
     if (isMyTag(tag)) return false;
     const peer = peerRegistry[tag];
     PulseShareCrypto.ProfilesManager.saveContact(tag, {
-      name: name || (peer && peer.name) || displayNameFor(tag),
+      name: name || usernameOf(tag),
       avatar: (peer && peer.avatar) || PulseShareCrypto.generateIdenticonSvg(tag, 64)
     });
     setBlocked(tag, false);
@@ -4977,7 +5383,16 @@
 
   window.openActiveChat = (tag) => openActiveChat(tag);
 
+  // Tela larga (computador): lista + conversa lado a lado, perfil como painel à direita
+  const WIDE_QUERY = window.matchMedia ? window.matchMedia('(min-width: 900px)') : null;
+  function isWideLayout() { return Boolean(WIDE_QUERY && WIDE_QUERY.matches); }
+  function isPeerProfileOpen() {
+    const pm = document.getElementById('modal-peer-profile');
+    return Boolean(pm && !pm.classList.contains('hidden'));
+  }
+
   function closeActiveChat() {
+    if (isPeerProfileOpen()) closePeerProfile();
     if (voiceRec) stopVoiceRecording(false);
     toggleAttachMenu(false);
     activeChatPeer = null;
@@ -5227,7 +5642,8 @@
       .find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
     let rec;
     try {
-      rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+      // 16 kbit/s: voz clara e leve (vai bem também pelo Bluetooth)
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 16000 } : undefined);
     } catch (e) {
       stream.getTracks().forEach((tr) => tr.stop());
       voiceRec = null;
@@ -5314,6 +5730,13 @@
     if (kind === 'location') { openLocationModal(); return; }
     pendingChatAttachment = true;
     Native.pickFiles(kind === 'media' ? 'image/*,video/*' : kind === 'audio' ? 'audio/*' : '');
+  }
+
+  function autoGrowChatInput() {
+    const el = document.getElementById('input-chat-text');
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight + 2, 140) + 'px';
   }
 
   function updateComposeButtons() {
@@ -5404,7 +5827,7 @@
   function formatDate(ts) {
     try { return new Date(ts).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' }); } catch (e) { return ''; }
   }
-  const CLIENT_LABELS = { android: '📱 Celular Android', desktop: '💻 Computador (Linux)', 'extension-app': '🧩 Extensão do Chrome', web: '🌐 Navegador' };
+  const CLIENT_LABELS = { server: '🖥️ Servidor relay', android: '📱 Celular Android', desktop: '💻 Computador (Linux)', 'extension-app': '🧩 Extensão do Chrome', web: '🌐 Navegador' };
 
   function openPeerProfile(tag) {
     tag = normalizeTag(tag);
@@ -5441,7 +5864,7 @@
     const official = isOfficialTag(tag);
     const c = getContacts()[tag];
     const p = peerRegistry[tag] || {};
-    const name = official ? 'PulseShare' : (c && c.name && c.name !== tag ? c.name : '') || p.name || displayNameFor(tag);
+    const name = displayNameFor(tag);
     const now = Date.now();
     const parts = splitTag(tag);
     const reg = parts && nameRegistry[parts.name] && nameRegistry[parts.name].s === parts.suffix ? nameRegistry[parts.name] : null;
@@ -5469,7 +5892,8 @@
       profileRow('Tipo', '✔ Mensagens oficiais (somente leitura)'),
       profileRow('Mensagens recebidas', String(msgs.length))
     ] : [
-      profileRow('Usuário', `<span class="font-mono">${escapeHtml(tag)}</span>`),
+      profileRow('Usuário', `<span class="font-mono">${escapeHtml(shortTag(tag))}</span>`),
+      profileRow('Nome do perfil', escapeHtml(peerProfileNames[tag] || '')),
       profileRow('Situação', contact ? '👤 Nos seus contatos' : isLinkVisitor(tag) ? '🔗 Visitante de link' : '✉️ Fora dos contatos'),
       profileRow('Listas', lists.map(escapeHtml).join(', ')),
       profileRow('Aparelho', CLIENT_LABELS[p.clientType] || ''),
@@ -5488,7 +5912,7 @@
         <button type="button" id="peer-profile-photo" title="Ver foto em tamanho real" class="w-32 h-32 rounded-full overflow-hidden border-2 border-slate-700 bg-slate-800 shadow-xl active:scale-95 transition-all cursor-zoom-in" style="width:8.5rem;height:8.5rem">${avatarFor(tag, 128)}</button>
         <div class="min-w-0 max-w-full">
           <h2 class="text-xl font-extrabold text-white truncate" style="font-size:1.35rem">${escapeHtml(name)}</h2>
-          ${official ? '' : `<button type="button" data-profile-action="copy" class="text-xs font-mono text-slate-400 hover:text-indigo-300 truncate max-w-full">${escapeHtml(tag)} 📋</button>`}
+          ${official ? '' : `<button type="button" data-profile-action="copy" class="text-xs font-mono text-slate-400 hover:text-indigo-300 truncate max-w-full">${escapeHtml(shortTag(tag))} 📋</button>`}
           <p class="text-[11px] text-slate-400 mt-1">${status}</p>
         </div>
       </div>
@@ -5553,10 +5977,10 @@
         break;
       case 'copy':
         Native.copy(tag);
-        Native.toast(`${tag} copiado`);
+        Native.toast(`${shortTag(tag)} copiado`);
         break;
       case 'add':
-        if (addContact(tag)) Native.toast(`${tag} adicionado aos contatos`);
+        if (addContact(tag)) Native.toast(`${displayNameFor(tag)} adicionado aos contatos`);
         renderPeerProfile();
         break;
       case 'rename':
@@ -5577,14 +6001,14 @@
       case 'block':
         if (isBlocked(tag)) {
           setBlocked(tag, false);
-          Native.toast(`${tag} desbloqueado`);
+          Native.toast(`${displayNameFor(tag)} desbloqueado`);
           renderPeerProfile();
-        } else if (confirm(`Bloquear ${tag}? Mensagens e arquivos dessa pessoa serão ignorados.`)) {
+        } else if (confirm(`Bloquear ${displayNameFor(tag)}? Mensagens e arquivos dessa pessoa serão ignorados.`)) {
           setBlocked(tag, true);
           closePeerProfile();
           if (activeChatPeer === tag) closeActiveChat();
           renderConversationsList();
-          Native.toast(`${tag} bloqueado`);
+          Native.toast(`${displayNameFor(tag)} bloqueado`);
         }
         break;
       case 'delete':
@@ -5608,7 +6032,16 @@
 
   function initVoiceLocationProfileEvents() {
     initVoicePlayer();
-    document.getElementById('btn-chat-open-profile').onclick = () => { if (activeChatPeer) openPeerProfile(activeChatPeer); };
+    // O painel de perfil vive ao lado da conversa (na tela larga vira a 3ª coluna)
+    const pmEl = document.getElementById('modal-peer-profile');
+    const viewChat = document.getElementById('view-chat');
+    if (pmEl && viewChat && pmEl.parentElement !== viewChat) viewChat.appendChild(pmEl);
+    document.getElementById('btn-chat-open-profile').onclick = () => {
+      if (!activeChatPeer) return;
+      // Tela larga: tocar no topo mostra/oculta o painel
+      if (isWideLayout() && isPeerProfileOpen() && peerProfileTag === activeChatPeer) closePeerProfile();
+      else openPeerProfile(activeChatPeer);
+    };
     document.getElementById('btn-close-peer-profile').onclick = () => closePeerProfile();
     document.getElementById('modal-peer-profile').addEventListener('click', (e) => {
       if (e.target.closest('#peer-profile-photo')) { openPeerProfilePhoto(); return; }
@@ -5995,7 +6428,7 @@
     Object.keys(chatMessages).forEach((t) => {
       if (!isMyTag(t) && !isBlocked(t) && (foldText(t).includes(q) || foldText(displayNameFor(t)).includes(q))) userTags.add(t);
     });
-    let usersHtml = Array.from(userTags).slice(0, LIMIT).map((t) => userRowHtml(t, (contacts[t] && contacts[t].name) || displayNameFor(t), isContact(t))).join('');
+    let usersHtml = Array.from(userTags).slice(0, LIMIT).map((t) => userRowHtml(t, displayNameFor(t), isContact(t))).join('');
     let usersCount = userTags.size;
     // Usuário digitado (tag completa @nome_hash6 ou só o nome) → oferecer "Adicionar".
     // Só o nome: resolve pelo catálogo de nomes da rede (e pergunta à rede se não souber).
@@ -6019,7 +6452,7 @@
           <div class="flex items-center gap-2.5 min-w-0">
             <div class="w-9 h-9 rounded-xl overflow-hidden shrink-0 border border-slate-800 bg-slate-900">${avatarFor(typedTag, 40)}</div>
             <div class="min-w-0">
-              <span class="text-xs font-bold text-white block truncate font-mono">${escapeHtml(typedTag)}</span>
+              <span class="text-xs font-bold text-white block truncate font-mono">${escapeHtml(shortTag(typedTag))}</span>
               <span class="text-[10px] ${online ? 'text-emerald-400' : 'text-slate-500'} block">${online ? '● online agora' : 'offline — a mensagem é entregue quando os dois estiverem online'}</span>
             </div>
           </div>
@@ -6096,7 +6529,7 @@
   function userRowHtml(tag, name, contact) {
     const msgs = chatMessages[tag] || [];
     const last = msgs[msgs.length - 1];
-    const sub = last ? escapeHtml(messageSummary(last).slice(0, 50)) : escapeHtml(tag);
+    const sub = last ? escapeHtml(messageSummary(last).slice(0, 50)) : escapeHtml(shortTag(tag));
     return `
       <div data-start-chat-target="${escapeHtml(tag)}" class="p-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500 transition-colors flex items-center justify-between gap-2 cursor-pointer">
         <div class="flex items-center gap-2.5 min-w-0">
@@ -6116,7 +6549,7 @@
         e.stopPropagation();
         const tag = btn.getAttribute('data-search-add');
         if (addContact(tag)) {
-          Native.toast(`${tag} adicionado aos contatos`);
+          Native.toast(`${displayNameFor(tag)} adicionado aos contatos`);
           closeGlobalSearchModal();
           switchTab('chat');
           openActiveChat(tag);
@@ -6194,7 +6627,7 @@
     if (!box || !tag) return;
     const contact = getContacts()[tag];
     const title = document.getElementById('contact-menu-title');
-    if (title) title.textContent = contact ? `${contact.name || displayNameFor(tag)} (${tag})` : `Opções para ${tag}`;
+    if (title) title.textContent = `${displayNameFor(tag)} (${shortTag(tag)})`;
     const msgs = chatMessages[tag] || [];
     const lists = contact && Array.isArray(contact.lists) ? contact.lists.filter((l) => l && l !== 'Todas') : [];
     const btn = (action, label, danger) => `<button type="button" data-cm-action="${action}" class="w-full py-2.5 px-3 rounded-xl ${danger
@@ -6332,7 +6765,7 @@
     const tag = activeMenuTargetTag;
     if (!tag || typeof PulseShareCrypto === 'undefined') return;
     const name = displayNameFor(tag);
-    if (!confirm(`Remover ${name} (${tag}) dos seus contatos?\n\nO nome salvo, a foto e as listas dele são apagados deste aparelho.`)) return;
+    if (!confirm(`Remover ${name} (${shortTag(tag)}) dos seus contatos?\n\nO nome salvo, a foto e as listas dele são apagados deste aparelho.`)) return;
     const hasMsgs = (chatMessages[tag] || []).length > 0;
     const wipe = hasMsgs && confirm('Apagar também a conversa?\n\nOK = apagar a conversa\nCancelar = manter as mensagens');
     PulseShareCrypto.ProfilesManager.removeContact(tag);
@@ -6558,7 +6991,9 @@
     document.getElementById('btn-selection-delete').onclick = () => openDeleteMessagesModal();
     document.getElementById('btn-selection-forward').onclick = () => openForwardModal();
     document.getElementById('btn-close-forward').onclick = () => closeForwardModal();
-    document.getElementById('btn-forward-send').onclick = () => { sendForward(); };
+    document.getElementById('btn-forward-send').onclick = () => { if (forwardMode === 'share') sendShareItems(); else sendForward(); };
+    const btnShareLink = document.getElementById('btn-share-create-link');
+    if (btnShareLink) btnShareLink.onclick = () => shareItemsToNewLink();
     document.getElementById('input-forward-search').oninput = () => renderForwardTargets();
     document.getElementById('btn-delete-cancel').onclick = () => closeDeleteMessagesModal();
     document.getElementById('btn-delete-for-me').onclick = () => { deleteSelectedMessages(false); };
@@ -6573,12 +7008,70 @@
   const FORWARD_MAX_TARGETS = 10;
   let forwardMsgs = [];
   const forwardTargets = new Set();
+  // 'forward' = encaminhar mensagens; 'share' = arquivos/texto vindos de outro app (ou do seletor)
+  let forwardMode = 'forward';
+  let shareItems = { files: [], texts: [] };
+  let pendingLinkShareFiles = null; // arquivos que vão para o próximo chat de link criado
+
+  function setForwardModeUi() {
+    const share = forwardMode === 'share';
+    const title = document.getElementById('forward-title');
+    if (title) title.textContent = share ? 'Enviar para…' : 'Encaminhar para…';
+    const btnLink = document.getElementById('btn-share-create-link');
+    if (btnLink) btnLink.classList.toggle('hidden', !share || !shareItems.files.length);
+  }
+
+  // Compartilhar do Android (ou "Enviar arquivos"): escolhe contato/conversa ou cria um link
+  function openShareTargetModal(files, texts) {
+    shareItems = { files: (files || []).slice(), texts: (texts || []).filter((t) => t && t.trim()) };
+    if (!shareItems.files.length && !shareItems.texts.length) return;
+    forwardMode = 'share';
+    forwardMsgs = [];
+    forwardTargets.clear();
+    const input = document.getElementById('input-forward-search');
+    if (input) input.value = '';
+    const sum = document.getElementById('forward-summary');
+    if (sum) {
+      const n = shareItems.files.length;
+      const size = shareItems.files.reduce((a, f) => a + (Number(f.size) || 0), 0);
+      sum.textContent = n === 1 ? `📎 ${shareItems.files[0].name} (${formatBytes(size)})`
+        : n ? `📎 ${n} arquivos (${formatBytes(size)})` : `💬 ${shareItems.texts[0].slice(0, 80)}`;
+    }
+    setForwardModeUi();
+    renderForwardTargets();
+    document.getElementById('modal-forward').classList.remove('hidden');
+  }
+
+  async function sendShareItems() {
+    const targets = Array.from(forwardTargets);
+    if (!targets.length) return;
+    const { files, texts } = shareItems;
+    closeForwardModal();
+    targets.forEach((t) => {
+      setChatHidden(t, false);
+      texts.forEach((txt) => sendChatMessage(t, txt));
+      files.forEach((f) => queueOutgoingFile(t, f, ''));
+    });
+    shareItems = { files: [], texts: [] };
+    if (targets.length === 1) { switchTab('chat'); openActiveChat(targets[0]); }
+    else { Native.toast(`Enviado para ${targets.length} conversas.`); renderConversationsList(); }
+  }
+
+  function shareItemsToNewLink() {
+    pendingLinkShareFiles = { files: shareItems.files.slice(), texts: shareItems.texts.slice() };
+    closeForwardModal();
+    const first = pendingLinkShareFiles.files[0];
+    openNewLinkModal(pendingLinkShareFiles.files.length === 1 && first ? String(first.name || '').replace(/\.[^.]+$/, '').slice(0, 120) : '');
+  }
 
   function isForwardable(m) {
     return Boolean(m && !m.deleted && (m.text || m.location || m.media || m.transferId));
   }
 
   function openForwardModal() {
+    forwardMode = 'forward';
+    shareItems = { files: [], texts: [] };
+    setForwardModeUi();
     forwardMsgs = selectedMessages().filter(isForwardable).sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
     if (!forwardMsgs.length) { Native.toast('Nada para encaminhar nas mensagens escolhidas.'); return; }
     forwardTargets.clear();
@@ -6593,6 +7086,19 @@
   function closeForwardModal() {
     const modal = document.getElementById('modal-forward');
     if (modal) modal.classList.add('hidden');
+    forwardMode = 'forward';
+  }
+
+  // O que foi digitado na busca é um @usuário completo (ou um nome que o catálogo conhece)?
+  function forwardTypedTag(raw) {
+    const v = String(raw || '').trim().toLowerCase().replace(/^([^@])/, '@$1');
+    if (splitTag(v)) return normalizeTag(v);
+    const name = v.replace(/^@/, '');
+    if (/^[a-z0-9_]{2,40}$/.test(name)) {
+      const e = registryOwnerOf(name);
+      if (e && e.s) return `@${name}_${e.s}`;
+    }
+    return '';
   }
 
   function forwardCandidateTags() {
@@ -6607,11 +7113,16 @@
   function renderForwardTargets() {
     const list = document.getElementById('forward-target-list');
     if (!list) return;
-    const q = foldText((document.getElementById('input-forward-search') || {}).value || '').trim();
+    const raw = (document.getElementById('input-forward-search') || {}).value || '';
+    const q = foldText(raw).trim();
     const tags = forwardCandidateTags().filter((t) => !q || foldText(displayNameFor(t)).includes(q) || t.includes(q));
+    const typed = forwardTypedTag(raw);
+    if (typed && !tags.includes(typed) && !isMyTag(typed) && !isBlocked(typed) && !isAdminDeleted(typed)) tags.unshift(typed);
+    // Selecionados que saíram do filtro continuam visíveis
+    forwardTargets.forEach((t) => { if (!tags.includes(t)) tags.unshift(t); });
     list.innerHTML = tags.length ? tags.map((t) => {
       const on = forwardTargets.has(t);
-      const sub = t === activeChatPeer ? `${t} • esta conversa` : isContact(t) ? t : `${t} • fora dos contatos`;
+      const sub = isRoomKey(t) ? '🔗 Chat de link' : (t === activeChatPeer && forwardMode === 'forward') ? `${t} • esta conversa` : isContact(t) ? t : `${t} • fora dos contatos`;
       return `<button type="button" data-forward-tag="${t}" class="w-full px-4 py-2.5 flex items-center gap-3 text-left hover:bg-slate-900/60 ${on ? 'bg-indigo-500/15' : ''}">
         <div class="w-10 h-10 rounded-full overflow-hidden shrink-0 border border-slate-800 bg-slate-900 flex items-center justify-center">${avatarFor(t, 40)}</div>
         <div class="min-w-0 flex-1">
@@ -6635,7 +7146,8 @@
     const btn = document.getElementById('btn-forward-send');
     if (btn) {
       btn.disabled = !forwardTargets.size;
-      btn.textContent = forwardTargets.size > 1 ? `↪ Enviar (${forwardTargets.size})` : '↪ Enviar';
+      const icon = forwardMode === 'share' ? '➤' : '↪';
+      btn.textContent = forwardTargets.size > 1 ? `${icon} Enviar (${forwardTargets.size})` : `${icon} Enviar`;
     }
   }
 
@@ -6844,167 +7356,55 @@
   // ==========================================================================
   function handleFilesSelected(files) {
     if (!files || !files.length) return;
-    stagedFiles = files;
-    renderStagedFiles();
+    openShareTargetModal(files, []);
   }
 
+  // Compartilhado antes de o app terminar de abrir (aberto pelo "Compartilhar" do Android)
+  let appReady = false;
+  const pendingSharedQueue = [];
   function handleAndroidSharedItems(items) {
     if (!items || !items.length) return;
+    if (!appReady) { pendingSharedQueue.push(items); return; }
     // Itens de texto/link não são arquivos (antes iam para a lista de envio e quebravam o envio)
     const files = items.filter(it => !it.type || it.type === 'file');
     const texts = items.filter(it => it.type === 'text' || it.type === 'link').map(it => String(it.content || ''));
     const loginLink = texts.find(t => /^pulseshare:\/\/login\?/i.test(t.trim()));
     if (loginLink) { handleScannedQr(loginLink.trim()); return; }
+    const addLink = texts.map((t) => parseContactQr(t)).find(Boolean);
+    if (addLink) { if (myTag) addContactFromQr(addLink); else Native.toast('Entre na sua conta para adicionar contatos.'); return; }
     const shareLink = texts.map(t => (t.match(/https?:\/\/\S*[#?&]share=\S+/) || [])[0]).find(Boolean);
     if (shareLink) {
       const input = document.getElementById('input-open-link');
       if (input) input.value = shareLink;
-      switchTab('home');
-      Native.toast('Link PulseShare recebido. Toque em "Baixar" para abrir.');
+      openNewChatSheet();
+      Native.toast('Link PulseShare recebido. Toque em "Abrir".');
     }
-    if (files.length) {
-      stagedFiles = files;
-      openSendModal('p2p');
-      renderStagedFiles();
+    const plainTexts = texts.filter((t) => !/^pulseshare:\/\/(login|add)\?/i.test(t.trim()) && !(shareLink && t.includes(shareLink)));
+    if (files.length || plainTexts.length) {
+      if (!myTag) { Native.toast('Entre na sua conta para compartilhar.'); return; }
+      closeActiveChat();
+      openShareTargetModal(files, plainTexts);
     }
   }
 
-  function renderStagedFiles() {
-    const listEl = document.getElementById('selected-files-list');
-    if (!listEl) return;
-    listEl.innerHTML = stagedFiles.map((f, idx) => `
-      <div class="flex items-center justify-between p-2 rounded-xl bg-slate-900 border border-slate-800 text-xs text-white">
-        <span class="truncate max-w-[200px]">📁 ${f.name} (${formatBytes(f.size)})</span>
-        <button type="button" data-remove-staged="${idx}" class="text-rose-400 hover:text-rose-300 font-bold ml-2">✕</button>
-      </div>
-    `).join('');
-
-    listEl.querySelectorAll('[data-remove-staged]').forEach(btn => {
-      btn.onclick = () => {
-        const i = parseInt(btn.getAttribute('data-remove-staged'), 10);
-        stagedFiles.splice(i, 1);
-        renderStagedFiles();
-      };
-    });
-  }
-
+  // A aba Envios saiu (2026-11-14): todo envio aparece na conversa. Mantém o contador
+  // de transferências ativas do Início.
   function renderTransfers() {
-    const container = document.getElementById('transfers-list');
-    if (!container) return;
-
-    const allTransfers = Object.values(transfers);
-    const badge = document.getElementById('badge-transfers-count');
-    const activeCount = allTransfers.filter(t => ['connecting', 'transferring', 'awaiting_accept', 'paused'].includes(t.status)).length;
-    if (badge) {
-      badge.textContent = activeCount;
-      badge.classList.toggle('hidden', activeCount === 0);
-    }
-
-    const filtered = allTransfers.filter(t => {
-      const isDone = ['completed', 'cancelled', 'failed', 'error'].includes(t.status);
-      return transfersFilter === 'active' ? !isDone : isDone;
-    });
-
-    if (filtered.length === 0) {
-      container.innerHTML = `
-        <div class="text-center py-12 text-slate-500 text-xs">
-          Nenhuma transferência ${transfersFilter === 'active' ? 'em andamento' : 'no histórico'}.
-        </div>
-      `;
-      return;
-    }
-
-    const STATUS_LABEL = {
-      awaiting_accept: 'aguardando', connecting: 'conectando', transferring: 'transferindo',
-      paused: 'pausado', completed: 'concluído', cancelled: 'cancelado', error: 'erro', failed: 'erro'
-    };
-    filtered.sort((x, y) => (y.startTime || 0) - (x.startTime || 0));
-    container.innerHTML = filtered.map(t => {
-      const isSend = t.type === 'send';
-      const peerTag = isSend ? t.target : t.sender;
-      const peerLabel = t.shareId ? `🔗 Link • ${isLinkVisitor(peerTag) ? displayNameFor(peerTag) : (peerTag || '')}` : (peerTag || 'desconhecido');
-      const origin = t.shareId ? 'Link público' : (t.isChatMedia ? 'Chat' : 'Envio direto');
-      const route = t.route === 'RELAY' ? ' • 🔀 via malha' : '';
-      const safeName = escapeHtml(t.fileName || 'arquivo');
-      const isActive = ['connecting', 'transferring', 'awaiting_accept', 'paused'].includes(t.status);
-      return `
-        <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 space-y-2">
-          <div class="flex items-start justify-between">
-            <div class="flex items-center gap-2.5 min-w-0">
-              <span class="text-xl">${isSend ? '📤' : '📥'}</span>
-              <div class="min-w-0">
-                <span class="text-xs font-bold text-white block truncate">${safeName}</span>
-                <span class="text-[10px] text-slate-400 font-mono block truncate">${formatBytes(t.totalBytes)} • ${escapeHtml(peerLabel)}</span>
-                <span class="text-[9px] text-slate-500 block">${origin}${route}${t.error ? ' • ' + escapeHtml(t.error) : ''}</span>
-              </div>
-            </div>
-            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
-              t.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
-              t.status === 'transferring' ? 'bg-indigo-500/20 text-indigo-400' :
-              t.status === 'awaiting_accept' ? 'bg-amber-500/20 text-amber-400' :
-              (t.status === 'error' || t.status === 'cancelled') ? 'bg-rose-500/20 text-rose-400' :
-              'bg-slate-800 text-slate-400'
-            }">${STATUS_LABEL[t.status] || t.status}</span>
-          </div>
-
-          <div class="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
-            <div class="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style="width: ${t.progress || 0}%"></div>
-          </div>
-
-          <div class="flex items-center justify-between text-[10px] text-slate-400">
-            <span>${t.progress || 0}% • ${t.speed || '0 KB/s'}</span>
-            <div class="flex gap-3">
-              ${(!isSend && t.status === 'awaiting_accept') ? `
-                <button type="button" data-ps-call="acceptTransfer" data-ps-args="${t.id}" class="text-emerald-400 font-bold hover:underline">Aceitar</button>
-              ` : ''}
-              ${(!isSend && (t.status === 'error' || t.status === 'cancelled')) ? `
-                <button type="button" data-ps-call="acceptTransfer" data-ps-args="${t.id}" class="text-indigo-400 font-bold hover:underline">Tentar de novo</button>
-              ` : ''}
-              ${t.savedPath ? `
-                <button type="button" data-ps-call="downloadChatMedia" data-ps-args="${t.id}" class="text-emerald-400 font-bold hover:underline">${Native.isAvailable() ? 'Abrir' : 'Salvar'}</button>
-              ` : ''}
-              ${isActive ? `
-                <button type="button" data-ps-call="cancelTransfer" data-ps-args="${t.id}" class="text-rose-400 font-bold hover:underline">${(!isSend && t.status === 'awaiting_accept') ? 'Recusar' : 'Cancelar'}</button>
-              ` : ''}
-            </div>
-          </div>
-        </div>
-      `;
-    }).join('');
+    const el = document.getElementById('stat-transfers-count');
+    if (!el) return;
+    const n = Object.values(transfers).filter(t => ['connecting', 'transferring', 'awaiting_accept', 'paused'].includes(t.status)).length;
+    el.textContent = `${n} ativa${n === 1 ? '' : 's'}`;
   }
 
   // ==========================================================================
   // 12. NAVEGAÇÃO ENTRE ABAS
   // ==========================================================================
   let currentTab = 'chat'; // CHAT-FIRST POR PADRÃO
-  let stagedFiles = [];
-  let modalMode = 'p2p';
 
   function switchTab(tabName) {
-    currentTab = tabName;
-    ['chat', 'home', 'transfers', 'mesh'].forEach((t) => {
-      const view = document.getElementById('view-' + t);
-      const btn = document.getElementById('nav-' + t);
-      if (view && btn) {
-        if (t === tabName) {
-          view.classList.remove('hidden');
-          btn.classList.add('active', 'text-indigo-400');
-          btn.classList.remove('text-slate-400');
-        } else {
-          view.classList.add('hidden');
-          btn.classList.remove('active', 'text-indigo-400', 'text-orange-400');
-          btn.classList.add('text-slate-400');
-        }
-      }
-    });
-
-    if (tabName === 'chat') {
-      renderConversationsList();
-    } else if (tabName === 'transfers') {
-      renderTransfers();
-    } else if (tabName === 'mesh') {
-      renderMeshPeers();
-    }
+    // Só existe a aba de conversas (Início, Usuários e Envios saíram)
+    currentTab = 'chat';
+    renderConversationsList();
   }
 
   function updateHeaderStatus() {
@@ -7025,58 +7425,144 @@
     }
   }
 
-  function renderMeshPeers() {
-    const list = document.getElementById('mesh-peers-list');
-    if (!list) return;
-
-    const contacts = getContacts();
-    const now = Date.now();
-    const tags = Object.keys(contacts).filter((t) => !isMyTag(t));
-    if (tags.length === 0) {
-      list.innerHTML = '<div class="text-center py-8 text-slate-500 text-xs">Nenhum contato adicionado.<br/>Toque em <b>+ Adicionar</b> e informe o @usuário de quem você quer conversar.</div>';
-      return;
-    }
-    const isOnline = (t) => {
-      const p = peerRegistry[t];
-      return Boolean((p && now - (p.lastSeen || 0) < 45000) || isBleNeighbor(t));
-    };
-    tags.sort((a, b) => (isOnline(b) - isOnline(a)) || a.localeCompare(b));
-
-    list.innerHTML = tags.map((tag) => {
-      const c = contacts[tag];
-      const p = peerRegistry[tag];
-      const online = isOnline(tag);
-      return `
-        <div class="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between">
-          <div class="flex items-center gap-2.5 min-w-0">
-            <div class="w-8 h-8 rounded-lg overflow-hidden shrink-0">${c.avatar || (p && p.avatar) || ''}</div>
-            <div class="min-w-0">
-              <span class="text-xs font-bold text-white block truncate">${escapeHtml(c.name || tag)} <span class="${online ? 'text-emerald-400' : 'text-slate-600'}">●</span></span>
-              <span class="text-[10px] font-mono text-slate-400 block truncate">${tag}</span>
-            </div>
-          </div>
-          <div class="flex items-center gap-2">
-            ${routeBadgeHtml(tag)}
-            <button type="button" data-mesh-chat="${tag}" class="px-2.5 py-1 rounded bg-indigo-600 text-white text-xs font-bold active:scale-95">Conversar</button>
-            <button type="button" data-mesh-options="${tag}" title="Opções do contato" class="px-1.5 py-1 rounded text-slate-400 hover:text-white text-sm font-bold active:scale-95">⋮</button>
-          </div>
-        </div>
-      `;
-    }).join('') + `
-      <div class="pt-2 text-[10px] text-slate-500 text-center">
-        Nó de rota: ${meshRelay ? 'ativo' : 'desativado'} • pontes BLE→internet ${relayCounters.bridgedToInternet} • internet→BLE ${relayCounters.bridgedToBle} • vizinhos BLE ${freshBleNeighbors().length}
-      </div>`;
-    list.querySelectorAll('[data-mesh-chat]').forEach((btn) => {
-      btn.onclick = () => { switchTab('chat'); openActiveChat(btn.getAttribute('data-mesh-chat')); };
-    });
-    list.querySelectorAll('[data-mesh-options]').forEach((btn) => {
-      btn.onclick = () => openContactOptionsMenu(btn.getAttribute('data-mesh-options'));
-    });
+  // --------------------------------------------------------------------------
+  // NOVA CONVERSA (balão 💬): contatos com a rota de cada um, ler QR de um
+  // contato, meu QR em tela cheia e abrir link recebido. Substitui as abas
+  // Início e Usuários (removidas em 2026-11-14).
+  // --------------------------------------------------------------------------
+  function openNewChatSheet() {
+    const modal = document.getElementById('modal-new-chat');
+    if (!modal) return;
+    const input = document.getElementById('input-new-chat-search');
+    if (input) input.value = '';
+    modal.classList.remove('hidden');
+    renderMeshPeers();
   }
 
-  function openSendModal(mode) {
-    modalMode = mode || 'p2p';
-    document.getElementById('modal-send').classList.remove('hidden');
+  function closeNewChatSheet() {
+    const modal = document.getElementById('modal-new-chat');
+    if (modal) modal.classList.add('hidden');
+  }
+
+  function isPeerOnline(t) {
+    const p = peerRegistry[t];
+    return Boolean((p && Date.now() - (p.lastSeen || 0) < 45000) || isBleNeighbor(t) || lanOpenChannel(t));
+  }
+
+  // (nome antigo mantido: é chamado em vários pontos quando contatos/rotas mudam)
+  function renderMeshPeers() {
+    const modal = document.getElementById('modal-new-chat');
+    const list = document.getElementById('new-chat-contacts');
+    if (!list || !modal || modal.classList.contains('hidden')) return;
+    const input = document.getElementById('input-new-chat-search');
+    const rawQ = input ? input.value.trim() : '';
+    const q = foldText(rawQ.replace(/^@/, ''));
+    const contacts = getContacts();
+    let tags = Object.keys(contacts).filter((t) => !isMyTag(t) && !isAdminDeleted(t));
+    const total = tags.length;
+    if (q) tags = tags.filter((t) => foldText(t).includes(q) || foldText(displayNameFor(t)).includes(q));
+    tags.sort((a, b) => (isPeerOnline(b) - isPeerOnline(a)) || displayNameFor(a).localeCompare(displayNameFor(b)));
+    const count = document.getElementById('new-chat-contacts-count');
+    if (count) count.textContent = String(total);
+
+    let html = tags.map((tag) => {
+      const online = isPeerOnline(tag);
+      return `
+        <div data-nc-chat="${escapeHtml(tag)}" class="p-2.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-indigo-500 flex items-center justify-between gap-2 cursor-pointer">
+          <div class="flex items-center gap-2.5 min-w-0 flex-1">
+            <div class="w-9 h-9 rounded-xl overflow-hidden shrink-0 border border-slate-800 bg-slate-900">${avatarFor(tag, 40)}</div>
+            <div class="min-w-0">
+              <span class="text-xs font-bold text-white block truncate">${escapeHtml(displayNameFor(tag))} <span class="${online ? 'text-emerald-400' : 'text-slate-600'}">●</span></span>
+              <span class="text-[10px] font-mono text-slate-400 block truncate">${escapeHtml(shortTag(tag))}</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-1 shrink-0">
+            ${routeBadgeHtml(tag)}
+            <button type="button" data-nc-remove="${escapeHtml(tag)}" title="Excluir dos contatos" class="px-1.5 py-1 rounded text-rose-400 hover:text-rose-300 text-xs active:scale-95">🗑️</button>
+            <button type="button" data-nc-options="${escapeHtml(tag)}" title="Opções do contato" class="px-1.5 py-1 rounded text-slate-400 hover:text-white text-sm font-bold active:scale-95">⋮</button>
+          </div>
+        </div>`;
+    }).join('');
+    if (!total) {
+      html = '<div class="text-center py-6 text-slate-500 text-xs">Nenhum contato ainda.<br/>Leia o QR Code de alguém ou toque em <b>Por nome</b>.</div>';
+    } else if (!tags.length) {
+      html = '<div class="text-center py-3 text-slate-500 text-xs">Nenhum contato com esse nome.</div>';
+    }
+    if (q) {
+      html += `<button type="button" id="btn-nc-search-network" class="w-full py-2 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 text-xs font-bold active:scale-95">🔍 Procurar "${escapeHtml(rawQ)}" na rede</button>`;
+    }
+    list.innerHTML = html;
+    list.querySelectorAll('[data-nc-chat]').forEach((row) => {
+      row.onclick = () => { closeNewChatSheet(); switchTab('chat'); openActiveChat(row.getAttribute('data-nc-chat')); };
+    });
+    list.querySelectorAll('[data-nc-options]').forEach((btn) => {
+      btn.onclick = (e) => { e.stopPropagation(); openContactOptionsMenu(btn.getAttribute('data-nc-options')); };
+    });
+    list.querySelectorAll('[data-nc-remove]').forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        activeMenuTargetTag = btn.getAttribute('data-nc-remove');
+        handleRemoveContactAction();
+        renderMeshPeers();
+      };
+    });
+    const netBtn = document.getElementById('btn-nc-search-network');
+    if (netBtn) netBtn.onclick = () => { closeNewChatSheet(); openGlobalSearchModal(rawQ.startsWith('@') ? rawQ : '@' + rawQ); };
+
+    const info = document.getElementById('new-chat-relay-info');
+    if (info) {
+      const servers = relayServersSeen();
+      info.textContent = `Ponte para outros usuários: ${meshRelay ? 'ligada' : 'desligada'} • Bluetooth ${Native.isBleAvailable() ? 'ligado (' + freshBleNeighbors().length + ' por perto)' : 'desligado'} • pontes feitas ${relayCounters.bridgedToInternet + relayCounters.bridgedToBle}${servers.length ? ' • servidores relay ' + servers.length : ''}`;
+    }
+  }
+
+  // QR para outra pessoa me adicionar: pulseshare://add?u=@nome_hash6&n=<nome do perfil>
+  function myContactQrPayload() {
+    return `pulseshare://add?u=${encodeURIComponent(myTag)}&n=${encodeURIComponent(myProfileName())}`;
+  }
+
+  function openMyQr() {
+    if (!myTag) return;
+    const box = document.getElementById('my-qr-box');
+    const size = Math.min(300, Math.max(180, Math.floor(Math.min(window.innerWidth, window.innerHeight) * 0.7)));
+    if (box) box.innerHTML = PulseShareCrypto.generateQRCodeSVG(myContactQrPayload(), size);
+    const nameEl = document.getElementById('my-qr-profile-name');
+    if (nameEl) nameEl.textContent = myProfileName() || (activeProfile && activeProfile.name) || '';
+    const userEl = document.getElementById('my-qr-username');
+    if (userEl) userEl.textContent = shortTag(myTag);
+    document.getElementById('modal-my-qr').classList.remove('hidden');
+  }
+
+  function closeMyQr() {
+    const m = document.getElementById('modal-my-qr');
+    if (m) m.classList.add('hidden');
+  }
+
+  function parseContactQr(text) {
+    const m = /^pulseshare:\/\/add\?(.*)$/i.exec(String(text || '').trim());
+    if (!m) return null;
+    const params = new URLSearchParams(m[1]);
+    const tag = normalizeTag(params.get('u') || '');
+    if (!splitTag(tag)) return null;
+    return { tag, name: cleanProfileName(params.get('n') || '') };
+  }
+
+  // Leu o QR de um contato: adiciona e abre a conversa
+  function addContactFromQr(info) {
+    if (!info || !info.tag) return;
+    if (isMyTag(info.tag)) { Native.toast('Esse QR Code é o seu.'); return; }
+    if (info.name) setPeerProfileName(info.tag, info.name);
+    if (!isContact(info.tag)) addContact(info.tag);
+    Native.toast(`${displayNameFor(info.tag)} adicionado aos contatos`);
+    closeNewChatSheet();
+    switchTab('chat');
+    openActiveChat(info.tag);
+  }
+
+  function openSendModal() {
+    // Enviar arquivos = escolher os arquivos e depois o contato (ou criar um link)
+    pendingChatAttachment = false;
+    Native.pickFiles();
   }
 
   // ==========================================================================
@@ -7519,8 +8005,14 @@
     return 'Não foi possível abrir a câmera: ' + (e && e.message ? e.message : e);
   }
 
-  async function openQrScanner() {
+  let qrScanMode = 'login'; // 'login' (entrar com outra conta) ou 'contact' (adicionar contato)
+  async function openQrScanner(mode) {
     const modal = document.getElementById('modal-qr-pair-scanner');
+    qrScanMode = mode === 'contact' ? 'contact' : 'login';
+    const title = document.getElementById('qr-scanner-title');
+    if (title) title.textContent = qrScanMode === 'contact' ? '📷 Adicionar contato pelo QR Code' : '📷 Entrar com outra conta';
+    const paste = document.getElementById('qr-scan-paste-box');
+    if (paste) paste.classList.toggle('hidden', qrScanMode === 'contact');
     modal.classList.remove('hidden');
     const camBox = document.getElementById('qr-scan-camera-box');
     if (qrScanStream) return; // já aberta
@@ -7593,6 +8085,17 @@
   }
 
   async function handleScannedQr(text) {
+    const contactInfo = parseContactQr(text);
+    if (contactInfo) {
+      if (!activeProfile) { setQrScanStatus('Entre na sua conta antes de adicionar contatos.'); return; }
+      closeQrScanner();
+      addContactFromQr(contactInfo);
+      return;
+    }
+    if (qrScanMode === 'contact') {
+      setQrScanStatus(parseLoginText(text).key ? 'Esse QR Code é de LOGIN (dá acesso à conta). Peça o "Meu QR Code" da pessoa.' : 'Esse QR Code não é de um contato PulseShare.');
+      return;
+    }
     const parsed = parseLoginText(text);
     if (!parsed.key && !parsed.words) {
       setQrScanStatus('Esse QR Code não é de uma conta PulseShare.');
@@ -7852,6 +8355,8 @@
     if (snd) snd.value = notifySound;
     const vib = document.getElementById('setting-notify-vibration');
     if (vib) vib.value = notifyVibration;
+    const fs = document.getElementById('setting-font-size');
+    if (fs) fs.value = fontSizeSetting;
     const bg = document.getElementById('setting-background-mode');
     if (bg) bg.checked = backgroundMode;
     const hint = document.getElementById('setting-background-hint');
@@ -7878,6 +8383,11 @@
       notifySound = e.target.value;
       localStorage.setItem('ps_notify_sound', notifySound);
       Native.previewNotification();
+    };
+    document.getElementById('setting-font-size').onchange = (e) => {
+      fontSizeSetting = applyFontSize(e.target.value);
+      try { localStorage.setItem('ps_font_size', fontSizeSetting); } catch (err) {}
+      autoGrowChatInput();
     };
     document.getElementById('setting-notify-vibration').onchange = (e) => {
       notifyVibration = e.target.value;
@@ -7991,30 +8501,45 @@
   function initEvents() {
     initChatAutoScroll();
     // Abas de navegação
-    document.getElementById('nav-chat').onclick = () => switchTab('chat');
-    document.getElementById('nav-home').onclick = () => switchTab('home');
-    document.getElementById('nav-transfers').onclick = () => switchTab('transfers');
-    document.getElementById('nav-mesh').onclick = () => switchTab('mesh');
 
     // Ações Rápidas na Home
     // (Ação rápida "Enviar para @peer" removida: o envio direto é feito pelo chat)
 
     // Botões de Busca Global
     document.getElementById('btn-header-search').onclick = () => openGlobalSearchModal();
-    document.getElementById('btn-fab-new-chat').onclick = () => openGlobalSearchModal('@');
-    document.getElementById('btn-mesh-add-contact').onclick = () => openGlobalSearchModal('@');
-    document.getElementById('btn-refresh-mesh').onclick = () => { announcePresence(); renderMeshPeers(); };
+    document.getElementById('btn-fab-new-chat').onclick = () => openNewChatSheet();
+    document.getElementById('btn-close-new-chat').onclick = () => closeNewChatSheet();
+    document.getElementById('modal-new-chat').addEventListener('click', (e) => { if (e.target.id === 'modal-new-chat') closeNewChatSheet(); });
+    document.getElementById('input-new-chat-search').addEventListener('input', () => renderMeshPeers());
+    document.getElementById('input-new-chat-search').addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const v = e.target.value.trim();
+      if (v) { closeNewChatSheet(); openGlobalSearchModal(v.startsWith('@') ? v : '@' + v); }
+    });
+    document.getElementById('btn-new-chat-scan').onclick = () => openQrScanner('contact');
+    document.getElementById('btn-new-chat-myqr').onclick = () => openMyQr();
+    document.getElementById('btn-new-chat-add').onclick = () => { closeNewChatSheet(); openGlobalSearchModal('@'); };
+    document.getElementById('btn-close-my-qr').onclick = () => closeMyQr();
+    document.getElementById('btn-profile-name-save').onclick = () => {
+      if (!activeProfile) return;
+      const v = cleanProfileName(document.getElementById('setting-profile-name-input').value);
+      activeProfile = { ...activeProfile, displayName: v };
+      PulseShareCrypto.ProfilesManager.saveProfile(activeProfile);
+      updateIdentityUI();
+      announcePresence();
+      Native.toast(v ? `Nome do perfil: ${v}` : 'Nome do perfil removido (aparece o @usuário).');
+    };
 
     // Pedido de mensagem (remetente fora dos contatos)
     document.getElementById('btn-chat-request-add').onclick = () => {
-      if (activeChatPeer && addContact(activeChatPeer)) Native.toast(`${activeChatPeer} adicionado aos contatos`);
+      if (activeChatPeer && addContact(activeChatPeer)) Native.toast(`${displayNameFor(activeChatPeer)} adicionado aos contatos`);
     };
     document.getElementById('btn-chat-request-block').onclick = () => {
       const tag = activeChatPeer;
-      if (!tag || !confirm(`Bloquear ${tag}? Mensagens e arquivos dessa pessoa serão ignorados.`)) return;
+      if (!tag || !confirm(`Bloquear ${displayNameFor(tag)}? Mensagens e arquivos dessa pessoa serão ignorados.`)) return;
       setBlocked(tag, true);
       closeActiveChat();
-      Native.toast(`${tag} bloqueado`);
+      Native.toast(`${displayNameFor(tag)} bloqueado`);
     };
     document.getElementById('btn-close-global-search').onclick = () => {
       document.getElementById('modal-global-search').classList.add('hidden');
@@ -8052,7 +8577,6 @@
       if (!PS_CALLS.includes(fn) || typeof window[fn] !== 'function') return;
       window[fn](...String(el.getAttribute('data-ps-args') || '').split('|'));
     });
-    document.getElementById('btn-edit-tag').onclick = openIdentity;
     document.getElementById('btn-close-identity-modal').onclick = () => {
       document.getElementById('modal-identity-profile').classList.add('hidden');
     };
@@ -8073,8 +8597,8 @@
     document.getElementById('btn-onb-back').onclick = () => closeAddAccount();
 
     // Ler QR Code (câmera só no celular) / colar chave de acesso
-    document.getElementById('btn-scan-device-qr').onclick = () => openQrScanner();
-    document.getElementById('btn-chat-qr-sync').onclick = () => openQrScanner();
+    document.getElementById('btn-scan-device-qr').onclick = () => openQrScanner('login');
+    document.getElementById('btn-chat-qr-sync').onclick = () => openQrScanner('login');
     document.getElementById('btn-close-qr-scanner-modal').onclick = () => closeQrScanner();
     document.getElementById('btn-confirm-import-pairing').onclick = async () => {
       const parsed = parseLoginText(document.getElementById('input-pairing-payload').value);
@@ -8101,14 +8625,37 @@
         sendChatMessage(activeChatPeer, text);
       }
       input.value = '';
+      autoGrowChatInput();
       updateComposeButtons();
     };
 
-    document.getElementById('input-chat-text').onkeydown = (e) => {
-      if (e.key === 'Enter') {
-        document.getElementById('btn-chat-send').click();
-      }
+    // Tecla Enter / "Enviar" do teclado manda a mensagem (Shift+Enter = nova linha no PC).
+    // O campo cresce até 5 linhas, como no WhatsApp.
+    const chatInputEl = document.getElementById('input-chat-text');
+    const sendFromKeyboard = () => {
+      if (chatInputEl.value.trim() || chatAttachedFiles.length) document.getElementById('btn-chat-send').click();
     };
+    let shiftEnterAt = 0;
+    chatInputEl.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.keyCode !== 13) return;
+      if (e.shiftKey) { shiftEnterAt = Date.now(); return; } // nova linha
+      if (e.isComposing) return;
+      e.preventDefault();
+      sendFromKeyboard();
+    });
+    // Teclados do celular (Gboard, Samsung) podem não mandar keydown "Enter": pega a quebra de linha
+    chatInputEl.addEventListener('beforeinput', (e) => {
+      if ((e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') && Date.now() - shiftEnterAt > 300) {
+        e.preventDefault();
+        sendFromKeyboard();
+      }
+    });
+    chatInputEl.addEventListener('input', autoGrowChatInput);
+    // Tocar no botão enviar não fecha o teclado (o campo continua com o foco)
+    ['btn-chat-send', 'btn-chat-mic'].forEach((id) => {
+      const b = document.getElementById(id);
+      if (b) b.addEventListener('mousedown', (e) => { if (document.activeElement === chatInputEl) e.preventDefault(); });
+    });
 
     // Clipe: menu com Foto e vídeo / Áudio / Documento / Localização
     document.getElementById('btn-chat-attach').onclick = () => toggleAttachMenu();
@@ -8201,55 +8748,6 @@
       btnOpenDir.onclick = () => Native.openDownloadFolder();
     }
 
-    // Modal Envio de Arquivos
-    document.getElementById('btn-close-send-modal').onclick = () => {
-      document.getElementById('modal-send').classList.add('hidden');
-    };
-    document.getElementById('btn-pick-files-native').onclick = () => {
-      pendingChatAttachment = false;
-      Native.pickFiles();
-    };
-
-    document.getElementById('btn-confirm-send').onclick = async () => {
-      if (stagedFiles.length === 0) {
-        Native.toast('Selecione ao menos um arquivo!');
-        return;
-      }
-      const files = stagedFiles.filter(f => !f.type || f.type === 'file' || f.size !== undefined);
-      const target = normalizeTag(document.getElementById('input-target-user').value.trim().replace(/^([^@])/, '@$1'));
-      if (!target || target === '@') {
-        Native.toast('Informe o @destinatário!');
-        return;
-      }
-      document.getElementById('modal-send').classList.add('hidden');
-      openActiveChat(target);
-      files.forEach(f => queueOutgoingFile(target, f, ''));
-      stagedFiles = [];
-      renderStagedFiles();
-      switchTab('transfers');
-    };
-
-    // Filtro Ativas / Histórico e limpeza (antes os botões não tinham ação)
-    const tabActive = document.getElementById('tab-transfers-active');
-    const tabHistory = document.getElementById('tab-transfers-history');
-    const setFilter = (f) => {
-      transfersFilter = f;
-      const on = 'text-xs font-bold text-orange-400 border-b-2 border-orange-500 pb-1 px-1';
-      const off = 'text-xs font-medium text-slate-400 hover:text-white pb-1 px-1';
-      if (tabActive) tabActive.className = f === 'active' ? on : off;
-      if (tabHistory) tabHistory.className = f === 'history' ? on : off;
-      renderTransfers();
-    };
-    if (tabActive) tabActive.onclick = () => setFilter('active');
-    if (tabHistory) tabHistory.onclick = () => setFilter('history');
-    const btnClear = document.getElementById('btn-clear-completed-transfers');
-    if (btnClear) btnClear.onclick = () => {
-      Object.keys(transfers).forEach((id) => {
-        if (['completed', 'cancelled', 'error', 'failed'].includes(transfers[id].status)) delete transfers[id];
-      });
-      renderTransfers();
-    };
-
     // Indicador "digitando..." para o contato
     let typingTimer = null;
     document.getElementById('input-chat-text').addEventListener('input', () => {
@@ -8286,9 +8784,11 @@
     initDesktopEvents();
     renderNotificationSettings();
     if (!loggedIn) {
+      appReady = true; // links de login (pulseshare://login) continuam funcionando
       // Sem conta neste dispositivo: tela de entrada (o fundo da extensão só espera)
       if (!IS_BACKGROUND_PAGE) showOnboarding();
       showAdminRemovedNotice();
+      pendingSharedQueue.splice(0).forEach((items) => handleAndroidSharedItems(items));
       return;
     }
     // Registros do administrador já guardados: exclusões e mensagens oficiais desta conta
@@ -8299,10 +8799,22 @@
     switchTab('chat'); // Abertura direta no chat por padrão
     migrateLegacyExtensionChats();
     if (IS_ANDROID || IS_EXTENSION || IS_DESKTOP) Native.setBackgroundMode(backgroundMode);
+    // Android: pede uma vez para tirar o app da otimização de bateria (sem isso a Samsung
+    // e outros fabricantes podem fechar o PulseShare em segundo plano)
+    if (IS_ANDROID && backgroundMode && window.PulseShareNative && window.PulseShareNative.isIgnoringBatteryOptimizations) {
+      try {
+        if (!window.PulseShareNative.isIgnoringBatteryOptimizations() && !localStorage.getItem('ps_battery_asked')) {
+          localStorage.setItem('ps_battery_asked', '1');
+          setTimeout(() => Native.requestBatteryExemption(), 2500);
+        }
+      } catch (e) {}
+    }
     if (IS_EXTENSION && !IS_BACKGROUND_PAGE && window.chrome && chrome.runtime) {
       try { chrome.runtime.sendMessage({ type: 'PS_UI_OPEN' }); } catch (e) {}
     }
     openChatFromLaunch();
+    appReady = true;
+    pendingSharedQueue.splice(0).forEach((items) => handleAndroidSharedItems(items));
   });
 
 })();

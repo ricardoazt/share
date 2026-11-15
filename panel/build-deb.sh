@@ -41,7 +41,7 @@ echo "» Copiando o painel..."
 mkdir -p "$APP/www/icons"
 cp main.js preload.js "$APP/"
 cp www/panel.html www/panel.css www/panel.js "$APP/www/"
-cp "$ROOT"/icons/*.png "$ROOT/icons/icon.svg" "$APP/www/icons/"
+cp "$ROOT"/icons/panel/*.png "$ROOT/icons/panel/icon.svg" "$APP/www/icons/"
 node -e "
 const p = require('./package.json');
 const out = { name: p.name, productName: p.productName, version: p.version, description: p.description,
@@ -54,10 +54,10 @@ ln -s ../../opt/PulseSharePanel/pulseshare-panel "$PKG/usr/bin/pulseshare-panel"
 for s in 16 32 48 128 192 512; do
   d="$PKG/usr/share/icons/hicolor/${s}x${s}/apps"
   mkdir -p "$d"
-  cp "$ROOT/icons/icon${s}.png" "$d/pulseshare-panel.png"
+  cp "$ROOT/icons/panel/icon${s}.png" "$d/pulseshare-panel.png"
 done
 mkdir -p "$PKG/usr/share/icons/hicolor/scalable/apps"
-cp "$ROOT/icons/icon.svg" "$PKG/usr/share/icons/hicolor/scalable/apps/pulseshare-panel.svg"
+cp "$ROOT/icons/panel/icon.svg" "$PKG/usr/share/icons/hicolor/scalable/apps/pulseshare-panel.svg"
 
 cat > "$PKG/usr/share/applications/pulseshare-panel.desktop" <<DESK
 [Desktop Entry]

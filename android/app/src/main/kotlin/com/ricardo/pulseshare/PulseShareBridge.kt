@@ -275,6 +275,12 @@ class PulseShareBridge(private val appContext: Context) {
         mainHandler.post { PulseShareService.setBackgroundMode(appContext, enabled) }
     }
 
+    @JavascriptInterface
+    fun isIgnoringBatteryOptimizations(): Boolean = try {
+        val pm = appContext.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+        pm.isIgnoringBatteryOptimizations(appContext.packageName)
+    } catch (e: Exception) { false }
+
     // Abre a tela do sistema para tirar o app da otimização de bateria (Samsung mata apps em segundo plano)
     @JavascriptInterface
     fun requestBatteryExemption() {

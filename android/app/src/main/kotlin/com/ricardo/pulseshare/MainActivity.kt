@@ -227,6 +227,12 @@ class MainActivity : ComponentActivity() {
         // Usa a WebView que já está rodando em segundo plano (ou cria e carrega o app)
         webView = WebViewHost.attach(this, rootLayout)
 
+        // Segundo plano (padrão ligado): o serviço sobe já com a tela aberta, assim
+        // "Fechar tudo" nos recentes não derruba o app (como o WhatsApp)
+        if (PulseShareService.isBackgroundMode(this)) {
+            PulseShareService.start(this, PulseShareService.BACKGROUND_STATUS)
+        }
+
         // Botão Voltar do Android
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {

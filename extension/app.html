@@ -130,6 +130,22 @@
     .chat-slide-pane.active {
       transform: translateX(0);
     }
+    /* Tela larga (computador): lista à esquerda, conversa à direita e o perfil do
+       contato como painel colado na borda direita (abre/fecha tocando no topo da conversa) */
+    #chat-wide-placeholder { display: none; }
+    @media (min-width: 900px) {
+      #view-chat { flex-direction: row; }
+      #chat-list-pane { flex: 0 0 clamp(320px, 34%, 460px); border-right: 1px solid #1e293b; }
+      #chat-active-conversation-pane.chat-slide-pane { position: relative; inset: auto; z-index: auto; transform: none; transition: none; flex: 1 1 0; min-width: 0; }
+      #chat-active-conversation-pane:not(.active) { display: none; }
+      #view-chat:has(#chat-active-conversation-pane:not(.active)) > #chat-wide-placeholder { display: flex; }
+      #btn-chat-back { display: none; }
+      #view-chat > #modal-peer-profile { position: relative; inset: auto; z-index: auto; flex: 0 0 clamp(320px, 28%, 400px); border-left: 1px solid #1e293b; }
+      #view-chat > #modal-peer-profile .peer-profile-back { display: none; }
+      #view-chat > #modal-peer-profile .peer-profile-close { display: inline-flex; }
+      .chat-row-active { background: rgba(79, 70, 229, 0.14); }
+    }
+    .peer-profile-close { display: none; }
     /* Utilitárias que faltavam no tailwind.css pré-compilado */
     .max-h-\[65vh\] { max-height: 65vh; }
     .border-indigo-500\/50 { border-color: rgb(99 102 241 / 0.5); }
@@ -177,6 +193,31 @@
     #chat-messages-container > .msg-selected { background-color: rgba(99, 102, 241, 0.32); }
     #chat-messages-container.chat-selecting > [data-mid] { cursor: pointer; }
     .is-android #chat-messages-container, .is-android #chat-messages-container *, .is-android #chat-conversations-list, .is-android #chat-conversations-list *, .is-android #chat-categories-bar { -webkit-user-select: none !important; user-select: none !important; -webkit-touch-callout: none; }
+    /* Tamanho do texto (Configurações → 🔠): fs-1 = Grande (padrão), fs-2 = Muito grande.
+       Escala as classes de texto pequenas do Tailwind; o campo de mensagem e o texto
+       das conversas ganham tamanho próprio (16 px no campo evita zoom/ilegibilidade). */
+    html.fs-1 .text-\[8px\] { font-size: 9.5px; line-height: 13px; }
+    html.fs-1 .text-\[9px\] { font-size: 10.5px; line-height: 14px; }
+    html.fs-1 .text-\[10px\] { font-size: 11.5px; line-height: 15px; }
+    html.fs-1 .text-\[11px\] { font-size: 12.5px; line-height: 17px; }
+    html.fs-1 .text-\[13px\] { font-size: 15px; line-height: 21px; }
+    html.fs-1 .text-xs { font-size: 13.5px; line-height: 18px; }
+    html.fs-1 .text-sm { font-size: 15.5px; line-height: 22px; }
+    html.fs-2 .text-\[8px\] { font-size: 10.5px; line-height: 14px; }
+    html.fs-2 .text-\[9px\] { font-size: 11.5px; line-height: 15px; }
+    html.fs-2 .text-\[10px\] { font-size: 12.5px; line-height: 17px; }
+    html.fs-2 .text-\[11px\] { font-size: 14px; line-height: 19px; }
+    html.fs-2 .text-\[13px\] { font-size: 17px; line-height: 24px; }
+    html.fs-2 .text-xs { font-size: 15px; line-height: 20px; }
+    html.fs-2 .text-sm { font-size: 17px; line-height: 24px; }
+    html.fs-2 .text-base { font-size: 18px; line-height: 26px; }
+    /* Campos de texto: nunca menores que 16 px (legíveis e o celular não dá zoom) */
+    html.fs-1 input[type=text], html.fs-1 input[type=search], html.fs-1 input[type=url], html.fs-1 input[type=password], html.fs-1 textarea { font-size: 16px; }
+    html.fs-2 input[type=text], html.fs-2 input[type=search], html.fs-2 input[type=url], html.fs-2 input[type=password], html.fs-2 textarea { font-size: 18px; }
+    #input-chat-text { font-family: inherit; font-size: 16px; line-height: 22px; resize: none; max-height: 140px; overflow-y: auto; border-radius: 22px; padding-top: 9px; padding-bottom: 9px; }
+    html.fs-2 #input-chat-text { font-size: 18px; line-height: 24px; }
+    #chat-compose-row { align-items: flex-end; }
+    #chat-compose-row > button { width: 42px; height: 42px; min-width: 42px; }
   </style>
 </head>
 <body class="w-screen h-screen flex flex-col bg-slate-950 text-slate-100 overflow-hidden relative">
@@ -269,6 +310,14 @@
       </div>
 
       <!-- SUB-PAINEL 2: CONVERSA ATIVA FULL-SCREEN EDGE-TO-EDGE (Desliza ocupando 100% da tela) -->
+      <!-- Tela larga sem conversa aberta -->
+      <div id="chat-wide-placeholder" class="flex-1 min-w-0 flex-col items-center justify-center text-center px-8 gap-3 bg-slate-950 border-b-0">
+        <div class="w-16 h-16 rounded-2xl overflow-hidden opacity-80"><svg viewBox="0 0 128 128" width="64" height="64"><defs><linearGradient id="phg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4F46E5"/><stop offset="1" stop-color="#F97316"/></linearGradient></defs><rect width="128" height="128" rx="28" fill="url(#phg)"/><path d="M72.38,15.00L78.04,15.00L66.14,52.00L95.10,52.00L53.73,110.30L61.09,68.50L34.50,68.50Z" fill="#fff" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg></div>
+        <span class="text-lg font-bold text-slate-200">PulseShare</span>
+        <p class="text-sm text-slate-400 max-w-sm">Escolha uma conversa à esquerda ou toque no balão 💬 para começar uma nova.</p>
+        <p class="text-xs text-slate-500 max-w-sm">Mensagens e arquivos vão direto entre os aparelhos (P2P), sem servidor guardando nada.</p>
+      </div>
+
       <div id="chat-active-conversation-pane" class="chat-slide-pane">
         <!-- Barra de Cabeçalho do Contato (WhatsApp style) -->
         <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center justify-between shrink-0 shadow-md relative">
@@ -370,7 +419,7 @@
                 <path stroke-linecap="round" stroke-linejoin="round" d="M18.375 12.739l-7.693 7.693a4.5 4.5 0 01-6.364-6.364l10.94-10.94A3 3 0 1119.5 7.37l-10.94 10.94a1.5 1.5 0 01-2.122-2.122l7.693-7.693" />
               </svg>
             </button>
-            <input id="input-chat-text" type="text" placeholder="Mensagem segura..." class="flex-1 min-w-0 bg-slate-950 border border-slate-700/80 rounded-full px-4 py-2 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors" />
+            <textarea id="input-chat-text" rows="1" enterkeyhint="send" autocomplete="off" placeholder="Mensagem" class="flex-1 min-w-0 bg-slate-950 border border-slate-700/80 rounded-full px-4 text-white placeholder-slate-500 outline-none focus:border-indigo-500 transition-colors"></textarea>
             <button id="btn-chat-mic" type="button" title="Gravar mensagem de voz" class="w-9 h-9 min-w-[36px] rounded-full bg-indigo-600 hover:bg-indigo-500 text-white active:scale-95 shadow-md shadow-indigo-600/40 flex items-center justify-center shrink-0 transition-all">
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z" /></svg>
             </button>
@@ -384,161 +433,60 @@
       </div>
     </section>
 
-    <!-- ===================================================================== -->
-    <!-- ABA 2: INÍCIO (DASHBOARD & AÇÕES RÁPIDAS) -->
-    <!-- ===================================================================== -->
-    <section id="view-home" class="hidden p-4 space-y-4">
-      
-      <!-- Card do Meu Usuário -->
-      <div class="p-4 rounded-2xl bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-800 shadow-xl relative overflow-hidden">
-        <div class="absolute -right-8 -top-8 w-32 h-32 rounded-full bg-indigo-500/10 blur-2xl pointer-events-none"></div>
-        <div class="flex items-start justify-between">
-          <div class="flex items-center gap-3">
-            <div id="home-avatar-slot" class="w-12 h-12 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 flex items-center justify-center">
-              <!-- Avatar grande -->
-            </div>
-            <div>
-              <span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Identidade Nostr</span>
-              <div class="flex items-center gap-2 mt-0.5">
-                <h2 id="home-tag-display" class="text-lg font-black text-white tracking-tight">@usuario</h2>
-                <span id="home-status-pill" class="text-[9px] px-2 py-0.5 rounded-full font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">ONLINE</span>
-              </div>
-            </div>
-          </div>
-          <button id="btn-edit-tag" type="button" class="text-xs text-indigo-400 hover:text-indigo-300 font-bold px-2 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/20 active:scale-95">
-            Perfil
-          </button>
-        </div>
-
-        <div class="mt-3 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px]">
-          <span class="text-slate-400">Hash de Registro:</span>
-          <span id="home-reghash-display" class="font-mono text-indigo-300 font-medium">0x000000000000</span>
-        </div>
-      </div>
-
-      <!-- Ações Rápidas -->
-      <div class="space-y-2">
-        <span class="text-xs font-bold uppercase tracking-wider text-slate-400 px-1">Ações Rápidas</span>
-
-        <!-- Abrir um link recebido (portal: chat + arquivos). Para criar um link: botão 🔗 na lista de conversas -->
-        <div class="p-3.5 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2">
-          <input id="input-open-link" type="url" placeholder="Colar link PulseShare para abrir..." class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 font-mono outline-none focus:border-orange-500" />
-          <button id="btn-open-link-go" type="button" class="px-3.5 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shrink-0 active:scale-95 shadow-md shadow-orange-600/30">
-            Abrir
-          </button>
-        </div>
-      </div>
-
-      <!-- Resumo da Malha Descentralizada -->
-      <div class="p-4 rounded-2xl bg-slate-900 border border-slate-800 space-y-3">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-bold text-white flex items-center gap-2">
-            <span>🌐 Status da Rede (LAN + BLE + Mesh)</span>
-          </span>
-          <span id="home-peers-count-badge" class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-indigo-300 border border-slate-700">0 peers online</span>
-        </div>
-
-        <div class="grid grid-cols-3 gap-2 text-center">
-          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span class="text-[10px] text-slate-400 block">Sinalização</span>
-            <span id="stat-brokers-count" class="text-xs font-bold text-emerald-400 font-mono mt-0.5 block">3 Brokers</span>
-          </div>
-          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span class="text-[10px] text-slate-400 block">Roteamento</span>
-            <span id="stat-relay-mode" class="text-xs font-bold text-indigo-400 font-mono mt-0.5 block">Relay Ativo</span>
-          </div>
-          <div class="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-            <span class="text-[10px] text-slate-400 block">Transferências</span>
-            <span id="stat-transfers-count" class="text-xs font-bold text-orange-400 font-mono mt-0.5 block">0 ativas</span>
-          </div>
-        </div>
-      </div>
-
-    </section>
-
-    <!-- ===================================================================== -->
-    <!-- ABA 3: TRANSFERÊNCIAS -->
-    <!-- ===================================================================== -->
-    <section id="view-transfers" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
-        <div class="flex items-center gap-3">
-          <button id="tab-transfers-active" type="button" class="text-xs font-bold text-orange-400 border-b-2 border-orange-500 pb-1 px-1">Ativas</button>
-          <button id="tab-transfers-history" type="button" class="text-xs font-medium text-slate-400 hover:text-white pb-1 px-1">Histórico</button>
-        </div>
-        <button id="btn-clear-completed-transfers" type="button" class="text-[10px] text-slate-400 hover:text-rose-400">Limpar Concluídas</button>
-      </div>
-      <div id="transfers-list" class="space-y-2.5">
-        <!-- preenchido dinamicamente -->
-      </div>
-    </section>
-
-    <!-- ===================================================================== -->
-    <!-- ABA 5: USUÁRIOS E DISPOSITIVOS NA MALHA -->
-    <!-- ===================================================================== -->
-    <section id="view-mesh" class="hidden p-4 space-y-3 h-full overflow-y-auto custom-scroll">
-      <div class="flex items-center justify-between pb-2 border-b border-slate-800">
-        <div>
-          <h3 class="text-sm font-bold text-white">👥 Meus Contatos</h3>
-          <p class="text-[10px] text-slate-400">Só usuários adicionados • melhor rota: Bluetooth, LAN, Internet ou via malha</p>
-        </div>
-        <div class="flex items-center gap-1.5">
-        <button id="btn-mesh-add-contact" type="button" class="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold active:scale-95">+ Adicionar</button>
-        <button id="btn-refresh-mesh" type="button" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300">
-          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
-          </svg>
-        </button>
-        </div>
-      </div>
-      <div id="mesh-peers-list" class="space-y-2">
-        <!-- preenchido dinamicamente -->
-      </div>
-    </section>
-
   </main>
 
   <!-- ===================================================================== -->
-  <!-- BARRA DE NAVEGAÇÃO INFERIOR NATIVA (4 ABAS - CHAT FIRST) -->
+  <!-- NOVA CONVERSA (balão): contatos, ler QR, meu QR, abrir link recebido     -->
+  <!-- (substitui as abas Início e Usuários, removidas em 2026-11-14)            -->
   <!-- ===================================================================== -->
-  <nav id="app-bottom-nav" class="grid grid-cols-4 bg-slate-900/95 border-t border-slate-800/80 shrink-0 select-none pb-1 z-30 shadow-lg">
-    <!-- 1. CHAT (Primeira aba padrão) -->
-    <button id="nav-chat" type="button" class="nav-tab active py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-bold text-indigo-400 relative">
-      <div class="relative">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-        </svg>
-        <span id="badge-chat-unread" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-indigo-500 text-white font-mono">0</span>
+  <div id="modal-new-chat" class="hidden fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex flex-col justify-end">
+    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-3 max-h-[92vh] overflow-y-auto custom-scroll shadow-2xl relative">
+      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
+        <h3 class="text-sm font-bold text-white">💬 Nova conversa</h3>
+        <button id="btn-close-new-chat" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
       </div>
-      <span>Conversas</span>
-    </button>
 
-    <!-- 2. INÍCIO -->
-    <button id="nav-home" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200">
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 21h8.25" />
-      </svg>
-      <span>Início</span>
-    </button>
+      <input id="input-new-chat-search" type="search" spellcheck="false" autocomplete="off" autocapitalize="none" placeholder="Procurar contato ou @usuário..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-500 outline-none focus:border-indigo-500" />
 
-    <!-- 3. ENVIOS -->
-    <button id="nav-transfers" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
-      <div class="relative">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
-        </svg>
-        <span id="badge-transfers-count" class="hidden absolute -top-1 -right-2 px-1 rounded-full text-[8px] font-bold bg-sky-500 text-slate-950 font-mono">0</span>
+      <div class="flex gap-2">
+        <button id="btn-new-chat-scan" type="button" class="android-only flex-1 flex flex-col items-center gap-1 py-2.5 rounded-2xl bg-slate-950 border border-slate-800 hover:bg-slate-800 active:scale-95">
+          <span class="text-lg leading-none">📷</span><span class="text-[10px] font-bold text-slate-300">Ler QR Code</span>
+        </button>
+        <button id="btn-new-chat-myqr" type="button" class="flex-1 flex flex-col items-center gap-1 py-2.5 rounded-2xl bg-slate-950 border border-slate-800 hover:bg-slate-800 active:scale-95">
+          <span class="text-lg leading-none">🔳</span><span class="text-[10px] font-bold text-slate-300">Meu QR Code</span>
+        </button>
+        <button id="btn-new-chat-add" type="button" class="flex-1 flex flex-col items-center gap-1 py-2.5 rounded-2xl bg-slate-950 border border-slate-800 hover:bg-slate-800 active:scale-95">
+          <span class="text-lg leading-none">➕</span><span class="text-[10px] font-bold text-slate-300">Por nome</span>
+        </button>
       </div>
-      <span>Envios</span>
-    </button>
 
-    <!-- 5. USUÁRIOS -->
-    <button id="nav-mesh" type="button" class="nav-tab py-2 flex flex-col items-center justify-center gap-1 text-[10px] font-semibold text-slate-400 hover:text-slate-200 relative">
-      <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-        <path stroke-linecap="round" stroke-linejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-      </svg>
-      <span>Usuários</span>
-    </button>
-  </nav>
+      <div class="flex items-center justify-between px-1 pt-1">
+        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400">👥 Meus contatos</span>
+        <span id="new-chat-contacts-count" class="text-[10px] font-mono text-slate-500">0</span>
+      </div>
+      <div id="new-chat-contacts" class="space-y-2"></div>
+
+      <div class="pt-2 border-t border-slate-800 space-y-1.5">
+        <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 px-1">🔗 Abrir um link recebido</span>
+        <div class="flex items-center gap-2">
+          <input id="input-open-link" type="url" placeholder="Colar link PulseShare..." class="w-full bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-200 placeholder-slate-500 font-mono outline-none focus:border-orange-500" />
+          <button id="btn-open-link-go" type="button" class="px-3.5 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shrink-0 active:scale-95">Abrir</button>
+        </div>
+      </div>
+      <p id="new-chat-relay-info" class="text-[10px] text-slate-500 text-center"></p>
+    </div>
+  </div>
+
+  <!-- Meu QR Code (tela cheia) para outra pessoa me adicionar -->
+  <div id="modal-my-qr" class="hidden fixed inset-0 bg-slate-950 z-[70] flex flex-col items-center justify-center p-6">
+    <button id="btn-close-my-qr" type="button" class="absolute top-4 right-4 w-10 h-10 rounded-full bg-slate-800 text-slate-200 text-lg font-bold active:scale-95">✕</button>
+    <div class="bg-white rounded-3xl p-4 shadow-2xl flex items-center justify-center" id="my-qr-box"></div>
+    <div class="mt-5 text-center space-y-1">
+      <div id="my-qr-profile-name" class="text-xl font-black text-white">Nome</div>
+      <div id="my-qr-username" class="text-sm font-mono font-bold text-indigo-300">@usuario</div>
+      <p class="text-[11px] text-slate-400 max-w-xs pt-2">Peça para a outra pessoa abrir o PulseShare, tocar no balão 💬 e em <b>Ler QR Code</b>.</p>
+    </div>
+  </div>
 
   <!-- ===================================================================== -->
   <!-- MODAL 1: BUSCA GLOBAL DE USUÁRIOS (LAN / BLE / MESH) -->
@@ -670,8 +618,8 @@
         <p id="qr-scan-status" class="text-[11px] text-slate-400 text-center">Aponte para o QR Code mostrado no outro dispositivo.</p>
       </div>
 
-      <!-- Colar chave de acesso / código -->
-      <div class="space-y-1.5">
+      <!-- Colar chave de acesso / código (só no modo "entrar com outra conta") -->
+      <div id="qr-scan-paste-box" class="space-y-1.5">
         <label class="text-xs font-semibold text-white">Ou cole a chave de acesso (ps-…)</label>
         <input id="input-pairing-payload" type="text" spellcheck="false" autocomplete="off" autocapitalize="none" autocorrect="off" placeholder="ps-xxxxx-xxxxx-xxxxx-xxxxx" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-mono outline-none focus:border-indigo-500" />
         <button id="btn-confirm-import-pairing" type="button" class="w-full py-2.5 rounded-xl bg-gradient-to-r from-orange-600 to-indigo-600 text-white font-bold text-xs shadow active:scale-95">
@@ -704,12 +652,17 @@
         <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
       </button>
       <div class="min-w-0">
-        <h3 class="text-sm font-bold text-white leading-tight">Encaminhar para…</h3>
+        <h3 id="forward-title" class="text-sm font-bold text-white leading-tight">Encaminhar para…</h3>
         <span id="forward-summary" class="text-[11px] text-slate-400 block truncate leading-tight"></span>
       </div>
     </div>
-    <div class="p-3 border-b border-slate-800 shrink-0">
-      <input id="input-forward-search" type="text" placeholder="Buscar conversa ou contato" autocomplete="off" autocapitalize="none" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-indigo-500" />
+    <div class="p-3 border-b border-slate-800 shrink-0 space-y-2">
+      <input id="input-forward-search" type="text" placeholder="Buscar contato, conversa ou @usuário" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-indigo-500" />
+      <!-- Só ao compartilhar arquivos de outro app: criar um chat de link com eles -->
+      <button id="btn-share-create-link" type="button" class="hidden w-full p-3 rounded-2xl bg-gradient-to-r from-orange-600/20 to-indigo-600/20 border border-orange-500/40 text-left flex items-center gap-3 active:scale-98">
+        <span class="w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-lg" style="background:linear-gradient(135deg,#f97316,#4f46e5)">🔗</span>
+        <span class="flex flex-col min-w-0"><span class="text-sm font-bold text-white">Criar link com estes arquivos</span><span class="text-[11px] text-slate-300">Quem abrir o link conversa com você e baixa os arquivos</span></span>
+      </button>
     </div>
     <div id="forward-target-list" class="flex-1 min-h-0 overflow-y-auto custom-scroll divide-y divide-slate-800/60"></div>
     <div class="p-3 border-t border-slate-800 bg-slate-900 shrink-0 flex items-center gap-2">
@@ -740,10 +693,11 @@
   <!-- ===================================================================== -->
   <div id="modal-peer-profile" class="hidden fixed inset-0 z-50 bg-slate-950 flex flex-col">
     <div class="h-14 px-3 bg-slate-900 border-b border-slate-800 flex items-center gap-2 shrink-0 shadow-md">
-      <button id="btn-close-peer-profile" type="button" title="Voltar" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95 transition-all shrink-0">
-        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
+      <button id="btn-close-peer-profile" type="button" title="Fechar perfil" class="p-2 -ml-1 rounded-full text-slate-300 hover:text-white active:scale-95 transition-all shrink-0">
+        <svg class="w-5 h-5 peer-profile-back" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" /></svg>
+        <span class="peer-profile-close w-5 h-5 items-center justify-center text-base leading-none">✕</span>
       </button>
-      <h3 class="text-sm font-bold text-white">Perfil</h3>
+      <h3 class="text-sm font-bold text-white">Dados do contato</h3>
     </div>
     <div id="peer-profile-body" class="flex-1 min-h-0 overflow-y-auto custom-scroll p-4 space-y-4">
       <!-- preenchido por renderPeerProfile() -->
@@ -823,6 +777,13 @@
           </select>
         </div>
       </div>
+      <label for="input-new-link-keep-chat" class="flex items-start gap-2 p-2.5 rounded-xl bg-slate-950 border border-slate-700 cursor-pointer">
+        <input id="input-new-link-keep-chat" type="checkbox" style="accent-color:#f97316;width:16px;height:16px;margin-top:1px;flex-shrink:0" />
+        <span class="flex flex-col">
+          <span class="text-[11px] font-semibold text-slate-200">💬 Manter a conversa se a pessoa sair e entrar de novo</span>
+          <span class="text-[10px] text-slate-400">Ligado: ao reabrir o link no mesmo navegador, a conversa (e a senha) continua. Desligado: cada acesso começa uma conversa nova.</span>
+        </span>
+      </label>
       <label for="input-new-link-allow-zip" class="flex items-start gap-2 p-2.5 rounded-xl bg-slate-950 border border-slate-700 cursor-pointer">
         <input id="input-new-link-allow-zip" type="checkbox" checked style="accent-color:#f97316;width:16px;height:16px;margin-top:1px;flex-shrink:0" />
         <span class="flex flex-col">
@@ -861,60 +822,6 @@
         <button id="btn-link-share-stop" type="button" class="py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-bold active:scale-95">⛔ Encerrar link</button>
         <button id="btn-link-share-delete" type="button" class="py-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-bold active:scale-95">🗑️ Excluir chat</button>
       </div>
-    </div>
-  </div>
-
-  <!-- ===================================================================== -->
-  <!-- MODAL: ENVIAR ARQUIVOS (DIRETO PARA @USUÁRIO) -->
-  <!-- ===================================================================== -->
-  <div id="modal-send" class="hidden fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex flex-col justify-end">
-    <div class="bg-slate-900 border-t border-slate-700/80 rounded-t-3xl p-5 space-y-4 max-h-[90vh] overflow-y-auto custom-scroll shadow-2xl relative">
-      <div class="flex items-center justify-between border-b border-slate-800 pb-2 sticky top-0 bg-slate-900 z-10 pt-1">
-        <h3 id="modal-send-title" class="text-sm font-bold text-white flex items-center gap-2">
-          <span>📤 Enviar Arquivos P2P</span>
-        </h3>
-        <button id="btn-close-send-modal" type="button" class="p-1 rounded-lg text-slate-400 hover:text-white">✕</button>
-      </div>
-
-      <!-- Destinatário (quando no modo P2P) -->
-      <div id="field-target-user" class="space-y-1">
-        <label class="text-[11px] font-semibold text-slate-300">Destinatário:</label>
-        <div class="flex gap-2">
-          <input id="input-target-user" type="text" placeholder="@nome_do_usuario" class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono outline-none focus:border-indigo-500" />
-          <button id="btn-pick-peer" type="button" class="px-3 py-2 bg-slate-800 text-xs text-slate-200 rounded-xl border border-slate-700">Lista</button>
-        </div>
-      </div>
-
-      <!-- Seletor de Arquivos Nativo do Android -->
-      <div class="space-y-2">
-        <label class="text-[11px] font-semibold text-slate-300">Arquivos Anexados:</label>
-        
-        <div class="p-4 rounded-2xl border-2 border-dashed border-slate-700 bg-slate-950/60 text-center space-y-2">
-          <button id="btn-pick-files-native" type="button" class="px-4 py-2 rounded-xl bg-orange-600 hover:bg-orange-500 text-white text-xs font-bold shadow-md shadow-orange-600/30 active:scale-95">
-            + Selecionar do Celular
-          </button>
-          <p class="text-[10px] text-slate-400">Fotos, vídeos, PDFs, documentos de qualquer tamanho</p>
-        </div>
-
-        <!-- Lista de Arquivos Selecionados -->
-        <div id="selected-files-list" class="space-y-1.5 max-h-36 overflow-y-auto custom-scroll">
-          <!-- preenchido dinamicamente -->
-        </div>
-      </div>
-
-      <!-- Compactação .ZIP Opcional -->
-      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-        <div class="flex flex-col">
-          <span class="text-xs font-semibold text-white">Compactar em arquivo .ZIP</span>
-          <span class="text-[10px] text-slate-400">Empacota múltiplos arquivos via fflate</span>
-        </div>
-        <input id="toggle-zip" type="checkbox" class="w-4 h-4 accent-orange-500 cursor-pointer" />
-      </div>
-
-      <!-- Botão de Confirmação -->
-      <button id="btn-confirm-send" type="button" class="w-full py-3.5 rounded-2xl bg-gradient-to-r from-orange-600 to-indigo-600 hover:from-orange-500 hover:to-indigo-500 text-white font-bold text-sm shadow-xl active:scale-98">
-        Confirmar & Iniciar Envio
-      </button>
     </div>
   </div>
 
@@ -964,12 +871,24 @@
         <button id="btn-account-logout" type="button" class="w-full py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[11px] font-bold active:scale-95">Sair desta conta</button>
       </div>
 
+      <!-- Nome do perfil (livre, pode repetir; o @usuário é que é único) -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+        <div class="min-w-0">
+          <span class="text-xs font-semibold text-white block">🪪 Nome do perfil</span>
+          <span class="text-[10px] text-slate-400">É o nome que seus contatos veem. Independe do @usuário.</span>
+        </div>
+        <div class="flex gap-2">
+          <input id="setting-profile-name-input" type="text" maxlength="40" autocomplete="off" placeholder="Seu nome" class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white outline-none focus:border-indigo-500" />
+          <button id="btn-profile-name-save" type="button" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg active:scale-95 shadow-sm">Salvar</button>
+        </div>
+      </div>
+
       <!-- Nome de Usuário (alteração com verificação) -->
       <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
         <div class="flex items-center justify-between">
           <div class="pr-3 min-w-0">
             <span class="text-xs font-semibold text-white block">👤 Nome de Usuário</span>
-            <span class="text-[10px] text-slate-400">O sufixo após o "_" vem das suas chaves e não muda.</span>
+            <span class="text-[10px] text-slate-400">Único na rede: é por ele que as pessoas te encontram.</span>
           </div>
           <span id="setting-current-tag" class="text-[10px] font-mono text-indigo-300 font-bold truncate">@usuario</span>
         </div>
@@ -977,7 +896,7 @@
           <div class="flex-1 min-w-0 flex items-center gap-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 focus-within:border-indigo-500">
             <span class="text-xs font-mono text-indigo-400 font-bold">@</span>
             <input id="setting-username-input" type="text" maxlength="24" spellcheck="false" autocomplete="off" placeholder="novo_nome" class="w-full min-w-0 bg-transparent text-xs text-white font-mono outline-none" />
-            <span id="setting-username-suffix" class="text-xs font-mono text-slate-500 shrink-0">_000000</span>
+            <span id="setting-username-suffix" class="hidden text-xs font-mono text-slate-500 shrink-0"></span>
           </div>
           <button id="btn-username-change" type="button" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg active:scale-95 shadow-sm">Alterar</button>
         </div>
@@ -992,6 +911,19 @@
         </div>
         <p id="setting-username-status" class="hidden text-[10px] text-slate-400"></p>
         <p id="setting-username-conflict" class="hidden text-[10px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2 py-1.5"></p>
+      </div>
+
+      <!-- Tamanho do texto -->
+      <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <span class="text-xs font-semibold text-white block">🔠 Tamanho do texto</span>
+          <span class="text-[10px] text-slate-400">Conversas, listas e campos de digitação.</span>
+        </div>
+        <select id="setting-font-size" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white outline-none shrink-0">
+          <option value="0">Normal</option>
+          <option value="1">Grande</option>
+          <option value="2">Muito grande</option>
+        </select>
       </div>
 
       <!-- Notificações e segundo plano -->
@@ -1043,7 +975,7 @@
       <div class="p-3 rounded-xl bg-slate-950 border border-slate-800 flex items-center justify-between">
         <div class="pr-3">
           <span class="text-xs font-semibold text-white block">Download Automático no Chat</span>
-          <span class="text-[10px] text-slate-400">Desativado por padrão. Quando desativado, você escolhe quando baixar no chat ou em Transferências.</span>
+          <span class="text-[10px] text-slate-400">Desativado por padrão. Quando desativado, você toca em Baixar na própria conversa.</span>
         </div>
         <input id="setting-chat-auto-download" type="checkbox" class="w-4 h-4 accent-indigo-500 cursor-pointer shrink-0" />
       </div>

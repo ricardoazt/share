@@ -1,6 +1,8 @@
 package com.ricardo.pulseshare
 
+import android.app.AlarmManager
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -9,6 +11,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -38,8 +41,9 @@ class PulseShareService : Service() {
         var isRunning = false
             private set
 
+        // Padrão ligado (como o WhatsApp): só fica desligado se a pessoa desligar nas Configurações
         fun isBackgroundMode(context: Context): Boolean =
-            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_BACKGROUND, false)
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_BACKGROUND, true)
 
         // Liga/desliga o modo "rodar em segundo plano" (notificação fixa + app vivo fechado)
         fun setBackgroundMode(context: Context, enabled: Boolean) {
@@ -147,19 +151,48 @@ class PulseShareService : Service() {
         return if (background) START_STICKY else START_NOT_STICKY
     }
 
-    // App tirado dos recentes: a Activity some, mas o serviço (e a WebView) continuam
+    // App tirado dos recentes ("Fechar tudo"): a Activity some, mas o serviço (e a WebView) continuam
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
         if (!isBackgroundMode(this)) {
             WebViewHost.destroy()
             shutdown()
+            return
         }
+        // Garante que a WebView saiu da tela que foi fechada e continua rodando sem ela
+        WebViewHost.detachAll(applicationContext)
+        if (!WebViewHost.exists()) {
+            try { WebViewHost.obtain(this) } catch (e: Exception) { Log.w(TAG, "WebView sem tela: ${e.message}") }
+        }
+        scheduleRestart(this)
     }
 
     // Android 15: o tipo dataSync tem limite de tempo; ao esgotar, é preciso parar
     override fun onTimeout(startId: Int, fgsType: Int) {
         Log.w(TAG, "Tempo do serviço esgotado (tipo $fgsType)")
         if (!isBackgroundMode(this)) shutdown()
+    }
+
+    /**
+     * Rede de segurança: alguns aparelhos matam o processo junto com a tarefa mesmo com
+     * serviço em primeiro plano. Agenda um "acordar" em ~3 s que religa o serviço; se o
+     * processo continuou vivo, o serviço só recebe outro onStartCommand (sem efeito).
+     */
+    private fun scheduleRestart(context: Context) {
+        try {
+            val intent = Intent(context, PulseShareService::class.java).apply {
+                action = ACTION_START
+                putExtra(EXTRA_STATUS, BACKGROUND_STATUS)
+            }
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            val pi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                PendingIntent.getForegroundService(context, 7, intent, flags)
+            else PendingIntent.getService(context, 7, intent, flags)
+            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            am.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + 3000, pi)
+        } catch (e: Exception) {
+            Log.w(TAG, "Não foi possível agendar o religamento: ${e.message}")
+        }
     }
 
     private fun shutdown() {

@@ -8,3 +8,8 @@ android/.idea/
 android/*.iml
 android/captures/
 android/.cxx/
+
+# Pacotes gerados
+server/dist/
+panel/dist/
+desktop/dist/

@@ -1,7 +1,7 @@
 {
   "name": "pulseshare-panel",
   "productName": "PulseSharePanel",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "PulseSharePanel: painel administrativo da rede PulseShare",
   "main": "main.js",
   "author": "Ricardo André Zampiva Teixeira",

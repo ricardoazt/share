@@ -26,6 +26,9 @@ RES = os.path.join(ROOT, 'android', 'app', 'src', 'main', 'res')
 
 TOP = (0x4F, 0x46, 0xE5)
 BOTTOM = (0xF9, 0x73, 0x16)
+# PulseSharePanel (painel administrativo): degradê roxo para diferenciar do app
+PANEL_TOP = (0xC0, 0x84, 0xFC)     # #C084FC
+PANEL_BOTTOM = (0x6D, 0x28, 0xD9)  # #6D28D9
 CORNER = 28           # raio do canto do quadrado (grade 128)
 BOLT_R = 1.5          # arredondamento dos cantos do raio
 
@@ -76,12 +79,12 @@ def path_data(pts, fn):
 
 
 # ---------------------------------------------------------------- raster ----
-def gradient(size):
+def gradient(size, top=TOP, bottom=BOTTOM):
     g = Image.new('RGBA', (size, size))
     px = g.load()
     for y in range(size):
         t = y / (size - 1)
-        c = tuple(round(TOP[i] + (BOTTOM[i] - TOP[i]) * t) for i in range(3)) + (255,)
+        c = tuple(round(top[i] + (bottom[i] - top[i]) * t) for i in range(3)) + (255,)
         for x in range(size):
             px[x, y] = c
     return g
@@ -98,7 +101,7 @@ def draw_bolt(draw, scale, ox=0.0, oy=0.0, fill=(255, 255, 255, 255)):
         draw.ellipse([x - rr, y - rr, x + rr, y + rr], fill=fill)
 
 
-def render(size, shape='square', pad=0.0):
+def render(size, shape='square', pad=0.0, top=TOP, bottom=BOTTOM):
     """Ícone completo. shape: 'square' (cantos arredondados) ou 'circle'."""
     ss = 8
     big = size * ss
@@ -112,7 +115,7 @@ def render(size, shape='square', pad=0.0):
     else:
         md.rounded_rectangle([off, off, off + inner - 1, off + inner - 1], radius=CORNER * scale, fill=255)
     bg = Image.new('RGBA', (big, big), (0, 0, 0, 0))
-    bg.paste(gradient(round(inner)).resize((round(inner), round(inner))), (round(off), round(off)))
+    bg.paste(gradient(round(inner), top, bottom).resize((round(inner), round(inner))), (round(off), round(off)))
     img = Image.new('RGBA', (big, big), (0, 0, 0, 0))
     img.paste(bg, (0, 0), mask)
     d = ImageDraw.Draw(img)
@@ -126,16 +129,20 @@ def render(size, shape='square', pad=0.0):
 
 
 # ------------------------------------------------------------------- svg ----
-def svg():
+def hexc(c):
+    return '#%02X%02X%02X' % c
+
+
+def svg(top=TOP, bottom=BOTTOM):
     p = path_data(BOLT_IN, lambda x, y: (x, y))
     return (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">'
         '<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#4F46E5"/><stop offset="1" stop-color="#F97316"/>'
+        '<stop offset="0" stop-color="%s"/><stop offset="1" stop-color="%s"/>'
         '</linearGradient></defs>'
         '<rect width="128" height="128" rx="%d" fill="url(#g)"/>'
         '<path d="%s" fill="#fff" stroke="#fff" stroke-width="%g" stroke-linejoin="round"/>'
-        '</svg>\n' % (CORNER, p, BOLT_R * 2)
+        '</svg>\n' % (hexc(top), hexc(bottom), CORNER, p, BOLT_R * 2)
     )
 
 
@@ -234,6 +241,12 @@ def main():
         os.makedirs(d, exist_ok=True)
         render(size, 'square', pad=1 / 24).save(os.path.join(d, 'ic_launcher.webp'), 'WEBP', lossless=True)
         render(size, 'circle', pad=1 / 24).save(os.path.join(d, 'ic_launcher_round.webp'), 'WEBP', lossless=True)
+    # PulseSharePanel: mesmo desenho em roxo (panel/www/icons → icons/panel)
+    panel = os.path.join(icons, 'panel')
+    os.makedirs(panel, exist_ok=True)
+    write(os.path.join(panel, 'icon.svg'), svg(PANEL_TOP, PANEL_BOTTOM))
+    for size in (16, 32, 48, 128, 192, 512):
+        render(size, top=PANEL_TOP, bottom=PANEL_BOTTOM).save(os.path.join(panel, 'icon%d.png' % size), optimize=True)
     print('ícones gerados')
 
 
